@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go2 Remote</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 16px; }
+    .card { max-width: 520px; margin: 0 auto; padding: 16px; border: 1px solid #ddd; border-radius: 14px; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    .row { display: flex; gap: 10px; margin: 10px 0; }
+    button {
+      flex: 1;
+      padding: 14px 12px;
+      font-size: 18px;
+      border-radius: 12px;
+      border: 1px solid #ccc;
+      background: #f7f7f7;
+      cursor: pointer;
+    }
+    button:active { transform: scale(0.99); }
+    .danger { background: #fff1f1; border-color: #ffb3b3; }
+    .ok { color: #0a7a0a; }
+    .err { color: #b00020; }
+    .small { font-size: 13px; color: #555; margin-top: 10px; word-break: break-all; }
+    input {
+      width: 100%;
+      padding: 12px;
+      font-size: 16px;
+      border-radius: 12px;
+      border: 1px solid #ccc;
+      box-sizing: border-box;
+    }
+    .status { margin-top: 12px; padding: 10px; border-radius: 12px; background: #fafafa; border: 1px solid #eee; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <h1>Unitree Go2 Remote</h1>
+
+    <label class="small">Robot API base URL (FastAPI on Go2)</label>
+    <input id="baseUrl" value="http://192.168.123.18:8000" />
+
+    <div class="row">
+      <button onclick="runAction('stand')">Stand</button>
+      <button onclick="runAction('sit')">Sit</button>
+    </div>
+
+    <div class="row">
+      <button class="danger" onclick="stopAction(lastAction || 'stand')">Stop</button>
+      <button onclick="checkHealth()">Health</button>
+    </div>
+
+    <div class="status">
+      <div id="msg" class="small">Ready.</div>
+      <div id="detail" class="mono"></div>
+    </div>
+
+    <div class="small">
+      Tip: If you open this from a phone, make sure your phone is on the same Wi-Fi as the Go2.
+    </div>
+  </div>
+
+<script>
+  let lastAction = null;
+
+  function getBaseUrl() {
+    return document.getElementById("baseUrl").value.trim().replace(/\/+$/, "");
+  }
+
+  function setStatus(text, ok=true, detail="") {
+    const msg = document.getElementById("msg");
+    const detailEl = document.getElementById("detail");
+    msg.textContent = text;
+    msg.className = "small " + (ok ? "ok" : "err");
+    detailEl.textContent = detail || "";
+  }
+
+  async function post(path) {
+    const url = getBaseUrl() + path;
+    const res = await fetch(url, { method: "POST" });
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch (_) {}
+    return { ok: res.ok, status: res.status, text, json, url };
+  }
+
+  async function get(path) {
+    const url = getBaseUrl() + path;
+    const res = await fetch(url);
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch (_) {}
+    return { ok: res.ok, status: res.status, text, json, url };
+  }
+
+  async function runAction(action) {
+    lastAction = action;
+    setStatus(`Sending ${action}...`);
+    try {
+      const r = await post(`/actions/${action}`);
+      if (!r.ok) {
+        setStatus(`Failed: ${action} (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+        return;
+      }
+      setStatus(`${action} started ✅`, true, `URL: ${r.url}\n${JSON.stringify(r.json ?? r.text, null, 2)}`);
+    } catch (e) {
+      setStatus(`Network error while running ${action}`, false, String(e));
+    }
+  }
+
+  async function stopAction(action) {
+    setStatus(`Stopping ${action}...`);
+    try {
+      const r = await post(`/actions/${action}/stop`);
+      if (!r.ok) {
+        setStatus(`Failed to stop (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+        return;
+      }
+      setStatus(`Stopped ${action} ✅`, true, `URL: ${r.url}\n${JSON.stringify(r.json ?? r.text, null, 2)}`);
+    } catch (e) {
+      setStatus(`Network error while stopping`, false, String(e));
+    }
+  }
+
+  async function checkHealth() {
+    setStatus("Checking /health...");
+    try {
+      const r = await get(`/health`);
+      if (!r.ok) {
+        setStatus(`Health check failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+        return;
+      }
+      setStatus(`Health OK ✅`, true, `URL: ${r.url}\n${JSON.stringify(r.json ?? r.text, null, 2)}`);
+    } catch (e) {
+      setStatus("Network error during health check", false, String(e));
+    }
+  }
+</script>
+</body>
+</html>
