@@ -1,0 +1,315 @@
+<!-- go2_joystick.html -->
+ 
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go2 Teleop</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 14px; }
+    .card { max-width: 760px; margin: 0 auto; border: 1px solid #ddd; border-radius: 16px; padding: 14px; }
+    h1 { margin: 0 0 10px; font-size: 20px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    input { padding: 10px; border-radius: 12px; border: 1px solid #ccc; flex: 1; min-width: 220px; font-size: 16px; }
+    button {
+      padding: 12px 12px; border-radius: 12px; border: 1px solid #ccc; background: #f7f7f7;
+      font-size: 16px; cursor: pointer; min-width: 120px;
+    }
+    .danger { background: #fff1f1; border-color: #ffb3b3; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+    .joyBox { border: 1px solid #eee; border-radius: 16px; padding: 10px; background: #fafafa; }
+    .joyTitle { font-size: 14px; color: #333; margin: 0 0 8px; }
+    canvas { width: 100%; height: 280px; border-radius: 14px; background: #fff; border: 1px solid #eee; touch-action: none; }
+    .status { margin-top: 10px; padding: 10px; border-radius: 12px; background: #fafafa; border: 1px solid #eee; }
+    .small { font-size: 13px; color: #555; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <h1>Unitree Go2 – Phone Teleop</h1>
+
+    <div class="row">
+      <input id="baseUrl" value="http://192.168.123.18:8000" />
+      <button onclick="checkHealth()">Health</button>
+      <button onclick="postAction('stand')">Stand</button>
+      <button onclick="postAction('sit')">Sit</button>
+      <button class="danger" onclick="emergencyStop()">STOP</button>
+    </div>
+
+    <div class="grid">
+      <div class="joyBox">
+        <div class="joyTitle">Left joystick: X=fwd/back, Y=strafe</div>
+        <canvas id="joyLeft"></canvas>
+      </div>
+      <div class="joyBox">
+        <div class="joyTitle">Right joystick: X=turn (yaw). Y unused.</div>
+        <canvas id="joyRight"></canvas>
+      </div>
+    </div>
+
+    <div class="status">
+      <div id="msg" class="small">Ready.</div>
+      <div id="detail" class="mono"></div>
+    </div>
+
+    <div class="small" style="margin-top:10px;">
+      Tip: keep a finger on the joysticks; releasing them sends a zero command.
+    </div>
+  </div>
+
+<script>
+  // ----------------------------
+  // Networking helpers
+  // ----------------------------
+  function baseUrl() {
+    return document.getElementById("baseUrl").value.trim().replace(/\/+$/, "");
+  }
+
+  function setStatus(text, ok=true, detail="") {
+    const msg = document.getElementById("msg");
+    const detailEl = document.getElementById("detail");
+    msg.textContent = text;
+    msg.style.color = ok ? "#0a7a0a" : "#b00020";
+    detailEl.textContent = detail || "";
+  }
+
+  async function httpGet(path) {
+    const url = baseUrl() + path;
+    const r = await fetch(url);
+    const t = await r.text();
+    return { ok: r.ok, status: r.status, text: t, url };
+  }
+
+  async function httpPost(path, json=null) {
+    const url = baseUrl() + path;
+    const r = await fetch(url, {
+      method: "POST",
+      headers: json ? { "Content-Type": "application/json" } : {},
+      body: json ? JSON.stringify(json) : null
+    });
+    const t = await r.text();
+    return { ok: r.ok, status: r.status, text: t, url };
+  }
+
+  async function checkHealth() {
+    setStatus("Checking /health...");
+    try {
+      const r = await httpGet("/health");
+      setStatus(r.ok ? "Health OK ✅" : `Health failed (HTTP ${r.status})`, r.ok, `URL: ${r.url}\n${r.text}`);
+    } catch (e) {
+      setStatus("Health network error", false, String(e));
+    }
+  }
+
+  async function postAction(action) {
+    setStatus(`Sending ${action}...`);
+    try {
+      const r = await httpPost(`/actions/${action}`);
+      setStatus(r.ok ? `${action} started ✅` : `${action} failed (HTTP ${r.status})`, r.ok, `URL: ${r.url}\n${r.text}`);
+    } catch (e) {
+      setStatus(`${action} network error`, false, String(e));
+    }
+  }
+
+  async function emergencyStop() {
+    // Sends a zero-velocity command + tries to stop both actions (if you ever run long-lived actions)
+    await sendTeleop(0, 0, 0);
+    await httpPost(`/actions/sit/stop`).catch(()=>{});
+    await httpPost(`/actions/stand/stop`).catch(()=>{});
+    setStatus("STOP sent ✅", true);
+  }
+
+  // ----------------------------
+  // Teleop send loop (rate-limited)
+  // ----------------------------
+  let latest = { lx: 0, ly: 0, rx: 0, ry: 0 };
+  let sending = false;
+  let lastSendMs = 0;
+
+  // Tuning (safe defaults)
+  const MAX_LIN = 0.6;   // m/s
+  const MAX_ANG = 1.2;   // rad/s
+  const SEND_HZ = 10;    // send rate
+  const SEND_PERIOD_MS = Math.floor(1000 / SEND_HZ);
+
+  function mapToCmd(lx, ly, rx) {
+    // Left stick: forward/back (Y on screen) usually feels inverted; we’ll make up=forward.
+    // Our joystick code returns y positive down, so invert for forward.
+    const linear_x = (-ly) * MAX_LIN;
+    const linear_y = (lx) * MAX_LIN;     // strafe
+    const angular_z = (rx) * MAX_ANG;    // turn
+    return { linear_x, linear_y, angular_z };
+  }
+
+  async function sendTeleop(lx, ly, rx) {
+    const cmd = mapToCmd(lx, ly, rx);
+    try {
+      const r = await httpPost("/teleop", cmd);
+      if (!r.ok) {
+        setStatus(`Teleop failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+      } else {
+        setStatus(`Teleop: vx=${cmd.linear_x.toFixed(2)} vy=${cmd.linear_y.toFixed(2)} wz=${cmd.angular_z.toFixed(2)}`, true);
+      }
+    } catch (e) {
+      setStatus("Teleop network error", false, String(e));
+    }
+  }
+
+  function scheduleSend() {
+    if (sending) return;
+    sending = true;
+
+    const tick = async () => {
+      const now = Date.now();
+      if (now - lastSendMs >= SEND_PERIOD_MS) {
+        lastSendMs = now;
+        await sendTeleop(latest.lx, latest.ly, latest.rx);
+      }
+      // Keep sending while any stick is active (non-zero)
+      if (Math.abs(latest.lx) > 0.01 || Math.abs(latest.ly) > 0.01 || Math.abs(latest.rx) > 0.01) {
+        requestAnimationFrame(tick);
+      } else {
+        sending = false;
+      }
+    };
+
+    requestAnimationFrame(tick);
+  }
+
+  // ----------------------------
+  // Joystick implementation (canvas)
+  // Returns normalized values in [-1..1] for x and y relative to center.
+  // ----------------------------
+  function makeJoystick(canvasId, onMove) {
+    const canvas = document.getElementById(canvasId);
+    const ctx = canvas.getContext("2d");
+
+    function resize() {
+      // match drawing buffer to displayed size
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.floor(rect.width * devicePixelRatio);
+      canvas.height = Math.floor(rect.height * devicePixelRatio);
+      draw(0, 0, false);
+    }
+
+    let active = false;
+    let cx = 0, cy = 0;
+    let knobX = 0, knobY = 0;
+
+    function draw(nx, ny, isActive) {
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      // center + radius
+      const centerX = w / 2;
+      const centerY = h / 2;
+      const radius = Math.min(w, h) * 0.35;
+      const knobR = Math.min(w, h) * 0.08;
+
+      // base circle
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = "#ddd";
+      ctx.lineWidth = 4 * devicePixelRatio;
+      ctx.stroke();
+
+      // crosshair
+      ctx.beginPath();
+      ctx.moveTo(centerX - radius, centerY);
+      ctx.lineTo(centerX + radius, centerY);
+      ctx.moveTo(centerX, centerY - radius);
+      ctx.lineTo(centerX, centerY + radius);
+      ctx.strokeStyle = "#eee";
+      ctx.lineWidth = 2 * devicePixelRatio;
+      ctx.stroke();
+
+      // knob position
+      const kx = centerX + nx * radius;
+      const ky = centerY + ny * radius;
+
+      ctx.beginPath();
+      ctx.arc(kx, ky, knobR, 0, Math.PI * 2);
+      ctx.fillStyle = isActive ? "#e9f2ff" : "#f5f5f5";
+      ctx.strokeStyle = "#bbb";
+      ctx.lineWidth = 3 * devicePixelRatio;
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    function pointerToNorm(e) {
+      const rect = canvas.getBoundingClientRect();
+      const x = (e.clientX - rect.left) / rect.width;  // 0..1
+      const y = (e.clientY - rect.top) / rect.height;  // 0..1
+
+      // Convert to -1..1 around center
+      let nx = (x - 0.5) * 2;
+      let ny = (y - 0.5) * 2;
+
+      // Clamp to unit circle
+      const mag = Math.hypot(nx, ny);
+      if (mag > 1) { nx /= mag; ny /= mag; }
+
+      return { nx, ny };
+    }
+
+    canvas.addEventListener("pointerdown", (e) => {
+      canvas.setPointerCapture(e.pointerId);
+      active = true;
+      const { nx, ny } = pointerToNorm(e);
+      knobX = nx; knobY = ny;
+      draw(knobX, knobY, true);
+      onMove(knobX, knobY, true);
+    });
+
+    canvas.addEventListener("pointermove", (e) => {
+      if (!active) return;
+      const { nx, ny } = pointerToNorm(e);
+      knobX = nx; knobY = ny;
+      draw(knobX, knobY, true);
+      onMove(knobX, knobY, true);
+    });
+
+    function release(e) {
+      if (!active) return;
+      active = false;
+      knobX = 0; knobY = 0;
+      draw(0, 0, false);
+      onMove(0, 0, false);
+    }
+
+    canvas.addEventListener("pointerup", release);
+    canvas.addEventListener("pointercancel", release);
+    window.addEventListener("resize", resize);
+
+    resize();
+  }
+
+  // Create left + right joysticks and wire into teleop
+  makeJoystick("joyLeft", (x, y, active) => {
+    latest.lx = x;
+    latest.ly = y;
+    if (!active) {
+      latest.lx = 0; latest.ly = 0;
+      // send zero once when released
+      scheduleSend();
+    } else {
+      scheduleSend();
+    }
+  });
+
+  makeJoystick("joyRight", (x, y, active) => {
+    latest.rx = x;
+    latest.ry = y;
+    if (!active) {
+      latest.rx = 0; latest.ry = 0;
+      scheduleSend();
+    } else {
+      scheduleSend();
+    }
+  });
+</script>
+</body>
+</html>

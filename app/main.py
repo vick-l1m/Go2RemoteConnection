@@ -1,3 +1,5 @@
+# main.py
+
 import asyncio
 import logging
 import signal
@@ -5,7 +7,8 @@ from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from ros_bridge import start_ros_bridge, get_bridge
 
 # -----------------------------------------------------------------------------
 # Logging setup
@@ -238,17 +241,45 @@ async def start_action(action: str) -> ActionStartResponse:
     )
 
 
-@app.post("/actions/{action}/stop")
-async def stop_action(action: str) -> Dict[str, str]:
-    """
-    Stop a running action (if any).
-    Example:
-      POST /actions/sit/stop
-    """
-    try:
-        await command_manager.stop(action)
-    except Exception as exc:
-        logger.exception("Failed to stop action '%s'", action)
-        raise HTTPException(status_code=500, detail=str(exc))
+@app.post("/actions/{action}")
+async def start_action(action: str):
+    # map to your supported actions
+    allowed = {"sit", "stand", "stop", "standdown", "recover"}
+    if action not in allowed:
+        raise HTTPException(status_code=404, detail="Action not allowed")
+    get_bridge().publish_action(action)
+    return {"ok": True, "action": action}
 
-    return {"action": action, "status": "stopped"}
+# -----------------------------------------------------------------------------
+# Teleop endpoint
+# -----------------------------------------------------------------------------
+class TeleopCommand(BaseModel):
+    # Forward/back (m/s)
+    linear_x: float = Field(0.0)
+    # Left/right strafe (m/s)
+    linear_y: float = Field(0.0)
+    # Turn rate (rad/s)
+    angular_z: float = Field(0.0)
+
+# Safety limits (match your front-end)
+MAX_LIN = 0.6
+MAX_ANG = 1.2
+
+CMD_VEL_TOPIC = "/cmd_vel"  # <-- change if your robot expects a different topic
+
+def clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
+
+@app.post("/teleop")
+async def teleop(cmd: TeleopCommand):
+    lx = clamp(cmd.linear_x, -MAX_LIN, MAX_LIN)
+    ly = clamp(cmd.linear_y, -MAX_LIN, MAX_LIN)
+    az = clamp(cmd.angular_z, -MAX_ANG, MAX_ANG)
+
+    # publish to ROS
+    get_bridge().publish_teleop(lx, ly, az)
+    return {"ok": True, "linear_x": lx, "linear_y": ly, "angular_z": az}
+
+@app.on_event("startup")
+async def on_startup():
+    start_ros_bridge()
