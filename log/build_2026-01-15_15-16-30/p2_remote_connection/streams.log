@@ -1,0 +1,56 @@
+[0.033s] Invoking command in '/home/unitree/p2_ws/P2RemoteConnection/build/p2_remote_connection': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/foxy /usr/bin/cmake --build /home/unitree/p2_ws/P2RemoteConnection/build/p2_remote_connection -- -j4 -l4
+[0.204s] [35m[1mScanning dependencies of target web_teleop_bridge[0m
+[0.281s] [ 33%] [32mBuilding CXX object CMakeFiles/web_teleop_bridge.dir/src/web_teleop_bridge.cpp.o[0m
+[19.081s] [ 66%] [32m[1mLinking CXX executable web_teleop_bridge[0m
+[20.148s] [100%] Built target web_teleop_bridge
+[20.179s] Invoked command in '/home/unitree/p2_ws/P2RemoteConnection/build/p2_remote_connection' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/foxy /usr/bin/cmake --build /home/unitree/p2_ws/P2RemoteConnection/build/p2_remote_connection -- -j4 -l4
+[20.214s] Invoking command in '/home/unitree/p2_ws/P2RemoteConnection/build/p2_remote_connection': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/foxy /usr/bin/cmake --install /home/unitree/p2_ws/P2RemoteConnection/build/p2_remote_connection
+[20.239s] -- Install configuration: ""
+[20.240s] -- Installing: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/lib/p2_remote_connection/web_teleop_bridge
+[20.249s] -- Set runtime path of "/home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/lib/p2_remote_connection/web_teleop_bridge" to ""
+[20.250s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include/
+[20.250s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection
+[20.250s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common
+[20.251s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/log
+[20.251s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/log/latest_build
+[20.251s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/log/build_2026-01-14_12-53-05
+[20.252s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/log/build_2026-01-14_12-53-05/events.log
+[20.252s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/log/build_2026-01-14_12-53-05/logger_all.log
+[20.252s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/log/latest
+[20.252s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/log/COLCON_IGNORE
+[20.253s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/motor_crc.h
+[20.253s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/build
+[20.253s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/build/.built_by
+[20.253s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/build/COLCON_IGNORE
+[20.253s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/ros2_sport_client.h
+[20.254s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/install
+[20.254s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/install/local_setup.zsh
+[20.255s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/install/local_setup.sh
+[20.255s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/install/local_setup.ps1
+[20.255s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/install/setup.bash
+[20.255s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/install/setup.ps1
+[20.255s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/install/local_setup.bash
+[20.255s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/install/.colcon_install_layout
+[20.256s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/install/setup.sh
+[20.256s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/install/setup.zsh
+[20.256s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/install/COLCON_IGNORE
+[20.256s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/install/_local_setup_util_sh.py
+[20.256s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/install/_local_setup_util_ps1.py
+[20.256s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/common/patch.hpp
+[20.257s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/include//p2_remote_connection/command_transfer.h
+[20.257s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/share/ament_index/resource_index/package_run_dependencies/p2_remote_connection
+[20.257s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/share/ament_index/resource_index/parent_prefix_path/p2_remote_connection
+[20.257s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/share/p2_remote_connection/environment/ament_prefix_path.sh
+[20.257s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/share/p2_remote_connection/environment/ament_prefix_path.dsv
+[20.257s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/share/p2_remote_connection/environment/path.sh
+[20.258s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/share/p2_remote_connection/environment/path.dsv
+[20.258s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/share/p2_remote_connection/local_setup.bash
+[20.258s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/share/p2_remote_connection/local_setup.sh
+[20.259s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/share/p2_remote_connection/local_setup.zsh
+[20.259s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/share/p2_remote_connection/local_setup.dsv
+[20.262s] -- Installing: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/share/p2_remote_connection/package.dsv
+[20.262s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/share/ament_index/resource_index/packages/p2_remote_connection
+[20.263s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/share/p2_remote_connection/cmake/p2_remote_connectionConfig.cmake
+[20.264s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/share/p2_remote_connection/cmake/p2_remote_connectionConfig-version.cmake
+[20.264s] -- Up-to-date: /home/unitree/p2_ws/P2RemoteConnection/install/p2_remote_connection/share/p2_remote_connection/package.xml
+[20.265s] Invoked command in '/home/unitree/p2_ws/P2RemoteConnection/build/p2_remote_connection' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/foxy /usr/bin/cmake --install /home/unitree/p2_ws/P2RemoteConnection/build/p2_remote_connection

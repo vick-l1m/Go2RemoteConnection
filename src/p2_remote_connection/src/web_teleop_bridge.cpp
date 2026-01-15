@@ -48,13 +48,13 @@ private:
     if (a == "stand") {
       sportClient_.StandUp(req_);
     } else if (a == "sit") {
-      sportClient_.Sit(req_);
+      sportClient_.StandDown(req_);
     } else if (a == "stop") {
       sportClient_.StopMove(req_);
-    } else if (a == "standdown") {
-      sportClient_.StandDown(req_);
-    } else if (a == "recover") {
-      sportClient_.RecoveryStand(req_);
+    // } else if (a == "standdown") {
+    //   sportClient_.StandDown(req_);
+    // } else if (a == "recover") {
+    //   sportClient_.RecoveryStand(req_);
     } else {
       RCLCPP_WARN(this->get_logger(), "Unknown action: '%s'", a.c_str());
     }

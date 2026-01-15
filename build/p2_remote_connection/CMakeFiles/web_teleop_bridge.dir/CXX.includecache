@@ -28,10 +28,6 @@ unitree_api/msg/request.hpp
 unitree_api/msg/response.hpp
 /home/unitree/p2_ws/P2RemoteConnection/src/p2_remote_connection/include/p2_remote_connection/common/unitree_api/msg/response.hpp
 
-/home/unitree/p2_ws/P2RemoteConnection/src/p2_remote_connection/src/common/ros2_sport_client.cpp
-p2_remote_connection/common/ros2_sport_client.h
-/home/unitree/p2_ws/P2RemoteConnection/src/p2_remote_connection/src/common/p2_remote_connection/common/ros2_sport_client.h
-
 /home/unitree/p2_ws/P2RemoteConnection/src/p2_remote_connection/src/web_teleop_bridge.cpp
 chrono
 -
