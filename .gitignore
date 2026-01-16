@@ -1,0 +1,10 @@
+# ROS 2 Build Artifacts
+build/
+install/
+log/
+_colcon_build/
+
+# Specific packages within build/ or install/
+*/build/
+*/install/
+*/log/

@@ -1,4 +1,0 @@
-source;share/p2_remote_connection/local_setup.bash
-source;share/p2_remote_connection/local_setup.dsv
-source;share/p2_remote_connection/local_setup.sh
-source;share/p2_remote_connection/local_setup.zsh
