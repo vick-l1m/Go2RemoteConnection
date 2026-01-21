@@ -76,7 +76,7 @@ export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
 # 1) Start FastAPI backend
 echo "[run_all] Starting FastAPI (uvicorn) on :$API_PORT ..."
-cd "$PKG_DIR"
+cd "$WS_DIR/src/p2_remote_connection"
 python3 -m uvicorn app.main:app --host "$API_HOST" --port "$API_PORT" &
 pids+=("$!")
 

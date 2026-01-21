@@ -36,8 +36,17 @@ echo "[run_all] Workspace: $WS_DIR"
 # --- Source ROS + Unitree stack safely ---
 set +u
 
-# 1) ROS 2 Foxy
-source /opt/ros/foxy/setup.bash
+# 1) Source ROS 2 environment (Foxy preferred, fallback to Humble)
+if [ -f /opt/ros/foxy/setup.bash ]; then
+  echo "[env] Sourcing ROS 2 Foxy"
+  source /opt/ros/foxy/setup.bash
+elif [ -f /opt/ros/humble/setup.bash ]; then
+  echo "[env] Sourcing ROS 2 Humble"
+  source /opt/ros/humble/setup.bash
+else
+  echo "[env] ❌ No ROS 2 setup.bash found in /opt/ros"
+  exit 1
+fi
 
 # 2) Unitree environment (IMPORTANT on Go2)
 # Use whichever exists on your system:

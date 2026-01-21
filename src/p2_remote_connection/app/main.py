@@ -4,6 +4,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from app.ros_bridge import start_ros_bridge, get_bridge
+from .terminal import terminal_ws
+from fastapi import WebSocket
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -56,3 +58,8 @@ async def teleop(cmd: TeleopCommand):
 
     get_bridge().publish_teleop(lx, ly, az)
     return {"ok": True, "linear_x": lx, "linear_y": ly, "angular_z": az}
+
+# Terminal websocket
+@app.websocket("/ws/terminal")
+async def ws_terminal(websocket: WebSocket):
+    await terminal_ws(websocket)

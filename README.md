@@ -142,6 +142,17 @@ journalctl -u p2-remote-connection.service -f
 sudo systemctl restart p2-remote-connection.service
 ```
 
+4. To make changes to the startup:
+```bash
+# Edit the file with access
+sudo vim /etc/systemd/system/p2-remote-connection.service   
+# Reload after edit
+sudo systemctl daemon-reload                                
+sudo systemctl restart p2-remote-connection.service
+# Check that it is still active
+systemctl status p2-remote-connection.service --no-pager    
+```
+
 ### Adding a new command:
 
 **1) Ensure the command works manually in a Go2 terminal**

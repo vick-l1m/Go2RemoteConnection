@@ -25,7 +25,16 @@
     .small { font-size: 13px; color: #555; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
     .hint { margin-top: 6px; }
+    
+    .termPanel { margin-top: 12px; border: 1px solid #eee; border-radius: 16px; background: #0f0f0f; overflow: hidden; }
+    .termHeader { display:flex; justify-content: space-between; align-items:center; padding: 10px 12px; background:#171717; border-bottom:1px solid #2a2a2a; }
+    .termTitle { color:#fff; font-size:14px; font-weight:600; }
+    .termHint { color:#bbb; }
+    .termBox { width: 100%; height: 320px; }
+
   </style>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
 </head>
 
 <body>
@@ -38,6 +47,7 @@
       <button onclick="postAction('stand')">Stand</button>
       <button onclick="postAction('sit')">Sit</button>
       <button class="danger" onclick="emergencyStop()">STOP</button>
+      <button onclick="toggleTerminal()">Terminal</button>
     </div>
 
     <div class="small hint">
@@ -56,6 +66,14 @@
       </div>
     </div>
 
+    <div id="terminalPanel" class="termPanel" style="display:none;">
+      <div class="termHeader">
+        <div class="termTitle">Remote Terminal</div>
+        <div class="termHint small">Tip: terminal connects to API (:8000)</div>
+      </div>
+      <div id="terminal" class="termBox"></div>
+    </div>
+    
     <div class="status">
       <div id="msg" class="small">Ready.</div>
       <div id="detail" class="mono"></div>
@@ -66,7 +84,101 @@
     </div>
   </div>
 
+  <script>
+    // ----------------------------
+    // Terminal (xterm.js) with toggle + resize
+    // ----------------------------
+    let term = null;
+    let ws = null;
+    let termOpen = false;
+    let resizeObserver = null;
+
+    function apiWsBase() {
+      // Use the API base input if provided, otherwise default to hostname:8000
+      const api = baseUrl(); // e.g. http://192.168.x.x:8000
+      const u = new URL(api);
+      const wsProto = u.protocol === "https:" ? "wss" : "ws";
+      return `${wsProto}://${u.host}`; // includes port
+    }
+
+
+    function ensureTerminalStarted() {
+      if (term) return;
+
+      term = new Terminal({
+        cursorBlink: true,
+        fontSize: 14,
+        convertEol: true,
+        theme: { background: "#0f0f0f" }
+      });
+
+      const container = document.getElementById("terminal");
+      term.open(container);
+
+      // Connect websocket to backend terminal endpoint
+      ws = new WebSocket(`${apiWsBase()}/ws/terminal`);
+
+      ws.onopen = () => {
+        term.write("\r\n[Connected to Go2 terminal]\r\n");
+        // send initial size
+        sendTermResize();
+      };
+
+      ws.onmessage = (e) => term.write(e.data);
+      ws.onclose = () => term.write("\r\n[Terminal disconnected]\r\n");
+      ws.onerror = () => term.write("\r\n[Terminal error]\r\n");
+
+      term.onData(data => {
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
+      });
+
+      // Observe container size and notify backend
+      resizeObserver = new ResizeObserver(() => {
+        // Debounce a little (resize fires a lot)
+        window.clearTimeout(window.__termResizeT);
+        window.__termResizeT = window.setTimeout(sendTermResize, 100);
+      });
+      resizeObserver.observe(container);
+    }
+
+    function toggleTerminal() {
+      const panel = document.getElementById("terminalPanel");
+      termOpen = !termOpen;
+      panel.style.display = termOpen ? "block" : "none";
+
+      if (termOpen) {
+        ensureTerminalStarted();
+        // xterm needs a moment after becoming visible
+        setTimeout(() => {
+          term.refresh(0, term.rows - 1);
+          sendTermResize();
+          term.focus();
+        }, 50);
+      }
+    }
+
+    function sendTermResize() {
+      if (!term || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+      // Compute cols/rows from pixel size and renderer measurements.
+      // xterm doesn't know exact cell size without an addon; use its internal render dimensions if present.
+      const container = document.getElementById("terminal");
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+
+      // Reasonable fallback cell sizes (in px)
+      const cellW = 9;
+      const cellH = 18;
+
+      const cols = Math.max(20, Math.floor(w / cellW));
+      const rows = Math.max(5, Math.floor(h / cellH));
+
+      const msg = JSON.stringify({ resize: { cols, rows } });
+      ws.send(msg);
+    }
+  </script>
 <script>
+
   // ----------------------------
   // Auto-config (IMPORTANT)
   // ----------------------------
@@ -160,10 +272,8 @@
   }
 
   async function emergencyStop() {
-    // Sends a zero-velocity command + tries to stop both actions
     await sendTeleop(0, 0, 0);
-    await httpPost(`/actions/sit/stop`).catch(()=>{});
-    await httpPost(`/actions/stand/stop`).catch(()=>{});
+    await httpPost(`/actions/stop`).catch(()=>{});
     setStatus("STOP sent ✅", true);
   }
 
