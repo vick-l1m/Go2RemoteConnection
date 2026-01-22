@@ -88,11 +88,11 @@ echo "[run_all] Starting http.server on :$UI_PORT ..."
 python3 -m http.server "$UI_PORT" &
 pids+=("$!")
 
-# 3) Wait for Go2 driver before starting bridge (prevents “no motion after boot”)
-echo "[run_all] Waiting for /go2_driver_node..."
+# 3) Wait for unitree sport topics before starting bridge (prevents “no motion after boot”)
+echo "[run_all] Waiting for Unitree sport topics..."
 for i in {1..30}; do
-  if ros2 node list 2>/dev/null | grep -q "^/go2_driver_node$"; then
-    echo "[run_all] go2_driver_node is up."
+  if ros2 topic list 2>/dev/null | grep -q "^/api/sport/request$"; then
+    echo "[run_all] sport API is up."
     break
   fi
   sleep 1

@@ -128,17 +128,12 @@ sudo systemctl start p2-remote-connection.service
 ```
 
 3. Monitoring the service:
-- Check service status
 ```bash
+# Check service status
 systemctl status p2-remote-connection.service
-```
-- View logs live
-```bash
+# View logs live
 journalctl -u p2-remote-connection.service -f
-```
-
-- Restart the system
-```bash
+# Restart the system
 sudo systemctl restart p2-remote-connection.service
 ```
 
@@ -151,6 +146,17 @@ sudo systemctl daemon-reload
 sudo systemctl restart p2-remote-connection.service
 # Check that it is still active
 systemctl status p2-remote-connection.service --no-pager    
+```
+5. To turn off the startup and test manually:
+```bash
+# Stop the service
+sudo systemctl stop p2-remote-connection.service
+# Confirm the ports are free
+sudo ss -ltnp | egrep ':8000|:8081'
+# They should show nothing
+
+# To restart
+sudo systemctl start p2-remote-connection.service
 ```
 
 ### Adding a new command:

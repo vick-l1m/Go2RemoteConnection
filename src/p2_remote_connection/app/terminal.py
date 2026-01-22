@@ -15,9 +15,29 @@ class TerminalSession:
             os.execvp("bash", [
                 "bash",
                 "-lc",
-                "source /opt/ros/humble/setup.bash && "
-                "source ~/p2_ws/P2RemoteConnection/src/p2_remote_connection/install/setup.bash && "
-                "exec bash"
+                r"""
+            if [ -f /opt/ros/foxy/setup.bash ]; then
+              source /opt/ros/foxy/setup.bash
+            elif [ -f /opt/ros/humble/setup.bash ]; then
+              source /opt/ros/humble/setup.bash
+            else
+              echo "❌ No ROS 2 setup.bash found in /opt/ros"
+            fi
+            
+            # Source Unitree + your overlay (use the correct paths!)
+            if [ -f ~/unitree_ros2/install/setup.sh ]; then
+              source ~/unitree_ros2/install/setup.sh
+            elif [ -f ~/unitree_ros2/install/setup.bash ]; then
+              source ~/unitree_ros2/install/setup.bash
+            fi
+            
+            # IMPORTANT: this path in your snippet is wrong — don't use src/.../install/...
+            if [ -f ~/p2_ws/P2RemoteConnection/install/setup.bash ]; then
+              source ~/p2_ws/P2RemoteConnection/install/setup.bash
+            fi
+            
+            exec bash
+            """
             ])
 
     def resize(self, rows: int, cols: int):
