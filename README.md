@@ -10,9 +10,9 @@ and exposes **HTTP endpoints** that trigger a **whitelisted set of shell command
 It’s designed for quick experiments: phone → HTTP → Go2 command.
 
 
-### Build the workspace
+## Build the workspace
 
-**1. Clone this workspace**
+### 1. Clone this workspace
 ```bash
   git clone https://github.com/vick-l1m/P2RemoteConnection.git
 ```
@@ -28,7 +28,7 @@ colcon build
 source install/setup.bash
 ```
 
-### Launch the backend, webpage and ros2 node
+### 2. Launch the backend, webpage and ros2 node
 Make the command runnable and launch:
 ```bash
 cd ~/P2RemoteConnection
@@ -107,9 +107,9 @@ You can explore and test everything using FastAPI’s built-in UI:
 
 - `http://<go2-ip>:8000/docs`
 
-### Making the script run on startup
+## Making the script run on startup
 
-1. Create a systemd service (autostart on boot)
+### 1. Create a systemd service (autostart on boot)
 - A systemd service was created so the system:
 - Starts automatically on robot boot
 - Restarts if it crashes
@@ -120,14 +120,14 @@ You can explore and test everything using FastAPI’s built-in UI:
 ```swift
 /etc/systemd/system/p2-remote-connection.service
 ```
-2. Enable and start the service:
+### 2. Enable and start the service:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable p2-remote-connection.service
 sudo systemctl start p2-remote-connection.service
 ```
 
-3. Monitoring the service:
+### 3. Monitoring the service:
 ```bash
 # Check service status
 systemctl status p2-remote-connection.service
@@ -137,7 +137,7 @@ journalctl -u p2-remote-connection.service -f
 sudo systemctl restart p2-remote-connection.service
 ```
 
-4. To make changes to the startup:
+### 4. To make changes to the startup:
 ```bash
 # Edit the file with access
 sudo vim /etc/systemd/system/p2-remote-connection.service   
@@ -147,7 +147,8 @@ sudo systemctl restart p2-remote-connection.service
 # Check that it is still active
 systemctl status p2-remote-connection.service --no-pager    
 ```
-5. To turn off the startup and test manually:
+
+### 5. To turn off the startup and test manually:
 ```bash
 # Stop the service
 sudo systemctl stop p2-remote-connection.service
@@ -159,61 +160,43 @@ sudo ss -ltnp | egrep ':8000|:8081'
 sudo systemctl start p2-remote-connection.service
 ```
 
-### Adding a new command:
+## Authentication Overview
 
-**1) Ensure the command works manually in a Go2 terminal**
-Example:
+### 1. Unique Token
 
-  /home/unitree/unitree_ros2/example/install/unitree_ros2_example/bin/go2_sport_client 5
+Each Go2 has a **unique secret string** (“token” / “password”) that must be provided by the user before the website will send robot commands.
 
-**2) Add it to COMMANDS**
-Open app/main.py and add a new entry:
+The browser sends this token with each API request using an HTTP header:
+
+- `Authorization: Bearer <token>`
+
+The backend checks whether the supplied token matches the Go2’s expected token.
+The to
+
+---
+
+#### 1.1 Setup on the Go2
+
+On the Go2, create a file in the robot user’s home directory:
+
 ```bash
-COMMANDS: Dict[str, str] = {
-    "sit":   f"{GO2_SPORT_CLIENT} 3",
-    "stand": f"{GO2_SPORT_CLIENT} 4",
+vim ~/.go2_token
+``` 
+Put the token inside the file - one line with no spaces
 
-    # New action example:
-    "my_new_action": f"{GO2_SPORT_CLIENT} 5",
-}
-```
-**Tips**
-- Keep commands absolute paths where possible.
-- Keep them static (don’t take arbitrary user input) to avoid unsafe shell execution.
-
-**3) Restart the server**
-Stop the running uvicorn (Ctrl+C) and run again:
+Secure the token file ensureing that it is read-only:
 ```bash
-  uvicorn app.main:app --host 0.0.0.0 --port 8000
+chmod 600 ~/.go2_token
 ```
+### 2. How the token is used
 
-**4) Call the new action**
+### Uvicorn Backend
+All endpoints depend on the ```require_token``` dependancy, meaning that you cannot run any actions without entering the correct token.
 
-  curl -X POST http://<go2-ip>:8000/actions/my_new_action
+#### Fontend (WebUI) login
+When the user opens the web UI, the UI is locked and a login overlay is shown.
 
-**Adding to the source**
-This project runs these scripts before every action (see COMMON_PRE_COMMANDS):
-```bash
-COMMON_PRE_COMMANDS = [
-    f"source {ROS_SETUP_BASH}",
-    f"source {CYCLONEDDS_WS_SETUP}",
-    f"source {UNITREE_MAIN_SETUP}",
-    f"source {EXAMPLE_SETUP}",
-]
-```
-If you add a command that needs extra setup, either:
-add another source ... line here, or
-make your command a script that handles its own setup.
+Once the correct token is entered, the UI is accessable. 
+The frontend stores the last successful token + URL in ```localStorage```, so that the same device does not have to continuously log-in.
 
-### Example calls
-```bash
-# Health check
-curl http://localhost:8000/health
-# Stand / Sit
-curl -X POST http://<go2-ip>:8000/actions/stand
-curl -X POST http://<go2-ip>:8000/actions/sit
-
-# Stop (if needed)
-curl -X POST http://<go2-ip>:8000/actions/stand/stop
-curl -X POST http://<go2-ip>:8000/actions/sit/stop
-```
+The logout button clears this storage.

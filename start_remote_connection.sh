@@ -77,16 +77,36 @@ export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 # If you have a CycloneDDS config file, set it explicitly (optional)
 # export CYCLONEDDS_URI="file://$HOME/unitree_ros2/cyclonedds.xml"
 
+# ----------------------------
+# Load Go2 API token
+# ----------------------------
+if [ -f "$HOME/.go2_token" ]; then
+  export GO2_API_TOKEN="$(cat "$HOME/.go2_token")"
+else
+  echo "[run_all] ❌ ERROR: ~/.go2_token not found"
+  exit 1
+fi
+
+echo "[run_all] GO2_API_TOKEN loaded"
+
+
 # 1) Start FastAPI backend
 echo "[run_all] Starting FastAPI (uvicorn) on :$API_PORT ..."
 cd "$PKG_DIR"
 python3 -m uvicorn app.main:app --host "$API_HOST" --port "$API_PORT" &
 pids+=("$!")
+API_PID=$!
+sleep 0.5
+if ! kill -0 "$API_PID" 2>/dev/null; then
+  echo "[run_all] ❌ FastAPI failed to start (check logs above)."
+  exit 1
+fi
 
 # 2) Start static file server for frontend
 echo "[run_all] Starting http.server on :$UI_PORT ..."
 python3 -m http.server "$UI_PORT" &
 pids+=("$!")
+
 
 # 3) Wait for unitree sport topics before starting bridge (prevents “no motion after boot”)
 echo "[run_all] Waiting for Unitree sport topics..."

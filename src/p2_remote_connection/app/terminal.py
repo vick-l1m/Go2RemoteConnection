@@ -5,49 +5,57 @@ import json
 import fcntl
 import struct
 import termios
+import hmac
 from fastapi import WebSocket, WebSocketDisconnect
+
+GO2_API_TOKEN = os.getenv("GO2_API_TOKEN", "")
 
 class TerminalSession:
     def __init__(self):
         self.pid, self.fd = pty.fork()
 
         if self.pid == 0:
+            # Child process
+            os.environ["TERM"] = "xterm-256color"
+            os.environ["COLORTERM"] = "truecolor"
+            os.environ["LANG"] = os.environ.get("LANG", "C.UTF-8")
+            os.environ["LC_ALL"] = os.environ.get("LC_ALL", "C.UTF-8")
+
             os.execvp("bash", [
                 "bash",
                 "-lc",
                 r"""
-            if [ -f /opt/ros/foxy/setup.bash ]; then
-              source /opt/ros/foxy/setup.bash
-            elif [ -f /opt/ros/humble/setup.bash ]; then
-              source /opt/ros/humble/setup.bash
-            else
-              echo "❌ No ROS 2 setup.bash found in /opt/ros"
-            fi
-            
-            # Source Unitree + your overlay (use the correct paths!)
-            if [ -f ~/unitree_ros2/install/setup.sh ]; then
-              source ~/unitree_ros2/install/setup.sh
-            elif [ -f ~/unitree_ros2/install/setup.bash ]; then
-              source ~/unitree_ros2/install/setup.bash
-            fi
-            
-            # IMPORTANT: this path in your snippet is wrong — don't use src/.../install/...
-            if [ -f ~/p2_ws/P2RemoteConnection/install/setup.bash ]; then
-              source ~/p2_ws/P2RemoteConnection/install/setup.bash
-            fi
-            
-            exec bash
-            """
+                # Source ROS / overlays
+                if [ -f /opt/ros/foxy/setup.bash ]; then
+                  source /opt/ros/foxy/setup.bash
+                elif [ -f /opt/ros/humble/setup.bash ]; then
+                  source /opt/ros/humble/setup.bash
+                fi
+
+                if [ -f ~/unitree_ros2/install/setup.sh ]; then
+                  source ~/unitree_ros2/install/setup.sh
+                elif [ -f ~/unitree_ros2/install/setup.bash ]; then
+                  source ~/unitree_ros2/install/setup.bash
+                fi
+
+                if [ -f ~/p2_ws/P2RemoteConnection/install/setup.bash ]; then
+                  source ~/p2_ws/P2RemoteConnection/install/setup.bash
+                fi
+
+                # Nice-to-have: force color for ls if not already configured
+                alias ls='ls --color=auto' 2>/dev/null || true
+
+                exec bash -i
+                """
             ])
 
     def resize(self, rows: int, cols: int):
-        # winsize: rows, cols, xpix, ypix
         winsz = struct.pack("HHHH", rows, cols, 0, 0)
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, winsz)
 
     async def read_loop(self, websocket: WebSocket):
+        loop = asyncio.get_event_loop()
         try:
-            loop = asyncio.get_event_loop()
             while True:
                 data = await loop.run_in_executor(None, os.read, self.fd, 4096)
                 if not data:
@@ -60,30 +68,47 @@ class TerminalSession:
         os.write(self.fd, data.encode())
 
 async def terminal_ws(websocket: WebSocket):
+    # Authenticate BEFORE accept
+    token = websocket.query_params.get("token", "")
+
+    if not GO2_API_TOKEN:
+        await websocket.close(code=1011)
+        return
+
+    # constant-time compare
+    if not hmac.compare_digest(token, GO2_API_TOKEN):
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
+
     term = TerminalSession()
+
+    # Set a sane default size immediately (helps clear + prompt wrapping)
+    term.resize(rows=30, cols=120)
+
     reader = asyncio.create_task(term.read_loop(websocket))
 
     try:
         while True:
             msg = await websocket.receive_text()
 
-            # Try parse as JSON control message (resize)
-            if msg and msg[0] == "{":
+            # Handle resize JSON control message
+            if msg and msg[:1] == "{":
                 try:
                     obj = json.loads(msg)
                     if "resize" in obj:
-                        cols = int(obj["resize"].get("cols", 80))
-                        rows = int(obj["resize"].get("rows", 24))
+                        cols = int(obj["resize"].get("cols", 120))
+                        rows = int(obj["resize"].get("rows", 30))
                         cols = max(20, min(cols, 400))
                         rows = max(5, min(rows, 200))
                         term.resize(rows=rows, cols=cols)
                         continue
                 except Exception:
-                    # Not valid JSON; treat as normal input
                     pass
 
             await term.write(msg)
+
     except WebSocketDisconnect:
         reader.cancel()
     finally:
