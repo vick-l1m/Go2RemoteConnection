@@ -56,7 +56,7 @@
       <div style="display:flex; flex-direction:column; gap:10px;">
         <input id="loginBaseUrl" placeholder="http://robot-ip:8000 or https://robot.domain"
                style="padding:10px; border-radius:12px; border:1px solid #ccc; font-size:16px;"
-               value="http://54.66.38.113" />
+               value="https://p2dingo-control-backend.p2agentx.com" />
         <input id="loginToken" placeholder="Password" type="password"
                style="padding:10px; border-radius:12px; border:1px solid #ccc; font-size:16px;" />
         <button onclick="login()" style="padding:12px; border-radius:12px; border:1px solid #ccc; background:#f7f7f7; font-size:16px;">
@@ -125,8 +125,8 @@
   // Auto-config (IMPORTANT)
   // ----------------------------
   window.addEventListener("DOMContentLoaded", () => {
-    // Use EC2 backend URL
-    const defaultApi = "http://54.66.38.113";
+    // Use HTTPS domain backend URL
+    const defaultApi = "https://p2dingo-control-backend.p2agentx.com";
 
     const base = document.getElementById("baseUrl");
     if (!base.value || base.value.trim() === "" || base.value.includes("192.168.123.18") || base.value.includes("localhost")) {
@@ -255,8 +255,8 @@
   }
 
   window.addEventListener("DOMContentLoaded", async () => {
-    // Use EC2 backend URL
-    const defaultApi = "http://54.66.38.113";
+    // Use HTTPS domain backend URL
+    const defaultApi = "https://p2dingo-control-backend.p2agentx.com";
 
     const base = document.getElementById("baseUrl");
     if (!base.value || base.value.trim() === "" || base.value.includes("localhost")) base.value = defaultApi;
