@@ -28,7 +28,21 @@ colcon build
 source install/setup.bash
 ```
 
-### 2. Launch the backend, webpage and ros2 node
+### 2. Setup the unique token:
+On the Go2, create a file in the robot user’s home directory:
+
+```bash
+vim ~/.go2_token
+``` 
+Put the token inside the file - one line with no spaces
+
+Secure the token file ensureing that it is read-only:
+```bash
+chmod 600 ~/.go2_token
+```
+This token will be used to ensure security and that each Go2 has a unique id.
+
+### 3. Launch the backend and ros2 node
 Make the command runnable and launch:
 ```bash
 cd ~/P2RemoteConnection
@@ -43,69 +57,17 @@ cd ~/P2RemoteConnection
 chmod +x start_remote_connection_humble.sh
 ./start_remote_connection_humble.sh
 ```
-
-Open the website on a device connected to the same wifi:
+### 4. Connect and run 
 Check the device ip address:
-
 ```bash
 hostname -I
 ```
-Then search up the website:
+Open the website on a device connected to the same wifi: 
 ```bash
 <device_ip>::8081/go2_joystick.html
 
 go2: 192.168.123.18/go2_joystick.html
 ```
-
-## Robot Commands
-
-Each key is the action name used in the URL, and each value is the shell command that runs on the Go2.
-Example API call:
-
-  curl -X POST http://<go2-ip>:8000/actions/stand
-
-
-### How it works
-The start up script runs 3 seperate process':
-
-**The backend (FastAPI)**:
-```bash
-python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-**The front (static webpage)**:
-```bash
-python3 -m http.server 8081
-```
-
-**The Ros2 bridge to run Go2 commands**
-```bash
-ros2 run p2_remote_connection web_teleop_bridge
-```
-The script does the following:
-  - Source ROS 2 Foxy
-  - Source Unitree Go2 ROS environment
-  - Source this workspace’s overlay
-  - Export DDS / ROS environment variables explicitly
-  - Wait for the Go2 driver node to be available
-  - Start:
-    - FastAPI backend
-    - HTTP static server
-    - web_teleop_bridge node
-
-They post to the server through the following:
-
-- `GET /health`  
-  Basic connectivity check (returns `{"status":"ok"}`)
-
-- `POST /actions/{action}`  
-  Runs a pre-defined command for that action (example: `sit`, `stand`)
-
-- `POST /actions/{action}/stop`  
-  Stops the currently-running process for that action (SIGTERM, then SIGKILL if needed)
-
-You can explore and test everything using FastAPI’s built-in UI:
-
-- `http://<go2-ip>:8000/docs`
 
 ## Making the script run on startup
 
@@ -157,8 +119,66 @@ sudo ss -ltnp | egrep ':8000|:8081'
 # They should show nothing
 
 # To restart
-sudo systemctl start p2-remote-connection.service
+sudo systemctl restart p2-remote-connection.service
 ```
+
+## How it works
+The start up script: ```./start_remote_connection.sh``` runs 3 seperate process':
+
+**The backend (FastAPI)**:
+```bash
+python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+**The front (static webpage)**:
+```bash
+python3 -m http.server 8081
+```
+**The Ros2 bridge to run Go2 commands**
+```bash
+ros2 run p2_remote_connection web_teleop_bridge
+```
+The script does the following:
+  - Source ROS 2 Foxy
+  - Source Unitree Go2 ROS environment
+  - Source this workspace’s overlay
+  - Export DDS / ROS environment variables explicitly
+  - Wait for the Go2 driver node to be available
+  - Start:
+    - FastAPI backend
+    - HTTP static server
+    - web_teleop_bridge node
+
+They post to the server through the following:
+
+- `GET /health`  
+  Basic connectivity check (returns `{"status":"ok"}`)
+
+- `POST /actions/{action}`  
+  Runs a pre-defined command for that action (example: `sit`, `stand`)
+
+- `POST /actions/{action}/stop`  
+  Stops the currently-running process for that action (SIGTERM, then SIGKILL if needed)
+
+You can explore and test everything using FastAPI’s built-in UI:
+
+- `http://<go2-ip>:8000/docs`
+
+### Features
+#### 1.Login gate / UI lock
+
+- Shows loginOverlay
+- Stores ROBOT_BASE_URL (where the robot’s API is) and AUTH_TOKEN (your password token)
+- Saves them into localStorage so the browser remembers them
+
+#### 2.Teleop joystick
+- Renders two canvas joysticks
+- Converts joystick position into a command {linear_x, linear_y, angular_z}
+- Sends that command to the robot API at /teleop about 10 times per second while the stick is active
+
+#### 3.Terminal
+- Creates an xterm.js terminal
+- Opens a websocket to the robot API at /ws/terminal?token=...
+- Streams keystrokes to backend, and streams output back to the browser
 
 ## Authentication Overview
 
@@ -171,23 +191,7 @@ The browser sends this token with each API request using an HTTP header:
 - `Authorization: Bearer <token>`
 
 The backend checks whether the supplied token matches the Go2’s expected token.
-The to
 
----
-
-#### 1.1 Setup on the Go2
-
-On the Go2, create a file in the robot user’s home directory:
-
-```bash
-vim ~/.go2_token
-``` 
-Put the token inside the file - one line with no spaces
-
-Secure the token file ensureing that it is read-only:
-```bash
-chmod 600 ~/.go2_token
-```
 ### 2. How the token is used
 
 ### Uvicorn Backend

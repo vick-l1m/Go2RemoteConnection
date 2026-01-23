@@ -33,9 +33,9 @@ public:
   }
 
 private:
-  static constexpr double VX_SCALE   = 2.0;  // forward/back speed multiplier
-  static constexpr double VY_SCALE   = 2.0;  // left/right speed multiplier
-  static constexpr double VYAW_SCALE = 1.5;  // turning speed multiplier
+  static constexpr double VX_SCALE   = 1.5;  // forward/back speed multiplier
+  static constexpr double VY_SCALE   = 1.5;  // left/right speed multiplier
+  static constexpr double VYAW_SCALE = 1;  // turning speed multiplier
 
   void teleopCb(const geometry_msgs::msg::Twist::SharedPtr msg) {
     std::lock_guard<std::mutex> lk(mtx_);
