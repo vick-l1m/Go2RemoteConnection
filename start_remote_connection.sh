@@ -31,6 +31,16 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+ok_or_die() {
+  local name="$1"
+  local pid="$2"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "[run_all] Error occurred ❌ ($name failed to start)"
+    cleanup
+    exit 1
+  fi
+}
+
 echo "[run_all] Workspace: $WS_DIR"
 
 # --- Source ROS + Unitree stack safely ---
@@ -94,7 +104,6 @@ echo "[run_all] GO2_API_TOKEN loaded"
 echo "[run_all] Starting FastAPI (uvicorn) on :$API_PORT ..."
 cd "$PKG_DIR"
 python3 -m uvicorn app.main:app --host "$API_HOST" --port "$API_PORT" &
-pids+=("$!")
 API_PID=$!
 sleep 0.5
 if ! kill -0 "$API_PID" 2>/dev/null; then
@@ -105,31 +114,43 @@ fi
 # 2) Start static file server for frontend
 echo "[run_all] Starting http.server on :$UI_PORT ..."
 python3 -m http.server "$UI_PORT" &
-pids+=("$!")
+UI_PID=$!
+pids+=("$UI_PID")
 
 
 # 3) Wait for unitree sport topics before starting bridge (prevents “no motion after boot”)
 echo "[run_all] Waiting for Unitree sport topics..."
 for i in {1..30}; do
   if ros2 topic list 2>/dev/null | grep -q "^/api/sport/request$"; then
-    echo "[run_all] sport API is up."
+    echo "[run_all] Unitree Sport API is up."
     break
   fi
   sleep 1
 done
 
 # 4) Start bridge node (prefer launching the binary directly)
+BRIDGE_PID=""
 BRIDGE_BIN="$WS_DIR/install/p2_remote_connection/lib/p2_remote_connection/web_teleop_bridge"
 if [ -x "$BRIDGE_BIN" ]; then
   echo "[run_all] Starting bridge: $BRIDGE_BIN"
   "$BRIDGE_BIN" &
-  pids+=("$!")
+  BRIDGE_PID=$!
+  pids+=("$BRIDGE_PID")
 else
   echo "[run_all] Starting ROS2 bridge via ros2 run (fallback)"
   cd "$WS_DIR"
   ros2 run p2_remote_connection web_teleop_bridge &
-  pids+=("$!")
+  BRIDGE_PID=$!
+  pids+=("$BRIDGE_PID")
 fi
+
+# Give them a moment to crash if they will
+sleep 0.5
+
+# Validate they are alive
+ok_or_die "FastAPI" "$API_PID"
+ok_or_die "UI server" "$UI_PID"
+ok_or_die "bridge" "$BRIDGE_PID"
 
 echo ""
 echo "[run_all] ✅ All started."
