@@ -79,7 +79,7 @@
         <button onclick="postAction('stand')">Stand</button>
         <button onclick="postAction('sit')">Sit</button>
         <button id="teleopToggleBtn" onclick="toggleTeleop()">Start Teleop</button>
-        <button class="danger" onclick="emergencyStop()">STOP</button>
+        <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
         <button onclick="toggleTerminal()">Terminal</button>
         <button onclick="logout()">Logout</button>
       </div>
@@ -140,6 +140,8 @@
   // ----------------------------
   // Authentication
   // ----------------------------
+  let COMMS_ENABLED = true;
+
   let AUTH_TOKEN = "";
   let ROBOT_BASE_URL = "";
 
@@ -226,6 +228,7 @@
       saveAuth();
       unlockUI();
       setStatus("Unlocked ✅", true);
+      await refreshSafetyStatus();
 
     } catch (e) {
       msg.textContent = "Cannot reach robot API. Check URL/network.";
@@ -279,6 +282,7 @@
         if (baseInput) baseInput.value = ROBOT_BASE_URL;
         unlockUI();
         setStatus("Unlocked ✅ (remembered)", true);
+        await refreshSafetyStatus();
         return;
       }
 
@@ -306,9 +310,20 @@
     if (apiHost) apiHost.textContent = baseUrl();
   }
 
+  function commsAllowed(path) {
+    // Always allow these even when comms is disabled
+    if (path === "/health") return true;
+    if (path.startsWith("/safety/")) return true;
+    return COMMS_ENABLED;
+  }
+
   async function httpGet(path) {
+    if (!commsAllowed(path)) {
+      return { ok:false, status: 0, text: "Comms disabled: press RESUME to re-enable", url: baseUrl() + path };
+    }
     const url = baseUrl() + path;
     const r = await fetch(url, { headers: authHeaders() });
+
     if (r.status === 401 || r.status === 403) {
       AUTH_TOKEN = "";
       clearAuth();
@@ -321,10 +336,14 @@
   }
 
   async function httpPost(path, json=null) {
+    if (!commsAllowed(path)) {
+      return { ok:false, status: 0, text: "Comms disabled: press RESUME to re-enable", url: baseUrl() + path };
+    }
     const url = baseUrl() + path;
     const headers = { ...authHeaders() };
     if (json) headers["Content-Type"] = "application/json";
     const r = await fetch(url, { method:"POST", headers, body: json ? JSON.stringify(json) : null });
+
     if (r.status === 401 || r.status === 403) {
       AUTH_TOKEN = "";
       clearAuth();
@@ -358,6 +377,11 @@
   async function postAction(action) {
     if (!ensureLoggedIn()) return;
     setStatus(`Sending ${action}...`);
+    if (!COMMS_ENABLED) {
+      setStatus("STOP latched 🔒", false, "No actions can be taken until RESUME is pressed.");
+      return;
+    }
+
     try {
       const r = await httpPost(`/actions/${action}`);
       setStatus(
@@ -375,23 +399,104 @@
     }
   }
 
-  async function emergencyStop() {
-    teleopEnabled = false;
-    setTeleopButton(false);
-    stopTeleopLoop();
+  // ----------------------------
+// Safety STOP/RESUME toggle
+// ----------------------------
+let stopLatched = false;  // UI copy of backend state
 
-    await sendTeleop(0, 0, 0, true);
-    await httpPost(`/actions/stop`).catch(()=>{});
-    setStatus("STOP sent ✅", true);
+function setSafetyButton(latched) {
+  const btn = document.getElementById("safetyToggleBtn");
+  if (!btn) return;
+
+  stopLatched = !!latched;
+
+  if (stopLatched) {
+    btn.textContent = "RESUME";
+    btn.classList.remove("danger");     // make resume look "normal"
+  } else {
+    btn.textContent = "STOP";
+    btn.classList.add("danger");        // make stop look dangerous
   }
+}
 
+async function refreshSafetyStatus() {
+  if (!ensureLoggedIn()) return;
 
-  function ensureLoggedIn() {
-    if (!AUTH_TOKEN || !baseUrl()) {
-      lockUI();
-      return false;
+  const r = await httpGet("/safety/status");
+  setStatus(
+    r.ok ? "Safety status ✅" : `Safety status failed (HTTP ${r.status})`,
+    r.ok,
+    `URL: ${r.url}\n${r.text}`
+  );
+
+  if (r.ok) {
+    try {
+      const data = JSON.parse(r.text);
+      setSafetyButton(!!data.stop_latched);
+    } catch (_) {
+      // ignore parse errors; keep current UI
     }
-    return true;
+  }
+}
+
+  async function toggleSafety() {
+    if (!ensureLoggedIn()) return;
+
+    // If currently NOT latched => STOP
+    if (!stopLatched) {
+      // 1) Immediately stop anything local
+      teleopEnabled = false;
+      setTeleopButton(false);
+      stopTeleopLoop();
+
+      // Close terminal websocket
+      try { if (ws && ws.readyState === WebSocket.OPEN) ws.close(); } catch (_) {}
+
+      // 2) Tell backend to latch STOP (this also sends final stop to robot once)
+      const r = await httpPost("/safety/stop");
+
+      // 3) Silence all other comms from this page (except /health + /safety/* via allowlist)
+      COMMS_ENABLED = false;
+
+      // 4) Update UI button immediately
+      setSafetyButton(true);
+
+      // 5) Status
+      setStatus(
+        r.ok ? "STOP latched 🔒" : `STOP failed (HTTP ${r.status})`,
+        r.ok,
+        `URL: ${r.url}\n${r.text}\n\nNo actions/teleop will be sent until RESUME is pressed.`
+      );
+
+      return;
+    }
+
+    // If currently latched => RESUME
+    const r2 = await httpPost("/safety/resume");
+
+    if (r2.ok) {
+      // Re-enable comms
+      COMMS_ENABLED = true;
+
+      // Update UI
+      setSafetyButton(false);
+
+      setStatus(
+        "RESUME ✅",
+        true,
+        `URL: ${r2.url}\n${r2.text}\n\nActions/teleop are enabled again.`
+      );
+
+      // Optional: refresh status from server to confirm state
+      await refreshSafetyStatus();
+    } else {
+      // Keep latched state
+      setStatus(
+        `RESUME failed (HTTP ${r2.status})`,
+        false,
+        `URL: ${r2.url}\n${r2.text}`
+      );
+    }
   }
 
   // ----------------------------
@@ -487,7 +592,12 @@
 
   async function toggleTeleop() {
     if (!ensureLoggedIn()) return;
-
+    
+    if (!COMMS_ENABLED) {
+      setStatus("STOP latched 🔒", false, "No actions can be taken until RESUME is pressed.");
+      return;
+    }
+    
     if (!teleopEnabled) {
       // START: acquire lease
       const r = await httpPost("/teleop/start");

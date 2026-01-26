@@ -7,7 +7,7 @@ from app.ros_bridge import start_ros_bridge, get_bridge
 from fastapi import WebSocket
 
 import os
-from fastapi import Header, HTTPException, Depends, Request
+from fastapi import Depends, Header, Request
 import hmac
  
 import time
@@ -67,15 +67,38 @@ async def health(_=Depends(require_token)):
     return {"status": "ok"}
 
 # Actions
+STOP_LATCHED = False
 ALLOWED_ACTIONS = {"sit", "stand", "stop", "standdown", "recover"}
 
 @app.post("/actions/{action}")
 async def start_action(action: str, _=Depends(require_token)):
+    global STOP_LATCHED
+
+    if STOP_LATCHED and action != "stop":
+        raise HTTPException(status_code=423, detail="STOP latched: actions disabled")
+
     if action not in ALLOWED_ACTIONS:
         raise HTTPException(status_code=404, detail="Action not allowed")
     get_bridge().publish_action(action)
     return {"ok": True, "action": action}
 
+@app.post("/safety/stop")
+async def safety_stop(_=Depends(require_token)):
+    global STOP_LATCHED
+    STOP_LATCHED = True
+    get_bridge().publish_teleop(0.0, 0.0, 0.0)
+    get_bridge().publish_action("stop")
+    return {"ok": True, "stop_latched": True}
+
+@app.post("/safety/resume")
+async def safety_resume(_=Depends(require_token)):
+    global STOP_LATCHED
+    STOP_LATCHED = False
+    return {"ok": True, "stop_latched": False}
+
+@app.get("/safety/status")
+async def safety_status(_=Depends(require_token)):
+    return {"stop_latched": STOP_LATCHED}
 
 # Teleop
 
@@ -103,6 +126,9 @@ def _lease_active(now: float) -> bool:
 @app.post("/teleop")
 async def teleop(cmd: TeleopCommand, request: Request, _=Depends(require_token)):
     global _teleop_last_seen, _teleop_owner_token, _teleop_lease_id
+
+    if STOP_LATCHED:
+        raise HTTPException(status_code=423, detail="STOP latched: teleop disabled")
 
     auth = request.headers.get("authorization", "")
     now = time.time()
@@ -138,6 +164,9 @@ async def ws_terminal(websocket: WebSocket):
 async def teleop_start(request: Request, _=Depends(require_token)):
     global _teleop_owner_token, _teleop_owner_since, _teleop_last_seen, _teleop_lease_id
 
+    if STOP_LATCHED:
+        raise HTTPException(status_code=423, detail="STOP latched: teleop disabled")
+
     auth = request.headers.get("authorization", "")
     now = time.time()
 
@@ -164,6 +193,14 @@ async def teleop_start(request: Request, _=Depends(require_token)):
 @app.post("/teleop/stop")
 async def teleop_stop(request: Request, _=Depends(require_token)):
     global _teleop_owner_token, _teleop_owner_since, _teleop_last_seen, _teleop_lease_id
+
+    if STOP_LATCHED:
+        # do not publish anything while latched
+        _teleop_owner_token = None
+        _teleop_lease_id = None
+        _teleop_owner_since = 0.0
+        _teleop_last_seen = 0.0
+        return {"ok": True, "stopped": True, "note": "STOP latched: teleop cleared without publishing."}
 
     auth = request.headers.get("authorization", "")
     now = time.time()
