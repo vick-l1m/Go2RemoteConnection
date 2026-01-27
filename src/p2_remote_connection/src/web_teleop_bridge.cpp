@@ -41,14 +41,14 @@ private:
   static constexpr double VY_SCALE   = 1.0;
   static constexpr double VYAW_SCALE = 1.5;
   static constexpr double DEADBAND   = 0.05;
-  static constexpr double RX_TIMEOUT = 0.25; // seconds
+  static constexpr double RX_TIMEOUT = 1.0;  
+
 
   // -------------------- State --------------------
   std::mutex mtx_;
   double latest_vx_{0.0}, latest_vy_{0.0}, latest_vyaw_{0.0};
   rclcpp::Time last_rx_time_;
 
-  std::atomic<bool> teleop_enabled_{false};
   bool was_active_{false};
 
   // -------------------- ROS --------------------
@@ -62,13 +62,12 @@ private:
 
   // -------------------- Callbacks --------------------
   void teleopCb(const geometry_msgs::msg::Twist::SharedPtr msg) {
-    if (!teleop_enabled_) return;
 
     std::lock_guard<std::mutex> lk(mtx_);
     latest_vx_   = msg->linear.x;
     latest_vy_   = msg->linear.y;
     latest_vyaw_= msg->angular.z;
-    last_rx_time_ = now();
+    last_rx_time_ = this->now();
   }
 
   void actionCb(const std_msgs::msg::String::SharedPtr msg) {
@@ -80,44 +79,10 @@ private:
     else if (a == "sit") {
       sportClient_.StandDown(req_);
     }
-    else if (a == "teleop_start") {
-      startTeleop();
-    }
-    else if (a == "teleop_stop" || a == "stop") {
-      stopTeleop();
-    }
-  }
-
-  // -------------------- Teleop control --------------------
-  void startTeleop() {
-    if (teleop_enabled_) return;
-
-    RCLCPP_INFO(get_logger(), "Teleop ENABLED");
-    teleop_enabled_ = true;
-    was_active_ = false;
-
-    // Optional but safe
-    sportClient_.StandUp(req_);
-    sportClient_.WalkUpright(req_, true);
-  }
-
-  void stopTeleop() {
-    if (!teleop_enabled_) return;
-
-    RCLCPP_WARN(get_logger(), "Teleop DISABLED");
-
-    if (was_active_) {
-      sportClient_.StopMove(req_);
-      was_active_ = false;
-    }
-
-    teleop_enabled_ = false;
   }
 
   // -------------------- Main loop --------------------
   void tick() {
-    if (!teleop_enabled_) return;
-
     const auto now_t = now();
     double vx, vy, vyaw;
 
@@ -144,16 +109,15 @@ private:
 
     const bool active_now = !timed_out && !stationary;
 
-    if (!active_now) {
-      if (was_active_) {
-        sportClient_.StopMove(req_);
-        was_active_ = false;
-      }
-      return;
-    }
+if (!active_now) {
+  if (was_active_) {
+    sportClient_.StopMove(req_);
+    was_active_ = false;
+  }
+  return;
+}
 
     was_active_ = true;
-
     sportClient_.Move(
       req_,
       static_cast<float>(VX_SCALE * vx),

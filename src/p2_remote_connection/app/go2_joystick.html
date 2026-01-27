@@ -78,7 +78,6 @@
         <button onclick="checkHealth()">Health</button>
         <button onclick="postAction('stand')">Stand</button>
         <button onclick="postAction('sit')">Sit</button>
-        <button id="teleopToggleBtn" onclick="toggleTeleop()">Start Teleop</button>
         <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
         <button onclick="toggleTerminal()">Terminal</button>
         <button onclick="logout()">Logout</button>
@@ -263,11 +262,6 @@
     AUTH_TOKEN = "";
     ROBOT_BASE_URL = "";
     clearAuth();
-
-    // stop teleop if active
-    teleopEnabled = false;
-    setTeleopButton(false);
-    stopTeleopLoop();
 
     // Clear password box
     const t = document.getElementById("loginToken");
@@ -471,10 +465,6 @@ async function refreshSafetyStatus() {
 
     // If currently NOT latched => STOP
     if (!stopLatched) {
-      // 1) Immediately stop anything local
-      teleopEnabled = false;
-      setTeleopButton(false);
-      stopTeleopLoop();
 
       // Close terminal websocket
       try { if (ws && ws.readyState === WebSocket.OPEN) ws.close(); } catch (_) {}
@@ -537,16 +527,7 @@ async function refreshSafetyStatus() {
   const SEND_HZ = 10;    // send rate
   const SEND_PERIOD_MS = Math.floor(1000 / SEND_HZ);
 
-  let teleopEnabled = false;
-  let teleopTimer = null;
   let zeroSentAfterStop = false;
-
-  function setTeleopButton(enabled) {
-    const btn = document.getElementById("teleopToggleBtn");
-    if (!btn) return;
-    btn.textContent = enabled ? "Stop Teleop" : "Start Teleop";
-    btn.classList.toggle("danger", enabled); // optional: make it red-ish when active
-  }
 
   function mapToCmd(lx, ly, rx) {
     // Joystick y is positive down; invert so up = forward
@@ -590,63 +571,6 @@ async function refreshSafetyStatus() {
     }
   }
 
-  function startTeleopLoop() {
-    if (teleopTimer) return;
-    zeroSentAfterStop = false;
-
-    teleopTimer = window.setInterval(async () => {
-      if (!teleopEnabled) {
-        // Send exactly one final zero then stop the interval
-        if (!zeroSentAfterStop) {
-          zeroSentAfterStop = true;
-          await sendTeleop(0, 0, 0, true);
-        }
-        stopTeleopLoop();
-        return;
-      }
-
-      // Enabled: send latest command at fixed rate
-      await sendTeleop(latest.lx, latest.ly, latest.rx, true);
-    }, SEND_PERIOD_MS);
-  }
-
-  function stopTeleopLoop() {
-    if (teleopTimer) {
-      window.clearInterval(teleopTimer);
-      teleopTimer = null;
-    }
-  }
-
-  async function toggleTeleop() {
-    if (!ensureLoggedIn()) return;
-    
-    if (!COMMS_ENABLED) {
-      setStatus("STOP latched 🔒", false, "No actions can be taken until RESUME is pressed.");
-      return;
-    }
-    
-    if (!teleopEnabled) {
-      // START: acquire lease
-      const r = await httpPost("/teleop/start");
-      if (!r.ok) {
-        setStatus("Cannot start teleop", false, `HTTP ${r.status}\n${r.text}`);
-        return;
-      }
-      teleopEnabled = true;
-      setTeleopButton(true);
-      startTeleopLoop();
-      setStatus("Teleop ENABLED ✅", true);
-      return;
-    }
-
-    // STOP: release lease + final zero handled server-side too
-    teleopEnabled = false;
-    setTeleopButton(false);
-    stopTeleopLoop();
-
-    const r2 = await httpPost("/teleop/stop");
-    setStatus(r2.ok ? "Teleop DISABLED ✅" : "Teleop stop error", r2.ok, `HTTP ${r2.status}\n${r2.text}`);
-  }
 
   // ----------------------------
   // Joystick implementation (canvas)
@@ -753,6 +677,12 @@ async function refreshSafetyStatus() {
     latest.rx = active ? x : 0;
     latest.ry = active ? y : 0;
   });
+
+  window.setInterval(() => {
+    if (!ensureLoggedIn()) return;
+    if (!COMMS_ENABLED) return;   // STOP latched => don't send
+    sendTeleop(latest.lx, latest.ly, latest.rx, true);
+  }, SEND_PERIOD_MS);
 
 
   // ----------------------------
