@@ -1,0 +1,201 @@
+<!-- app/index.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go2 UI</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 14px; background:#fafafa; }
+    .card { max-width: 760px; margin: 0 auto; border: 1px solid #ddd; border-radius: 16px; padding: 16px; background:white; }
+    h1 { margin: 0 0 8px; font-size: 20px; }
+    p  { margin: 0 0 14px; color:#555; font-size: 14px; }
+
+    .topRow { display:flex; justify-content: space-between; align-items: start; gap: 12px; flex-wrap: wrap; }
+    .badge {
+      display:inline-flex; align-items:center; gap:8px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      border: 1px solid #ddd;
+      background: #f7f7f7;
+      font-size: 12px;
+      color:#333;
+      user-select:none;
+    }
+    .dot { width:10px; height:10px; border-radius:999px; background:#bbb; flex: 0 0 auto; }
+    .dot.ok { background:#2ea043; }
+    .dot.bad { background:#d1242f; }
+    .dot.unk { background:#bbb; }
+
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+    @media (max-width: 620px) { .grid { grid-template-columns: 1fr; } }
+
+    a.btn {
+      display:block;
+      padding: 14px;
+      border-radius: 14px;
+      border: 1px solid #ddd;
+      background: #f7f7f7;
+      text-decoration: none;
+      color: #111;
+    }
+    a.btn:hover { background:#f0f0f0; }
+
+    .title { font-weight: 650; margin-bottom: 6px; }
+    .desc { font-size: 13px; color:#555; line-height: 1.35; }
+
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color:#555; white-space: pre-wrap; }
+    .footer { margin-top: 14px; font-size: 12px; color:#777; }
+
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top: 12px; }
+    button {
+      padding: 10px 12px; border-radius: 12px; border: 1px solid #ccc; background: #fff;
+      cursor: pointer; font-size: 14px;
+    }
+    button:disabled { opacity: 0.65; cursor:not-allowed; }
+
+    .status {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 12px;
+      border: 1px solid #eee;
+      background: #fafafa;
+    }
+    .small { font-size: 13px; color:#555; }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <div class="topRow">
+      <div>
+        <h1>Unitree Go2 – Web UI</h1>
+        <p>Select which interface you want to open.</p>
+      </div>
+
+      <!-- Mode + Health badge -->
+      <div class="badge" id="modeBadge" title="Mode shown from URL parameter or last selection">
+        <span class="dot unk" id="healthDot"></span>
+        <span id="badgeText">Mode: Auto • Health: Unknown</span>
+      </div>
+    </div>
+
+    <div class="grid">
+      <a class="btn" href="./go2_joystick.html" onclick="rememberMode('joystick')">
+        <div class="title">Joystick Teleop</div>
+        <div class="desc">Phone-friendly dual joystick + safety + terminals.</div>
+      </a>
+
+      <a class="btn" href="./go2_terminal_only.html" onclick="rememberMode('terminal')">
+        <div class="title">Terminal Only</div>
+        <div class="desc">Three terminals + safety + health (no teleop controls).</div>
+      </a>
+    </div>
+
+    <div class="row">
+      <button id="healthBtn" onclick="checkHealth()">Check API health</button>
+      <span class="mono" id="apiHint"></span>
+    </div>
+
+    <div class="status">
+      <div class="small" id="healthMsg">Health not checked yet.</div>
+      <div class="mono" id="healthDetail"></div>
+    </div>
+
+    <div class="footer">
+      Direct links:
+      <span class="mono">/app/go2_joystick.html</span> • <span class="mono">/app/go2_terminal_only.html</span><br/>
+      Tip: You can set mode in the URL like:
+      <span class="mono">/app/?mode=terminal</span> or <span class="mono">/app/?mode=joystick</span>
+    </div>
+  </div>
+
+  <script>
+    const LS_MODE_KEY = "go2_ui_last_mode"; // "joystick" | "terminal"
+
+    function computeDefaultApi() {
+      const host = window.location.hostname;
+      const proto = window.location.protocol; // "http:" or "https:"
+      return `${proto}//${host}:8000`;
+    }
+
+    function rememberMode(mode) {
+      try { localStorage.setItem(LS_MODE_KEY, mode); } catch (_) {}
+    }
+
+    function getModeFromUrlOrStorage() {
+      const params = new URLSearchParams(window.location.search);
+      const m = (params.get("mode") || "").toLowerCase();
+      if (m === "joystick" || m === "terminal") return m;
+
+      try {
+        const saved = (localStorage.getItem(LS_MODE_KEY) || "").toLowerCase();
+        if (saved === "joystick" || saved === "terminal") return saved;
+      } catch (_) {}
+
+      return "auto";
+    }
+
+    function setBadge(mode, healthState, healthText) {
+      const badgeText = document.getElementById("badgeText");
+      const dot = document.getElementById("healthDot");
+
+      // dot state
+      dot.classList.remove("ok", "bad", "unk");
+      dot.classList.add(healthState); // ok | bad | unk
+
+      const modeLabel = mode === "auto"
+        ? "Auto"
+        : (mode === "joystick" ? "Joystick" : "Terminal");
+
+      badgeText.textContent = `Mode: ${modeLabel} • Health: ${healthText}`;
+    }
+
+    async function checkHealth() {
+      const api = computeDefaultApi();
+      const btn = document.getElementById("healthBtn");
+      const msg = document.getElementById("healthMsg");
+      const detail = document.getElementById("healthDetail");
+
+      btn.disabled = true;
+      msg.textContent = "Checking /health...";
+      detail.textContent = "";
+
+      try {
+        const url = `${api}/health`;
+        const r = await fetch(url, { method: "GET" });
+        const t = await r.text();
+
+        if (r.ok) {
+          msg.textContent = "Health OK ✅";
+          detail.textContent = `URL: ${url}\n${t}`;
+          setBadge(getModeFromUrlOrStorage(), "ok", "OK");
+        } else {
+          msg.textContent = `Health failed (HTTP ${r.status})`;
+          detail.textContent = `URL: ${url}\n${t}`;
+          setBadge(getModeFromUrlOrStorage(), "bad", `HTTP ${r.status}`);
+        }
+      } catch (e) {
+        msg.textContent = "Health check network error";
+        detail.textContent = `API base: ${api}\n${String(e)}`;
+        setBadge(getModeFromUrlOrStorage(), "bad", "Error");
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // Boot
+    window.addEventListener("DOMContentLoaded", () => {
+      const api = computeDefaultApi();
+      document.getElementById("apiHint").textContent = `Default API base: ${api}`;
+
+      const mode = getModeFromUrlOrStorage();
+      setBadge(mode, "unk", "Unknown");
+
+      // Optional: auto-check if ?health=1 (keeps default calm)
+      // const params = new URLSearchParams(window.location.search);
+      // if (params.get("health") === "1") checkHealth();
+    });
+  </script>
+</body>
+</html>

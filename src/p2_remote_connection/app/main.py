@@ -21,10 +21,9 @@ else:
     from .terminal import terminal_ws
 
 # Authentication
-GO2_API_TOKEN = os.getenv("GO2_API_TOKEN", "")
-
+GO2_API_TOKEN = (os.getenv("GO2_API_TOKEN") or "").strip()
 if not GO2_API_TOKEN:
-    raise RuntimeError("GO2_API_TOKEN is not set")
+    raise RuntimeError("GO2_API_TOKEN is not set (or is empty)")
 
 def require_token(authorization: str = Header(None)) -> str:
     if not GO2_API_TOKEN:
@@ -43,6 +42,7 @@ def require_token(authorization: str = Header(None)) -> str:
     # constant-time compare (safer)
     if not hmac.compare_digest(token, GO2_API_TOKEN):
         raise HTTPException(status_code=403, detail="Invalid token")
+
     return token
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -62,13 +62,14 @@ app.add_middleware(
 @app.on_event("startup")
 async def on_startup():
     start_ros_bridge()
-
+    
 @app.get("/health")
-async def health(_=Depends(require_token)):
-    return {"status": "ok"}
+async def health():
+    return {"ok": True, "status": "ok"}
 
 # Actions
 STOP_LATCHED = False
+TELEOP_ENABLED = True
 ALLOWED_ACTIONS = {
   "sit",
   "stand",
@@ -91,23 +92,31 @@ async def start_action(action: str, _=Depends(require_token)):
 
 @app.post("/safety/stop")
 async def safety_stop(_=Depends(require_token)):
-    global STOP_LATCHED
+    global STOP_LATCHED, TELEOP_ENABLED
     STOP_LATCHED = True
-    get_bridge().publish_action("stop")
-    return {"ok": True, "stop_latched": True}
+    TELEOP_ENABLED = False
+
+    # Tell ROS side to disable teleop node behavior
+    get_bridge().publish_enabled(False)
+
+    return {"ok": True, "stop_latched": True, "teleop_enabled": False}
 
 @app.post("/safety/resume")
 async def safety_resume(_=Depends(require_token)):
-    global STOP_LATCHED
+    global STOP_LATCHED, TELEOP_ENABLED
     STOP_LATCHED = False
-    return {"ok": True, "stop_latched": False}
+    TELEOP_ENABLED = True
+
+    get_bridge().publish_enabled(True)
+    
+    return {"ok": True, "stop_latched": False, "teleop_enabled": True}
 
 @app.get("/safety/status")
 async def safety_status(_=Depends(require_token)):
-    return {"stop_latched": STOP_LATCHED}
+    return {"stop_latched": STOP_LATCHED, "teleop_enabled": TELEOP_ENABLED}
+
 
 # Teleop
-
 class TeleopCommand(BaseModel):
     linear_x: float = Field(0.0)
     linear_y: float = Field(0.0)
@@ -121,9 +130,11 @@ def clamp(v: float, lo: float, hi: float) -> float:
 
 @app.post("/teleop")
 async def teleop(cmd: TeleopCommand, request: Request, _=Depends(require_token)):
-
     if STOP_LATCHED:
         raise HTTPException(status_code=423, detail="STOP latched: teleop disabled")
+
+    if not TELEOP_ENABLED:
+        raise HTTPException(status_code=423, detail="Teleop disabled (safety stop)")
 
     lx = clamp(cmd.linear_x, -MAX_LIN, MAX_LIN)
     ly = clamp(cmd.linear_y, -MAX_LIN, MAX_LIN)

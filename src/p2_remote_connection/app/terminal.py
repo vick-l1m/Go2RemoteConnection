@@ -45,6 +45,9 @@ class TerminalSession:
                 # Nice-to-have: force color for ls if not already configured
                 alias ls='ls --color=auto' 2>/dev/null || true
 
+                # Start in p2_ws
+                cd ~/p2_ws 2>/dev/null || cd ~
+
                 exec bash -i
                 """
             ])

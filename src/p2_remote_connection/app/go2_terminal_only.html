@@ -1,13 +1,14 @@
+<!-- go2_terminal_only.html -->
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Go2 Control + Terminal</title>
+  <title>Go2 Terminal</title>
 
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 14px; }
-    .card { max-width: 860px; margin: 0 auto; border: 1px solid #ddd; border-radius: 16px; padding: 14px; }
+    .card { max-width: 980px; margin: 0 auto; border: 1px solid #ddd; border-radius: 16px; padding: 14px; }
     h1 { margin: 0 0 10px; font-size: 20px; }
 
     .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
@@ -21,17 +22,23 @@
 
     .small { font-size: 13px; color: #555; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
-
     .status { margin-top: 12px; padding: 10px; border-radius: 12px; background: #fafafa; border: 1px solid #eee; }
     .hint { margin-top: 6px; }
 
-    .termPanel { margin-top: 12px; border: 1px solid #eee; border-radius: 16px; background: #0f0f0f; overflow: hidden; }
+    /* Multi-terminal responsive layout (no squashing) */
+    .termGrid {
+      margin-top: 12px;
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(520px, 1fr));
+    }
+    .termPanel { border: 1px solid #eee; border-radius: 16px; background: #0f0f0f; overflow: hidden; min-width: 520px; }
     .termHeader { display:flex; justify-content: space-between; align-items:center; padding: 10px 12px; background:#171717; border-bottom:1px solid #2a2a2a; }
     .termTitle { color:#fff; font-size:14px; font-weight:600; }
     .termHint { color:#bbb; }
     .termBox {
       width: 100%;
-      height: 420px;
+      height: 360px;
       overflow: auto;
       touch-action: pan-y;
     }
@@ -43,40 +50,50 @@
 </head>
 
 <body>
-  <!-- LOGIN OVERLAY -->
+  <!-- LOGIN OVERLAY (outside appRoot so it can receive clicks) -->
   <div id="loginOverlay" style="
     position:fixed; inset:0; background:rgba(0,0,0,0.55);
     display:flex; align-items:center; justify-content:center; z-index:9999;
     pointer-events:auto;">
     <div style="background:white; padding:16px; border-radius:16px; width:min(420px, 92vw);">
       <h2 style="margin:0 0 10px; font-size:18px;">Connect to Go2</h2>
+
       <div style="display:flex; flex-direction:column; gap:10px;">
         <input id="loginBaseUrl" placeholder="http://robot-ip:8000 or https://robot.domain"
                style="padding:10px; border-radius:12px; border:1px solid #ccc; font-size:16px;"
-               value="http://192.168.123.18:8000" />
+               value="" />
+
         <input id="loginToken" placeholder="Password" type="password"
                style="padding:10px; border-radius:12px; border:1px solid #ccc; font-size:16px;" />
-        <button onclick="login()" style="padding:12px; border-radius:12px; border:1px solid #ccc; background:#f7f7f7; font-size:16px;">
+
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#333;">
+          <input id="showPw" type="checkbox" onclick="togglePasswordVisibility()" />
+          Show password
+        </label>
+
+        <button id="unlockBtn" onclick="login()"
+                style="padding:12px; border-radius:12px; border:1px solid #ccc; background:#f7f7f7; font-size:16px;">
           Unlock
         </button>
+
         <div id="loginMsg" style="font-size:13px; color:#b00020;"></div>
         <div style="font-size:12px; color:#555;">Tip: This password is unique per robot.</div>
       </div>
     </div>
   </div>
 
-  <!-- MAIN APP -->
+  <!-- MAIN APP (locked/blurred until login) -->
   <div id="appRoot" style="filter: blur(6px); pointer-events:none; user-select:none;">
     <div class="card">
-      <h1>Unitree Go2 – Control + Terminal</h1>
+      <h1>Unitree Go2 – Terminal</h1>
 
       <div class="row">
         <input id="baseUrl" placeholder="http://<go2-ip>:8000" />
         <button onclick="checkHealth()">Health</button>
-        <button onclick="postAction('stand')">Stand</button>
-        <button onclick="postAction('sit')">Sit</button>
         <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
-        <button onclick="toggleTerminal()">Terminal</button>
+        <button id="termBtn1" onclick="toggleTerminalN(1)">Terminal 1</button>
+        <button id="termBtn2" onclick="toggleTerminalN(2)">Terminal 2</button>
+        <button id="termBtn3" onclick="toggleTerminalN(3)">Terminal 3</button>
         <button onclick="logout()">Logout</button>
       </div>
 
@@ -85,12 +102,30 @@
         API base: <span id="apiHost" class="mono"></span>
       </div>
 
-      <div id="terminalPanel" class="termPanel" style="display:none;">
-        <div class="termHeader">
-          <div class="termTitle">Remote Terminal</div>
-          <div class="termHint small">Connects to /ws/terminal on API (:8000)</div>
+      <div id="terminalsWrap" class="termGrid" style="display:none;">
+        <div id="terminalPanel1" class="termPanel" style="display:none;">
+          <div class="termHeader">
+            <div class="termTitle">Remote Terminal 1</div>
+            <div class="termHint small">Connects to /ws/terminal on API (:8000)</div>
+          </div>
+          <div id="terminal1" class="termBox"></div>
         </div>
-        <div id="terminal" class="termBox"></div>
+
+        <div id="terminalPanel2" class="termPanel" style="display:none;">
+          <div class="termHeader">
+            <div class="termTitle">Remote Terminal 2</div>
+            <div class="termHint small">Connects to /ws/terminal on API (:8000)</div>
+          </div>
+          <div id="terminal2" class="termBox"></div>
+        </div>
+
+        <div id="terminalPanel3" class="termPanel" style="display:none;">
+          <div class="termHeader">
+            <div class="termTitle">Remote Terminal 3</div>
+            <div class="termHint small">Connects to /ws/terminal on API (:8000)</div>
+          </div>
+          <div id="terminal3" class="termBox"></div>
+        </div>
       </div>
 
       <div class="status">
@@ -99,7 +134,7 @@
       </div>
 
       <div class="small" style="margin-top:10px;">
-        Tip: Use STOP before risky commands. Terminal runs on the robot host.
+        Tip: STOP latches safety and closes terminals; RESUME re-enables comms.
       </div>
     </div>
   </div>
@@ -108,9 +143,10 @@
   // ----------------------------
   // Auth + local storage
   // ----------------------------
+  let COMMS_ENABLED = true;
+
   let AUTH_TOKEN = "";
   let ROBOT_BASE_URL = "";
-  let COMMS_ENABLED = true;   // STOP latch disables actions (and terminal is closed)
 
   const LS_URL_KEY = "go2_baseUrl";
   const LS_TOKEN_KEY = "go2_token";
@@ -157,6 +193,13 @@
     localStorage.removeItem(LS_TOKEN_KEY);
   }
 
+  function togglePasswordVisibility() {
+    const pw = document.getElementById("loginToken");
+    const cb = document.getElementById("showPw");
+    if (!pw || !cb) return;
+    pw.type = cb.checked ? "text" : "password";
+  }
+
   function ensureLoggedIn() {
     if (!ROBOT_BASE_URL || !AUTH_TOKEN) {
       const msg = document.getElementById("loginMsg");
@@ -165,6 +208,23 @@
       return false;
     }
     return true;
+  }
+
+  function wireEnterToUnlock() {
+    const urlEl = document.getElementById("loginBaseUrl");
+    const passEl = document.getElementById("loginToken");
+    const btn = document.getElementById("unlockBtn");
+
+    const handler = (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (btn) btn.click();
+        else login();
+      }
+    };
+
+    if (urlEl)  urlEl.addEventListener("keydown", handler);
+    if (passEl) passEl.addEventListener("keydown", handler);
   }
 
   async function login() {
@@ -180,18 +240,21 @@
       return;
     }
 
+    // Set first
     ROBOT_BASE_URL = url;
     AUTH_TOKEN = token;
 
+    // Reflect in UI
     document.getElementById("baseUrl").value = ROBOT_BASE_URL;
     document.getElementById("apiHost").textContent = ROBOT_BASE_URL;
 
     try {
-      const r = await httpGet("/health");
+      const r = await httpGet("/health", { bypassCommsGate: true });
       if (!r.ok) {
         msg.textContent = (r.status === 401 || r.status === 403)
           ? "Incorrect token entered."
           : `Login failed (HTTP ${r.status})`;
+
         AUTH_TOKEN = "";
         ROBOT_BASE_URL = "";
         clearAuth();
@@ -212,8 +275,8 @@
   }
 
   function logout() {
-    // Close terminal if open
-    try { if (ws && ws.readyState === WebSocket.OPEN) ws.close(); } catch (_) {}
+    closeAllTerminals();
+
     AUTH_TOKEN = "";
     ROBOT_BASE_URL = "";
     COMMS_ENABLED = true;
@@ -221,6 +284,10 @@
 
     const t = document.getElementById("loginToken");
     if (t) t.value = "";
+
+    const cb = document.getElementById("showPw");
+    if (cb) cb.checked = false;
+    if (t) t.type = "password";
 
     lockUI();
     setStatus("Logged out.", true);
@@ -243,18 +310,23 @@
   // ----------------------------
   // Networking helpers
   // ----------------------------
-  function commsAllowed(path) {
-    // Always allow these even when STOP latched
-    if (path === "/health") return true;
-    if (path.startsWith("/safety/")) return true;
+  function isAlwaysAllowed(path) {
+    return path === "/health" || path.startsWith("/safety/");
+  }
+
+  function commsAllowed(path, opts = {}) {
+    if (opts.bypassCommsGate) return true;
+    if (isAlwaysAllowed(path)) return true;
     return COMMS_ENABLED;
   }
 
-  async function httpGet(path) {
-    if (!commsAllowed(path)) {
-      return { ok:false, status: 0, text: "Comms disabled: press RESUME to re-enable", url: baseUrl() + path };
-    }
+  async function httpGet(path, opts = {}) {
     const url = baseUrl() + path;
+
+    if (!commsAllowed(path, opts)) {
+      return { ok:false, status: 0, text: "Comms disabled: press RESUME to re-enable", url };
+    }
+
     const r = await fetch(url, { headers: authHeaders() });
 
     if (r.status === 401 || r.status === 403) {
@@ -270,14 +342,21 @@
     return { ok: r.ok, status: r.status, text: t, url };
   }
 
-  async function httpPost(path, json=null) {
-    if (!commsAllowed(path)) {
-      return { ok:false, status: 0, text: "Comms disabled: press RESUME to re-enable", url: baseUrl() + path };
-    }
+  async function httpPost(path, json=null, opts = {}) {
     const url = baseUrl() + path;
+
+    if (!commsAllowed(path, opts)) {
+      return { ok:false, status: 0, text: "Comms disabled: press RESUME to re-enable", url };
+    }
+
     const headers = { ...authHeaders() };
-    if (json) headers["Content-Type"] = "application/json";
-    const r = await fetch(url, { method:"POST", headers, body: json ? JSON.stringify(json) : null });
+    if (json !== null) headers["Content-Type"] = "application/json";
+
+    const r = await fetch(url, {
+      method:"POST",
+      headers,
+      body: (json !== null) ? JSON.stringify(json) : null
+    });
 
     if (r.status === 401 || r.status === 403) {
       AUTH_TOKEN = "";
@@ -296,48 +375,29 @@
     if (!ensureLoggedIn()) return;
     setStatus("Checking /health...");
     try {
-      const r = await httpGet("/health");
+      const r = await httpGet("/health", { bypassCommsGate: true });
       setStatus(
         r.ok ? "Health OK ✅" : `Health failed (HTTP ${r.status})`,
         r.ok,
         `URL: ${r.url}\n${r.text}`
       );
     } catch (e) {
-      setStatus("Health network error", false, `API base was: ${baseUrl()}\n${String(e)}\n\nTip: API must be http://<go2-ip>:8000`);
-    }
-  }
-
-  async function postAction(action) {
-    if (!ensureLoggedIn()) return;
-
-    if (!COMMS_ENABLED) {
-      setStatus("STOP latched 🔒", false, "No actions can be taken until RESUME is pressed.");
-      return;
-    }
-
-    setStatus(`Sending ${action}...`);
-    try {
-      const r = await httpPost(`/actions/${action}`);
-      setStatus(
-        r.ok ? `${action} started ✅` : `${action} failed (HTTP ${r.status})`,
-        r.ok,
-        `URL: ${r.url}\n${r.text}`
-      );
-    } catch (e) {
-      setStatus(`${action} network error`, false, `API base was: ${baseUrl()}\n${String(e)}`);
+      setStatus("Health network error", false, `API base was: ${baseUrl()}\n${String(e)}\n\nTip: API must be http(s)://<go2-ip>:8000`);
     }
   }
 
   // ----------------------------
-  // STOP/RESUME toggle (backend latch)
+  // Safety STOP/RESUME toggle
   // ----------------------------
-  let stopLatched = false;
+  let stopLatched = false;  // UI copy of backend state
+  let safetyBusy = false;
 
   function setSafetyButton(latched) {
     const btn = document.getElementById("safetyToggleBtn");
     if (!btn) return;
 
     stopLatched = !!latched;
+
     if (stopLatched) {
       btn.textContent = "RESUME";
       btn.classList.remove("danger");
@@ -345,63 +405,88 @@
       btn.textContent = "STOP";
       btn.classList.add("danger");
     }
+
+    btn.disabled = safetyBusy;
   }
 
   async function refreshSafetyStatus() {
     if (!ensureLoggedIn()) return;
-    const r = await httpGet("/safety/status");
+
+    const r = await httpGet("/safety/status", { bypassCommsGate: true });
     if (r.ok) {
       try {
         const data = JSON.parse(r.text);
         setSafetyButton(!!data.stop_latched);
       } catch (_) {}
     }
+    return r;
   }
 
   async function toggleSafety() {
     if (!ensureLoggedIn()) return;
+    if (safetyBusy) return;
 
-    // STOP
-    if (!stopLatched) {
-      // Close terminal websocket for safety
-      try { if (ws && ws.readyState === WebSocket.OPEN) ws.close(); } catch (_) {}
+    safetyBusy = true;
+    setSafetyButton(stopLatched);
 
-      const r = await httpPost("/safety/stop");
-      COMMS_ENABLED = false;
-      setSafetyButton(true);
+    try {
+      // STOP
+      if (!stopLatched) {
+        const r = await httpPost("/safety/stop", null, { bypassCommsGate: true });
 
-      setStatus(
-        r.ok ? "STOP latched 🔒" : `STOP failed (HTTP ${r.status})`,
-        r.ok,
-        `URL: ${r.url}\n${r.text}\n\nActions disabled until RESUME.`
-      );
-      return;
-    }
+        if (!r.ok) {
+          setStatus(`STOP failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+          await refreshSafetyStatus();
+          return;
+        }
 
-    // RESUME
-    const r2 = await httpPost("/safety/resume");
-    if (r2.ok) {
+        // Close terminals for safety
+        closeAllTerminals();
+
+        // Disable comms only after STOP success
+        COMMS_ENABLED = false;
+
+        setStatus("STOP latched 🔒", true, `URL: ${r.url}\n${r.text}\n\nTerminals closed. Comms disabled until RESUME.`);
+        await refreshSafetyStatus();
+        return;
+      }
+
+      // RESUME
+      const r2 = await httpPost("/safety/resume", null, { bypassCommsGate: true });
+
+      if (!r2.ok) {
+        setStatus(`RESUME failed (HTTP ${r2.status})`, false, `URL: ${r2.url}\n${r2.text}`);
+        await refreshSafetyStatus();
+        return;
+      }
+
       COMMS_ENABLED = true;
-      setSafetyButton(false);
-      setStatus("RESUME ✅", true, `URL: ${r2.url}\n${r2.text}\n\nActions enabled again.`);
+
+      // Reconnect any terminals that are marked open (normally none, since STOP closes them)
+      for (const n of [1,2,3]) {
+        if (terminals[n].open) connectTerminalWs(n);
+      }
+
+      setStatus("RESUME ✅", true, `URL: ${r2.url}\n${r2.text}\n\nComms enabled again.`);
       await refreshSafetyStatus();
-    } else {
-      setStatus(`RESUME failed (HTTP ${r2.status})`, false, `URL: ${r2.url}\n${r2.text}`);
+
+    } finally {
+      safetyBusy = false;
+      await refreshSafetyStatus();
     }
   }
 
   // ----------------------------
-  // Terminal (xterm.js)
+  // Terminal(s) (xterm.js) with fit + autoscroll + resize
   // ----------------------------
-  let term = null;
-  let fitAddon = null;
-  let ws = null;
-  let termOpen = false;
-  let resizeObserver = null;
-  let followOutput = true;
+  const terminals = {
+    1: { term: null, fit: null, ws: null, open: false, ro: null, follow: true },
+    2: { term: null, fit: null, ws: null, open: false, ro: null, follow: true },
+    3: { term: null, fit: null, ws: null, open: false, ro: null, follow: true },
+  };
 
   function apiWsBase() {
-    const api = baseUrl(); // e.g. http://192.168.123.18:8000
+    const api = baseUrl();               // e.g. http://192.168.123.18:8000
     const u = new URL(api);
     const wsProto = u.protocol === "https:" ? "wss" : "ws";
     return `${wsProto}://${u.host}`;
@@ -411,22 +496,121 @@
     return (t.buffer.active.length - (t.buffer.active.viewportY + t.rows)) <= threshold;
   }
 
-  function updateFollowFlag() {
-    if (!term) return;
-    followOutput = isNearBottom(term);
+  function updateFollowFlag(n) {
+    const st = terminals[n];
+    if (!st.term) return;
+    st.follow = isNearBottom(st.term);
   }
 
-  function sendTermResize() {
-    if (!term || !ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ resize: { cols: term.cols, rows: term.rows } }));
+  function sendTermResize(n) {
+    const st = terminals[n];
+    if (!st.term || !st.ws || st.ws.readyState !== WebSocket.OPEN) return;
+    st.ws.send(JSON.stringify({ resize: { cols: st.term.cols, rows: st.term.rows } }));
   }
 
-  function ensureTerminalStarted() {
-    if (term) return;
+  function anyTerminalOpen() {
+    return terminals[1].open || terminals[2].open || terminals[3].open;
+  }
 
-    const container = document.getElementById("terminal");
+  function updateTerminalsWrapVisibility() {
+    const wrap = document.getElementById("terminalsWrap");
+    wrap.style.display = anyTerminalOpen() ? "grid" : "none";
+  }
 
-    term = new Terminal({
+  function destroyTerminal(n) {
+    const st = terminals[n];
+
+    // Close ws
+    try { if (st.ws && st.ws.readyState === WebSocket.OPEN) st.ws.close(); } catch (_) {}
+    st.ws = null;
+
+    // Resize observer
+    try { if (st.ro) st.ro.disconnect(); } catch (_) {}
+    st.ro = null;
+
+    // Dispose terminal
+    try { if (st.term) st.term.dispose(); } catch (_) {}
+    st.term = null;
+    st.fit = null;
+
+    // Clear DOM container
+    const container = document.getElementById(`terminal${n}`);
+    if (container) container.innerHTML = "";
+
+    st.open = false;
+    st.follow = true;
+
+    // Hide panel
+    const panel = document.getElementById(`terminalPanel${n}`);
+    if (panel) panel.style.display = "none";
+
+    updateTerminalsWrapVisibility();
+  }
+
+  function closeAllTerminals() {
+    destroyTerminal(1);
+    destroyTerminal(2);
+    destroyTerminal(3);
+  }
+
+  function connectTerminalWs(n) {
+    const st = terminals[n];
+    if (!st.term) return;
+
+    if (!AUTH_TOKEN) {
+      st.term.write("\r\n[Login required]\r\n");
+      return;
+    }
+
+    // If comms disabled, refuse
+    if (!COMMS_ENABLED) {
+      st.term.write("\r\n[STOP latched: terminal disabled]\r\n");
+      return;
+    }
+
+    // If already connected, do nothing
+    if (st.ws && (st.ws.readyState === WebSocket.OPEN || st.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    st.ws = new WebSocket(`${apiWsBase()}/ws/terminal?token=${encodeURIComponent(AUTH_TOKEN)}`);
+
+    st.ws.onopen = () => {
+      st.term.write(`\r\n[Connected to Go2 terminal ${n}]\r\n`, () => {
+        const wasFollowing = st.follow;
+        if (st.fit) st.fit.fit();
+        sendTermResize(n);
+        if (wasFollowing) st.term.scrollToBottom();
+        updateFollowFlag(n);
+        st.term.focus();
+      });
+    };
+
+    st.ws.onmessage = (e) => {
+      const shouldFollow = st.follow;
+      st.term.write(e.data, () => {
+        if (shouldFollow) st.term.scrollToBottom();
+        updateFollowFlag(n);
+      });
+    };
+
+    st.ws.onclose = () => {
+      st.term && st.term.write("\r\n[Terminal disconnected]\r\n");
+      st.ws = null; // allow reconnect
+    };
+
+    st.ws.onerror = () => {
+      st.term && st.term.write("\r\n[Terminal error]\r\n");
+    };
+  }
+
+  function ensureTerminalStarted(n) {
+    const st = terminals[n];
+    if (st.term) return;
+
+    const container = document.getElementById(`terminal${n}`);
+
+    st.term = new Terminal({
       cursorBlink: true,
       fontSize: 14,
       convertEol: true,
@@ -436,97 +620,102 @@
       theme: { background: "#0f0f0f" }
     });
 
-    fitAddon = new FitAddon.FitAddon();
-    term.loadAddon(fitAddon);
+    st.fit = new FitAddon.FitAddon();
+    st.term.loadAddon(st.fit);
 
-    term.open(container);
-    fitAddon.fit();
+    st.term.open(container);
+    st.fit.fit();
 
-    container.addEventListener("wheel", () => setTimeout(updateFollowFlag, 0), { passive: true });
-    container.addEventListener("touchmove", () => setTimeout(updateFollowFlag, 0), { passive: true });
+    // Make clicks focus the terminal (fixes “can’t type”)
+    container.addEventListener("pointerdown", () => st.term && st.term.focus());
 
-    // Connect
-    ws = new WebSocket(`${apiWsBase()}/ws/terminal?token=${encodeURIComponent(AUTH_TOKEN)}`);
+    // Scroll tracking
+    container.addEventListener("wheel", () => setTimeout(() => updateFollowFlag(n), 0), { passive: true });
+    container.addEventListener("touchmove", () => setTimeout(() => updateFollowFlag(n), 0), { passive: true });
 
-    ws.onopen = () => {
-      term.write("\r\n[Connected to Go2 terminal]\r\n", () => {
-        const wasFollowing = followOutput;
-        fitAddon.fit();
-        sendTermResize();
-        if (wasFollowing) term.scrollToBottom();
-        updateFollowFlag();
-        term.focus();
-      });
-    };
-
-    ws.onmessage = (e) => {
-      const shouldFollow = followOutput;
-      term.write(e.data, () => {
-        if (shouldFollow) term.scrollToBottom();
-        updateFollowFlag();
-      });
-    };
-
-    ws.onclose = () => term.write("\r\n[Terminal disconnected]\r\n");
-    ws.onerror = () => term.write("\r\n[Terminal error]\r\n");
-
-    term.onData((data) => {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
-      followOutput = true;
-      term.scrollToBottom();
-      updateFollowFlag();
+    // Keyboard -> websocket
+    st.term.onData((data) => {
+      if (st.ws && st.ws.readyState === WebSocket.OPEN) st.ws.send(data);
     });
 
-    resizeObserver = new ResizeObserver(() => {
-      window.clearTimeout(window.__termResizeT);
-      window.__termResizeT = window.setTimeout(() => {
-        if (!fitAddon || !term) return;
-        const wasFollowing = followOutput;
-        fitAddon.fit();
-        sendTermResize();
-        if (wasFollowing) term.scrollToBottom();
-        updateFollowFlag();
+    // Resize observer per terminal
+    st.ro = new ResizeObserver(() => {
+      window.clearTimeout(window[`__termResizeT${n}`]);
+      window[`__termResizeT${n}`] = window.setTimeout(() => {
+        if (!st.fit || !st.term) return;
+        const wasFollowing = st.follow;
+        st.fit.fit();
+        sendTermResize(n);
+        if (wasFollowing) st.term.scrollToBottom();
+        updateFollowFlag(n);
       }, 50);
     });
-    resizeObserver.observe(container);
+    st.ro.observe(container);
+
+    // Connect WS initially
+    connectTerminalWs(n);
   }
 
-  function toggleTerminal() {
+  function openTerminal(n) {
     if (!ensureLoggedIn()) return;
+
     if (!COMMS_ENABLED) {
       setStatus("STOP latched 🔒", false, "Terminal is disabled while STOP is latched. Press RESUME.");
       return;
     }
 
-    const panel = document.getElementById("terminalPanel");
-    termOpen = !termOpen;
-    panel.style.display = termOpen ? "block" : "none";
+    const panel = document.getElementById(`terminalPanel${n}`);
+    panel.style.display = "block";
+    terminals[n].open = true;
 
-    if (termOpen) {
-      ensureTerminalStarted();
-      setTimeout(() => {
-        if (!term) return;
-        const wasFollowing = followOutput;
-        if (fitAddon) fitAddon.fit();
-        sendTermResize();
-        if (wasFollowing) term.scrollToBottom();
-        updateFollowFlag();
-        term.focus();
-      }, 150);
+    updateTerminalsWrapVisibility();
+
+    ensureTerminalStarted(n);
+    connectTerminalWs(n);
+
+    setTimeout(() => {
+      const st = terminals[n];
+      if (!st.term) return;
+      const wasFollowing = st.follow;
+      if (st.fit) st.fit.fit();
+      sendTermResize(n);
+      if (wasFollowing) st.term.scrollToBottom();
+      updateFollowFlag(n);
+      st.term.focus();
+    }, 150);
+  }
+
+  function toggleTerminalN(n) {
+    const st = terminals[n];
+    if (st.open) {
+      destroyTerminal(n);
+      return;
     }
+    openTerminal(n);
   }
 
   // ----------------------------
-  // Boot: restore saved creds
+  // Boot: restore saved creds + compute default API from UI host
   // ----------------------------
+  function computeDefaultApi() {
+    // If UI is opened like http(s)://<host>:8081/... then default API is same host on :8000
+    const host = window.location.hostname; // no port
+    const apiPort = 8000;
+    const proto = window.location.protocol; // http: or https:
+    return `${proto}//${host}:${apiPort}`;
+  }
+
   window.addEventListener("DOMContentLoaded", async () => {
-    const defaultApi = "http://192.168.123.18:8000";
+    wireEnterToUnlock();
+
     document.getElementById("uiHost").textContent = location.origin;
 
+    const defaultApi = computeDefaultApi();
     document.getElementById("loginBaseUrl").value = defaultApi;
     document.getElementById("baseUrl").value = defaultApi;
     document.getElementById("apiHost").textContent = defaultApi;
 
+    // Load saved creds
     const { u, t } = loadAuth();
     if (u && t) {
       document.getElementById("loginBaseUrl").value = u;
@@ -535,7 +724,7 @@
       ROBOT_BASE_URL = u;
       AUTH_TOKEN = t;
 
-      const r = await httpGet("/health").catch(() => null);
+      const r = await httpGet("/health", { bypassCommsGate: true }).catch(() => null);
       if (r && r.ok) {
         unlockUI();
         setStatus("Unlocked ✅ (remembered)", true);

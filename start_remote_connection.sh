@@ -16,21 +16,16 @@ export HOME="/home/unitree"
 # UI selection by CLI arg
 # ----------------------------
 MODE="${1:-joystick}"   # joystick | terminal
-UI_PAGE="app/go2_joystick.html"
 
 case "$MODE" in
-  terminal)
-    UI_PAGE="app/go2_terminal_only.html"
-    ;;
-  joystick|"")
-    UI_PAGE="app/go2_joystick.html"
+  terminal|joystick|"")
     ;;
   *)
     echo "[run_all] ❌ Unknown mode: '$MODE'"
     echo "Usage:"
-    echo "  $0                # serve joystick UI"
-    echo "  $0 joystick       # serve joystick UI"
-    echo "  $0 terminal       # serve terminal-only UI"
+    echo "  $0                # serve joystick UI + bridge"
+    echo "  $0 joystick       # serve joystick UI + bridge"
+    echo "  $0 terminal       # serve terminal-only UI (no bridge)"
     exit 1
     ;;
 esac
@@ -65,6 +60,7 @@ ok_or_die() {
 }
 
 echo "[run_all] Workspace: $WS_DIR"
+echo "[run_all] Mode: $MODE"
 
 # --- Source ROS + Unitree stack safely ---
 set +u
@@ -82,7 +78,6 @@ else
 fi
 
 # 2) Unitree environment (IMPORTANT on Go2)
-# Use whichever exists on your system:
 if [ -f "$HOME/unitree_ros2/install/setup.sh" ]; then
   echo "[run_all] Sourcing Unitree env: $HOME/unitree_ros2/install/setup.sh"
   source "$HOME/unitree_ros2/install/setup.sh"
@@ -106,60 +101,46 @@ set -u
 # --- Make runtime deterministic under systemd ---
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
-
-# If you have a CycloneDDS config file, set it explicitly (optional)
 # export CYCLONEDDS_URI="file://$HOME/unitree_ros2/cyclonedds.xml"
 
 # ----------------------------
 # Load Go2 API token
 # ----------------------------
 if [ -f "$HOME/.go2_token" ]; then
-  export GO2_API_TOKEN="$(cat "$HOME/.go2_token")"
+  export GO2_API_TOKEN="$(tr -d '\r\n' < "$HOME/.go2_token")"
 else
   echo "[run_all] ❌ ERROR: ~/.go2_token not found"
   exit 1
 fi
-
 echo "[run_all] GO2_API_TOKEN loaded"
 
-# (lets you open http://<ip>:8081/ and it goes to the chosen page)
 # ----------------------------
-if [ -d "$PKG_DIR/app" ]; then
-  cat > "$PKG_DIR/index.html" <<EOF
-<!doctype html>
-<html>
-  <head>
-    <meta http-equiv="refresh" content="0; url=/$UI_PAGE">
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Go2 UI</title>
-  </head>
-  <body>
-    <p>Redirecting to <a href="/$UI_PAGE">/$UI_PAGE</a>…</p>
-  </body>
-</html>
-EOF
-  echo "[run_all] index.html redirect -> /$UI_PAGE"
-fi
-
 # 1) Start FastAPI backend
+# ----------------------------
 echo "[run_all] Starting FastAPI (uvicorn) on :$API_PORT ..."
 cd "$PKG_DIR"
 python3 -m uvicorn app.main:app --host "$API_HOST" --port "$API_PORT" &
 API_PID=$!
+pids+=("$API_PID")
+
 sleep 0.5
 if ! kill -0 "$API_PID" 2>/dev/null; then
   echo "[run_all] ❌ FastAPI failed to start (check logs above)."
   exit 1
 fi
 
+# ----------------------------
 # 2) Start static file server for frontend
+# ----------------------------
 echo "[run_all] Starting http.server on :$UI_PORT ..."
+cd "$PKG_DIR"
 python3 -m http.server "$UI_PORT" &
 UI_PID=$!
 pids+=("$UI_PID")
 
-
-# 3) Wait for unitree sport topics before starting bridge (prevents “no motion after boot”)
+# ----------------------------
+# 3) Wait for unitree sport topics before starting bridge (kept the same)
+# ----------------------------
 echo "[run_all] Waiting for Unitree sport topics..."
 for i in {1..30}; do
   if ros2 topic list 2>/dev/null | grep -q "^/api/sport/request$"; then
@@ -169,20 +150,29 @@ for i in {1..30}; do
   sleep 1
 done
 
-# 4) Start bridge node (prefer launching the binary directly)
+# ----------------------------
+# 4) Start bridge node (ONLY in joystick mode)
+# ----------------------------
 BRIDGE_PID=""
-BRIDGE_BIN="$WS_DIR/install/p2_remote_connection/lib/p2_remote_connection/web_teleop_bridge"
-if [ -x "$BRIDGE_BIN" ]; then
-  echo "[run_all] Starting bridge: $BRIDGE_BIN"
-  "$BRIDGE_BIN" &
-  BRIDGE_PID=$!
-  pids+=("$BRIDGE_PID")
+if [ "$MODE" = "joystick" ] || [ -z "$MODE" ]; then
+  BRIDGE_BIN="$WS_DIR/install/p2_remote_connection/lib/p2_remote_connection/web_teleop_bridge"
+  if [ -x "$BRIDGE_BIN" ]; then
+    echo "[run_all] Starting bridge: $BRIDGE_BIN"
+    "$BRIDGE_BIN" &
+    BRIDGE_PID=$!
+    pids+=("$BRIDGE_PID")
+  else
+    echo "[run_all] Starting ROS2 bridge via ros2 run (fallback)"
+    cd "$WS_DIR"
+    ros2 run p2_remote_connection web_teleop_bridge &
+    BRIDGE_PID=$!
+    pids+=("$BRIDGE_PID")
+  fi
+
+  sleep 0.5
+  ok_or_die "bridge" "$BRIDGE_PID"
 else
-  echo "[run_all] Starting ROS2 bridge via ros2 run (fallback)"
-  cd "$WS_DIR"
-  ros2 run p2_remote_connection web_teleop_bridge &
-  BRIDGE_PID=$!
-  pids+=("$BRIDGE_PID")
+  echo "[run_all] Terminal mode: skipping web_teleop_bridge ✅"
 fi
 
 # Give them a moment to crash if they will
@@ -191,11 +181,16 @@ sleep 0.5
 # Validate they are alive
 ok_or_die "FastAPI" "$API_PID"
 ok_or_die "UI server" "$UI_PID"
-ok_or_die "bridge" "$BRIDGE_PID"
 
 echo ""
 echo "[run_all] ✅ All started."
-echo "[run_all] UI:  http://<this-machine-ip>:$UI_PORT/app/go2_joystick.html"
+
+if [ "$MODE" = "terminal" ]; then
+  echo "[run_all] UI:  http://<this-machine-ip>:$UI_PORT/app/go2_terminal_only.html"
+else
+  echo "[run_all] UI:  http://<this-machine-ip>:$UI_PORT/app/go2_joystick.html"
+fi
+
 echo "[run_all] API: http://<this-machine-ip>:$API_PORT"
 echo "[run_all] Press Ctrl+C to stop everything."
 echo ""
@@ -203,4 +198,3 @@ echo ""
 wait -n
 echo "[run_all] A process exited; shutting down..."
 exit 0
-
