@@ -145,8 +145,6 @@
         </div>
       </div>
 
-
-
       <div class="status">
         <div id="msg" class="small">Ready.</div>
         <div id="detail" class="mono"></div>
@@ -157,27 +155,7 @@
       </div>
     </div>
   </div>
-
   <script>
-
-  // ----------------------------
-  // Auto-config (IMPORTANT)
-  // ----------------------------
-  // window.addEventListener("DOMContentLoaded", () => {
-  //   // Use EC2 backend URL
-  //   const defaultApi = "http://54.66.38.113:8000";
-  //   //// Use HTTPS domain backend URL
-  //   // const defaultApi = "https://p2dingo-control-backend.p2agentx.com";
-
-  //   const base = document.getElementById("baseUrl");
-  //   if (!base.value || base.value.trim() === "" || base.value.includes("192.168.123.18") || base.value.includes("localhost")) {
-  //     base.value = defaultApi;
-  //   }
-
-  //   document.getElementById("uiHost").textContent = location.origin;
-  //   document.getElementById("apiHost").textContent = base.value;
-  // });
-  
 
   // ----------------------------
   // Authentication
@@ -507,7 +485,12 @@
     if (!stopLatched) {
 
       // Close terminal websocket
-      try { if (ws && ws.readyState === WebSocket.OPEN) ws.close(); } catch (_) {}
+      // STOP path
+      for (const n of [1,2,3]) {
+        const st = terminals[n];
+        try { if (st.ws) st.ws.close(); } catch (_) {}
+        st.ws = null;
+      }
 
       // 2) Tell backend to latch STOP (this also sends final stop to robot once)
       const r = await httpPost("/safety/stop");
@@ -534,6 +517,11 @@
     if (r2.ok) {
       // Re-enable comms
       COMMS_ENABLED = true;
+
+      // RESUME path
+    for (const n of [1,2,3]) {
+      if (terminals[n].open) connectTerminalWs(n);
+    }
 
       // Update UI
       setSafetyButton(false);
@@ -795,6 +783,51 @@
     updateTerminalsWrapVisibility();
   }
 
+  function connectTerminalWs(n) {
+    const st = terminals[n];
+    if (!st.term) return;
+    if (!AUTH_TOKEN) {
+      st.term.write("\r\n[Login required]\r\n");
+      return;
+    }
+
+    // If already connected, do nothing
+    if (st.ws && (st.ws.readyState === WebSocket.OPEN || st.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    // Create fresh WS
+    st.ws = new WebSocket(`${apiWsBase()}/ws/terminal?token=${encodeURIComponent(AUTH_TOKEN)}`);
+
+    st.ws.onopen = () => {
+      st.term.write(`\r\n[Connected to Go2 terminal ${n}]\r\n`, () => {
+        const wasFollowing = st.follow;
+        if (st.fit) st.fit.fit();
+        sendTermResize(n);
+        if (wasFollowing) st.term.scrollToBottom();
+        updateFollowFlag(n);
+        st.term.focus();
+      });
+    };
+
+    st.ws.onmessage = (e) => {
+      const shouldFollow = st.follow;
+      st.term.write(e.data, () => {
+        if (shouldFollow) st.term.scrollToBottom();
+        updateFollowFlag(n);
+      });
+    };
+
+    st.ws.onclose = () => {
+      st.term && st.term.write("\r\n[Terminal disconnected]\r\n");
+      st.ws = null; // IMPORTANT: allow reconnect
+    };
+
+    st.ws.onerror = () => {
+      st.term && st.term.write("\r\n[Terminal error]\r\n");
+    };
+  }
+
   function ensureTerminalStarted(n) {
     const st = terminals[n];
     if (st.term) return;
@@ -817,62 +850,34 @@
     st.term.open(container);
     st.fit.fit();
 
-    // Allow user scroll (mouse wheel / touchpad)
+    // ✅ Make clicks focus the terminal (fixes “can’t type”)
+    container.addEventListener("pointerdown", () => st.term && st.term.focus());
+
+    // Scroll tracking
     container.addEventListener("wheel", () => setTimeout(() => updateFollowFlag(n), 0), { passive: true });
     container.addEventListener("touchmove", () => setTimeout(() => updateFollowFlag(n), 0), { passive: true });
 
-    if (!AUTH_TOKEN) {
-      st.term.write("\r\n[Login required]\r\n");
-      return;
-    }
-
-    st.ws = new WebSocket(`${apiWsBase()}/ws/terminal?token=${encodeURIComponent(AUTH_TOKEN)}`);
-
-    st.ws.onopen = () => {
-      st.term.write(`\r\n[Connected to Go2 terminal ${n}]\r\n`, () => {
-        const wasFollowing = st.follow;
-        st.fit.fit();
-        sendTermResize(n);
-        if (wasFollowing) st.term.scrollToBottom();
-        updateFollowFlag(n);
-        st.term.focus();
-      });
-    };
-
-    st.ws.onmessage = (e) => {
-      const shouldFollow = st.follow;
-      st.term.write(e.data, () => {
-        if (shouldFollow) st.term.scrollToBottom();
-        updateFollowFlag(n);
-      });
-    };
-
-    st.ws.onclose = () => st.term && st.term.write("\r\n[Terminal disconnected]\r\n");
-    st.ws.onerror = () => st.term && st.term.write("\r\n[Terminal error]\r\n");
-
+    // ✅ Wire keyboard -> websocket (works even after reconnect)
     st.term.onData((data) => {
       if (st.ws && st.ws.readyState === WebSocket.OPEN) st.ws.send(data);
-      st.follow = true;
-      st.term.scrollToBottom();
-      updateFollowFlag(n);
     });
 
-    // Resize observer per terminal container
+    // Resize observer per terminal
     st.ro = new ResizeObserver(() => {
       window.clearTimeout(window[`__termResizeT${n}`]);
       window[`__termResizeT${n}`] = window.setTimeout(() => {
         if (!st.fit || !st.term) return;
-
         const wasFollowing = st.follow;
-
         st.fit.fit();
         sendTermResize(n);
-
         if (wasFollowing) st.term.scrollToBottom();
         updateFollowFlag(n);
       }, 50);
     });
     st.ro.observe(container);
+
+    // ✅ Connect WS initially
+    connectTerminalWs(n);
   }
 
   function openTerminal(n) {
@@ -883,13 +888,13 @@
     terminals[n].open = true;
 
     updateTerminalsWrapVisibility();
-    ensureTerminalStarted(n);
 
-    // after layout, fit + resize
+    ensureTerminalStarted(n);
+    connectTerminalWs(n); // ✅ in case it exists but ws was closed
+
     setTimeout(() => {
       const st = terminals[n];
       if (!st.term) return;
-
       const wasFollowing = st.follow;
       if (st.fit) st.fit.fit();
       sendTermResize(n);
@@ -898,6 +903,7 @@
       st.term.focus();
     }, 150);
   }
+
 
   function toggleTerminalN(n) {
     // Safety: STOP latched disables terminals (match your old behavior)
@@ -918,6 +924,48 @@
     destroyTerminal(1);
     destroyTerminal(2);
     destroyTerminal(3);
+  }
+
+  function connectTerminalWs() {
+    if (!term) return;
+    if (!AUTH_TOKEN) {
+      term.write("\r\n[Login required]\r\n");
+      return;
+    }
+
+    // If already connected, do nothing
+    if (ws && ws.readyState === WebSocket.OPEN) return;
+
+    // If there is a dead socket, drop it
+    try { if (ws) ws.close(); } catch (_) {}
+    ws = null;
+
+    ws = new WebSocket(`${apiWsBase()}/ws/terminal?token=${encodeURIComponent(AUTH_TOKEN)}`);
+
+    ws.onopen = () => {
+      term.write("\r\n[Terminal reconnected]\r\n", () => {
+        if (fitAddon) fitAddon.fit();
+        sendTermResize();
+        term.scrollToBottom();
+        term.focus();
+      });
+    };
+
+    ws.onmessage = (e) => {
+      const shouldFollow = followOutput;
+      term.write(e.data, () => {
+        if (shouldFollow) term.scrollToBottom();
+        updateFollowFlag();
+      });
+    };
+
+    ws.onclose = () => {
+      term.write("\r\n[Terminal disconnected]\r\n");
+    };
+
+    ws.onerror = () => {
+      term.write("\r\n[Terminal error]\r\n");
+    };
   }
 
   </script>

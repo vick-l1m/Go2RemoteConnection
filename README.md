@@ -64,6 +64,8 @@ chmod +x start_remote_connection_humble.sh
 Check the device ip address:
 ```bash
 hostname -I
+or 
+ip -br a # search for wlan0 ip
 ```
 Open the website on a device connected to the same wifi: 
 ```bash
