@@ -68,10 +68,15 @@ class SportClient {
   rclcpp::Subscription<unitree_api::msg::Response>::SharedPtr req_suber_;
   rclcpp::Node *node_;
 
- public:
+public:
   explicit SportClient(rclcpp::Node *node) : node_(node) {
-    req_puber_ = node_->create_publisher<unitree_api::msg::Request>(
-        "/api/sport/request", 10);
+  //   req_puber_ = node_->create_publisher<unitree_api::msg::Request>(
+  //       "/api/sport/request", 10);
+  // }
+  auto qos = rclcpp::QoS(rclcpp::KeepLast(1))
+               .best_effort()
+               .durability_volatile();
+    req_puber_ = node_->create_publisher<unitree_api::msg::Request>("/api/sport/request", qos);
   }
 
   template <typename Request, typename Response>

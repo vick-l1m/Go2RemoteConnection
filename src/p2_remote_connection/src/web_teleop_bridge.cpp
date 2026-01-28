@@ -84,6 +84,17 @@ private:
 
   // -------------------- Main loop --------------------
   void tick() {
+    // Tick rate:
+    static int count = 0;
+    static auto t0 = this->now();
+    count++;
+    auto dt = (this->now() - t0).seconds();
+    if (dt > 2.0) {
+      RCLCPP_INFO(get_logger(), "tick rate ~ %.2f Hz", count / dt);
+      t0 = this->now();
+      count = 0;
+    }
+
     const auto now_t = this->now();
     double vx, vy, vyaw;
 

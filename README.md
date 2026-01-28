@@ -67,9 +67,9 @@ hostname -I
 ```
 Open the website on a device connected to the same wifi: 
 ```bash
-<device_ip>::8081/go2_joystick.html
+<device_ip>::8081/app/go2_joystick.html
 
-go2: 192.168.123.18/go2_joystick.html
+go2: 192.168.123.18/app/go2_joystick.html
 ```
 
 ## Making the script run on startup
