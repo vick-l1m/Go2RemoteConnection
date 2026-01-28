@@ -12,6 +12,29 @@ UI_PORT="8081"
 # Make sure HOME is set correctly under systemd
 export HOME="/home/unitree"
 
+# ----------------------------
+# UI selection by CLI arg
+# ----------------------------
+MODE="${1:-joystick}"   # joystick | terminal
+UI_PAGE="app/go2_joystick.html"
+
+case "$MODE" in
+  terminal)
+    UI_PAGE="app/go2_terminal_only.html"
+    ;;
+  joystick|"")
+    UI_PAGE="app/go2_joystick.html"
+    ;;
+  *)
+    echo "[run_all] ❌ Unknown mode: '$MODE'"
+    echo "Usage:"
+    echo "  $0                # serve joystick UI"
+    echo "  $0 joystick       # serve joystick UI"
+    echo "  $0 terminal       # serve terminal-only UI"
+    exit 1
+    ;;
+esac
+
 pids=()
 
 cleanup() {
@@ -99,6 +122,24 @@ fi
 
 echo "[run_all] GO2_API_TOKEN loaded"
 
+# (lets you open http://<ip>:8081/ and it goes to the chosen page)
+# ----------------------------
+if [ -d "$PKG_DIR/app" ]; then
+  cat > "$PKG_DIR/index.html" <<EOF
+<!doctype html>
+<html>
+  <head>
+    <meta http-equiv="refresh" content="0; url=/$UI_PAGE">
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Go2 UI</title>
+  </head>
+  <body>
+    <p>Redirecting to <a href="/$UI_PAGE">/$UI_PAGE</a>…</p>
+  </body>
+</html>
+EOF
+  echo "[run_all] index.html redirect -> /$UI_PAGE"
+fi
 
 # 1) Start FastAPI backend
 echo "[run_all] Starting FastAPI (uvicorn) on :$API_PORT ..."

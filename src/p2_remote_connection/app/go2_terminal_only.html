@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go2 Control + Terminal</title>
+
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 14px; }
+    .card { max-width: 860px; margin: 0 auto; border: 1px solid #ddd; border-radius: 16px; padding: 14px; }
+    h1 { margin: 0 0 10px; font-size: 20px; }
+
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    input { padding: 10px; border-radius: 12px; border: 1px solid #ccc; flex: 1; min-width: 220px; font-size: 16px; }
+    button {
+      padding: 12px 12px; border-radius: 12px; border: 1px solid #ccc; background: #f7f7f7;
+      font-size: 16px; cursor: pointer; min-width: 120px;
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .danger { background: #fff1f1; border-color: #ffb3b3; }
+
+    .small { font-size: 13px; color: #555; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
+
+    .status { margin-top: 12px; padding: 10px; border-radius: 12px; background: #fafafa; border: 1px solid #eee; }
+    .hint { margin-top: 6px; }
+
+    .termPanel { margin-top: 12px; border: 1px solid #eee; border-radius: 16px; background: #0f0f0f; overflow: hidden; }
+    .termHeader { display:flex; justify-content: space-between; align-items:center; padding: 10px 12px; background:#171717; border-bottom:1px solid #2a2a2a; }
+    .termTitle { color:#fff; font-size:14px; font-weight:600; }
+    .termHint { color:#bbb; }
+    .termBox {
+      width: 100%;
+      height: 420px;
+      overflow: auto;
+      touch-action: pan-y;
+    }
+  </style>
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+</head>
+
+<body>
+  <!-- LOGIN OVERLAY -->
+  <div id="loginOverlay" style="
+    position:fixed; inset:0; background:rgba(0,0,0,0.55);
+    display:flex; align-items:center; justify-content:center; z-index:9999;
+    pointer-events:auto;">
+    <div style="background:white; padding:16px; border-radius:16px; width:min(420px, 92vw);">
+      <h2 style="margin:0 0 10px; font-size:18px;">Connect to Go2</h2>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <input id="loginBaseUrl" placeholder="http://robot-ip:8000 or https://robot.domain"
+               style="padding:10px; border-radius:12px; border:1px solid #ccc; font-size:16px;"
+               value="http://192.168.123.18:8000" />
+        <input id="loginToken" placeholder="Password" type="password"
+               style="padding:10px; border-radius:12px; border:1px solid #ccc; font-size:16px;" />
+        <button onclick="login()" style="padding:12px; border-radius:12px; border:1px solid #ccc; background:#f7f7f7; font-size:16px;">
+          Unlock
+        </button>
+        <div id="loginMsg" style="font-size:13px; color:#b00020;"></div>
+        <div style="font-size:12px; color:#555;">Tip: This password is unique per robot.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="appRoot" style="filter: blur(6px); pointer-events:none; user-select:none;">
+    <div class="card">
+      <h1>Unitree Go2 – Control + Terminal</h1>
+
+      <div class="row">
+        <input id="baseUrl" placeholder="http://<go2-ip>:8000" />
+        <button onclick="checkHealth()">Health</button>
+        <button onclick="postAction('stand')">Stand</button>
+        <button onclick="postAction('sit')">Sit</button>
+        <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
+        <button onclick="toggleTerminal()">Terminal</button>
+        <button onclick="logout()">Logout</button>
+      </div>
+
+      <div class="small hint">
+        UI host: <span id="uiHost" class="mono"></span><br/>
+        API base: <span id="apiHost" class="mono"></span>
+      </div>
+
+      <div id="terminalPanel" class="termPanel" style="display:none;">
+        <div class="termHeader">
+          <div class="termTitle">Remote Terminal</div>
+          <div class="termHint small">Connects to /ws/terminal on API (:8000)</div>
+        </div>
+        <div id="terminal" class="termBox"></div>
+      </div>
+
+      <div class="status">
+        <div id="msg" class="small">Ready.</div>
+        <div id="detail" class="mono"></div>
+      </div>
+
+      <div class="small" style="margin-top:10px;">
+        Tip: Use STOP before risky commands. Terminal runs on the robot host.
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // ----------------------------
+  // Auth + local storage
+  // ----------------------------
+  let AUTH_TOKEN = "";
+  let ROBOT_BASE_URL = "";
+  let COMMS_ENABLED = true;   // STOP latch disables actions (and terminal is closed)
+
+  const LS_URL_KEY = "go2_baseUrl";
+  const LS_TOKEN_KEY = "go2_token";
+
+  function baseUrl() {
+    return (ROBOT_BASE_URL || document.getElementById("baseUrl").value || "")
+      .trim()
+      .replace(/\/+$/, "");
+  }
+
+  function authHeaders() {
+    return AUTH_TOKEN ? { "Authorization": `Bearer ${AUTH_TOKEN}` } : {};
+  }
+
+  function lockUI() {
+    document.getElementById("loginOverlay").style.display = "flex";
+    const root = document.getElementById("appRoot");
+    root.style.filter = "blur(6px)";
+    root.style.pointerEvents = "none";
+    root.style.userSelect = "none";
+  }
+
+  function unlockUI() {
+    document.getElementById("loginOverlay").style.display = "none";
+    const root = document.getElementById("appRoot");
+    root.style.filter = "none";
+    root.style.pointerEvents = "auto";
+    root.style.userSelect = "auto";
+  }
+
+  function saveAuth() {
+    localStorage.setItem(LS_URL_KEY, ROBOT_BASE_URL);
+    localStorage.setItem(LS_TOKEN_KEY, AUTH_TOKEN);
+  }
+
+  function loadAuth() {
+    const u = localStorage.getItem(LS_URL_KEY) || "";
+    const t = localStorage.getItem(LS_TOKEN_KEY) || "";
+    return { u, t };
+  }
+
+  function clearAuth() {
+    localStorage.removeItem(LS_URL_KEY);
+    localStorage.removeItem(LS_TOKEN_KEY);
+  }
+
+  function ensureLoggedIn() {
+    if (!ROBOT_BASE_URL || !AUTH_TOKEN) {
+      const msg = document.getElementById("loginMsg");
+      if (msg) msg.textContent = "Please log in.";
+      lockUI();
+      return false;
+    }
+    return true;
+  }
+
+  async function login() {
+    const msg = document.getElementById("loginMsg");
+    msg.textContent = "";
+
+    const url = document.getElementById("loginBaseUrl").value.trim().replace(/\/+$/, "");
+    const token = document.getElementById("loginToken").value.trim();
+
+    if (!url || !token) {
+      msg.textContent = "Please enter robot URL and password.";
+      lockUI();
+      return;
+    }
+
+    ROBOT_BASE_URL = url;
+    AUTH_TOKEN = token;
+
+    document.getElementById("baseUrl").value = ROBOT_BASE_URL;
+    document.getElementById("apiHost").textContent = ROBOT_BASE_URL;
+
+    try {
+      const r = await httpGet("/health");
+      if (!r.ok) {
+        msg.textContent = (r.status === 401 || r.status === 403)
+          ? "Incorrect token entered."
+          : `Login failed (HTTP ${r.status})`;
+        AUTH_TOKEN = "";
+        ROBOT_BASE_URL = "";
+        clearAuth();
+        lockUI();
+        return;
+      }
+
+      saveAuth();
+      COMMS_ENABLED = true;
+      unlockUI();
+      setStatus("Unlocked ✅", true);
+      await refreshSafetyStatus();
+
+    } catch (e) {
+      msg.textContent = "Login error: " + (e?.message || String(e));
+      lockUI();
+    }
+  }
+
+  function logout() {
+    // Close terminal if open
+    try { if (ws && ws.readyState === WebSocket.OPEN) ws.close(); } catch (_) {}
+    AUTH_TOKEN = "";
+    ROBOT_BASE_URL = "";
+    COMMS_ENABLED = true;
+    clearAuth();
+
+    const t = document.getElementById("loginToken");
+    if (t) t.value = "";
+
+    lockUI();
+    setStatus("Logged out.", true);
+  }
+
+  // ----------------------------
+  // Status
+  // ----------------------------
+  function setStatus(text, ok=true, detail="") {
+    const msg = document.getElementById("msg");
+    const detailEl = document.getElementById("detail");
+    msg.textContent = text;
+    msg.style.color = ok ? "#0a7a0a" : "#b00020";
+    detailEl.textContent = detail || "";
+
+    const apiHost = document.getElementById("apiHost");
+    if (apiHost) apiHost.textContent = baseUrl();
+  }
+
+  // ----------------------------
+  // Networking helpers
+  // ----------------------------
+  function commsAllowed(path) {
+    // Always allow these even when STOP latched
+    if (path === "/health") return true;
+    if (path.startsWith("/safety/")) return true;
+    return COMMS_ENABLED;
+  }
+
+  async function httpGet(path) {
+    if (!commsAllowed(path)) {
+      return { ok:false, status: 0, text: "Comms disabled: press RESUME to re-enable", url: baseUrl() + path };
+    }
+    const url = baseUrl() + path;
+    const r = await fetch(url, { headers: authHeaders() });
+
+    if (r.status === 401 || r.status === 403) {
+      AUTH_TOKEN = "";
+      ROBOT_BASE_URL = "";
+      clearAuth();
+      lockUI();
+      const msg = document.getElementById("loginMsg");
+      if (msg) msg.textContent = "Invalid token. Please log in again.";
+    }
+
+    const t = await r.text();
+    return { ok: r.ok, status: r.status, text: t, url };
+  }
+
+  async function httpPost(path, json=null) {
+    if (!commsAllowed(path)) {
+      return { ok:false, status: 0, text: "Comms disabled: press RESUME to re-enable", url: baseUrl() + path };
+    }
+    const url = baseUrl() + path;
+    const headers = { ...authHeaders() };
+    if (json) headers["Content-Type"] = "application/json";
+    const r = await fetch(url, { method:"POST", headers, body: json ? JSON.stringify(json) : null });
+
+    if (r.status === 401 || r.status === 403) {
+      AUTH_TOKEN = "";
+      ROBOT_BASE_URL = "";
+      clearAuth();
+      lockUI();
+      const msg = document.getElementById("loginMsg");
+      if (msg) msg.textContent = "Invalid token. Please log in again.";
+    }
+
+    const t = await r.text();
+    return { ok: r.ok, status: r.status, text: t, url };
+  }
+
+  async function checkHealth() {
+    if (!ensureLoggedIn()) return;
+    setStatus("Checking /health...");
+    try {
+      const r = await httpGet("/health");
+      setStatus(
+        r.ok ? "Health OK ✅" : `Health failed (HTTP ${r.status})`,
+        r.ok,
+        `URL: ${r.url}\n${r.text}`
+      );
+    } catch (e) {
+      setStatus("Health network error", false, `API base was: ${baseUrl()}\n${String(e)}\n\nTip: API must be http://<go2-ip>:8000`);
+    }
+  }
+
+  async function postAction(action) {
+    if (!ensureLoggedIn()) return;
+
+    if (!COMMS_ENABLED) {
+      setStatus("STOP latched 🔒", false, "No actions can be taken until RESUME is pressed.");
+      return;
+    }
+
+    setStatus(`Sending ${action}...`);
+    try {
+      const r = await httpPost(`/actions/${action}`);
+      setStatus(
+        r.ok ? `${action} started ✅` : `${action} failed (HTTP ${r.status})`,
+        r.ok,
+        `URL: ${r.url}\n${r.text}`
+      );
+    } catch (e) {
+      setStatus(`${action} network error`, false, `API base was: ${baseUrl()}\n${String(e)}`);
+    }
+  }
+
+  // ----------------------------
+  // STOP/RESUME toggle (backend latch)
+  // ----------------------------
+  let stopLatched = false;
+
+  function setSafetyButton(latched) {
+    const btn = document.getElementById("safetyToggleBtn");
+    if (!btn) return;
+
+    stopLatched = !!latched;
+    if (stopLatched) {
+      btn.textContent = "RESUME";
+      btn.classList.remove("danger");
+    } else {
+      btn.textContent = "STOP";
+      btn.classList.add("danger");
+    }
+  }
+
+  async function refreshSafetyStatus() {
+    if (!ensureLoggedIn()) return;
+    const r = await httpGet("/safety/status");
+    if (r.ok) {
+      try {
+        const data = JSON.parse(r.text);
+        setSafetyButton(!!data.stop_latched);
+      } catch (_) {}
+    }
+  }
+
+  async function toggleSafety() {
+    if (!ensureLoggedIn()) return;
+
+    // STOP
+    if (!stopLatched) {
+      // Close terminal websocket for safety
+      try { if (ws && ws.readyState === WebSocket.OPEN) ws.close(); } catch (_) {}
+
+      const r = await httpPost("/safety/stop");
+      COMMS_ENABLED = false;
+      setSafetyButton(true);
+
+      setStatus(
+        r.ok ? "STOP latched 🔒" : `STOP failed (HTTP ${r.status})`,
+        r.ok,
+        `URL: ${r.url}\n${r.text}\n\nActions disabled until RESUME.`
+      );
+      return;
+    }
+
+    // RESUME
+    const r2 = await httpPost("/safety/resume");
+    if (r2.ok) {
+      COMMS_ENABLED = true;
+      setSafetyButton(false);
+      setStatus("RESUME ✅", true, `URL: ${r2.url}\n${r2.text}\n\nActions enabled again.`);
+      await refreshSafetyStatus();
+    } else {
+      setStatus(`RESUME failed (HTTP ${r2.status})`, false, `URL: ${r2.url}\n${r2.text}`);
+    }
+  }
+
+  // ----------------------------
+  // Terminal (xterm.js)
+  // ----------------------------
+  let term = null;
+  let fitAddon = null;
+  let ws = null;
+  let termOpen = false;
+  let resizeObserver = null;
+  let followOutput = true;
+
+  function apiWsBase() {
+    const api = baseUrl(); // e.g. http://192.168.123.18:8000
+    const u = new URL(api);
+    const wsProto = u.protocol === "https:" ? "wss" : "ws";
+    return `${wsProto}://${u.host}`;
+  }
+
+  function isNearBottom(t, threshold = 2) {
+    return (t.buffer.active.length - (t.buffer.active.viewportY + t.rows)) <= threshold;
+  }
+
+  function updateFollowFlag() {
+    if (!term) return;
+    followOutput = isNearBottom(term);
+  }
+
+  function sendTermResize() {
+    if (!term || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ resize: { cols: term.cols, rows: term.rows } }));
+  }
+
+  function ensureTerminalStarted() {
+    if (term) return;
+
+    const container = document.getElementById("terminal");
+
+    term = new Terminal({
+      cursorBlink: true,
+      fontSize: 14,
+      convertEol: true,
+      scrollback: 5000,
+      scrollOnUserInput: true,
+      scrollOnOutput: true,
+      theme: { background: "#0f0f0f" }
+    });
+
+    fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+
+    term.open(container);
+    fitAddon.fit();
+
+    container.addEventListener("wheel", () => setTimeout(updateFollowFlag, 0), { passive: true });
+    container.addEventListener("touchmove", () => setTimeout(updateFollowFlag, 0), { passive: true });
+
+    // Connect
+    ws = new WebSocket(`${apiWsBase()}/ws/terminal?token=${encodeURIComponent(AUTH_TOKEN)}`);
+
+    ws.onopen = () => {
+      term.write("\r\n[Connected to Go2 terminal]\r\n", () => {
+        const wasFollowing = followOutput;
+        fitAddon.fit();
+        sendTermResize();
+        if (wasFollowing) term.scrollToBottom();
+        updateFollowFlag();
+        term.focus();
+      });
+    };
+
+    ws.onmessage = (e) => {
+      const shouldFollow = followOutput;
+      term.write(e.data, () => {
+        if (shouldFollow) term.scrollToBottom();
+        updateFollowFlag();
+      });
+    };
+
+    ws.onclose = () => term.write("\r\n[Terminal disconnected]\r\n");
+    ws.onerror = () => term.write("\r\n[Terminal error]\r\n");
+
+    term.onData((data) => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
+      followOutput = true;
+      term.scrollToBottom();
+      updateFollowFlag();
+    });
+
+    resizeObserver = new ResizeObserver(() => {
+      window.clearTimeout(window.__termResizeT);
+      window.__termResizeT = window.setTimeout(() => {
+        if (!fitAddon || !term) return;
+        const wasFollowing = followOutput;
+        fitAddon.fit();
+        sendTermResize();
+        if (wasFollowing) term.scrollToBottom();
+        updateFollowFlag();
+      }, 50);
+    });
+    resizeObserver.observe(container);
+  }
+
+  function toggleTerminal() {
+    if (!ensureLoggedIn()) return;
+    if (!COMMS_ENABLED) {
+      setStatus("STOP latched 🔒", false, "Terminal is disabled while STOP is latched. Press RESUME.");
+      return;
+    }
+
+    const panel = document.getElementById("terminalPanel");
+    termOpen = !termOpen;
+    panel.style.display = termOpen ? "block" : "none";
+
+    if (termOpen) {
+      ensureTerminalStarted();
+      setTimeout(() => {
+        if (!term) return;
+        const wasFollowing = followOutput;
+        if (fitAddon) fitAddon.fit();
+        sendTermResize();
+        if (wasFollowing) term.scrollToBottom();
+        updateFollowFlag();
+        term.focus();
+      }, 150);
+    }
+  }
+
+  // ----------------------------
+  // Boot: restore saved creds
+  // ----------------------------
+  window.addEventListener("DOMContentLoaded", async () => {
+    const defaultApi = "http://192.168.123.18:8000";
+    document.getElementById("uiHost").textContent = location.origin;
+
+    document.getElementById("loginBaseUrl").value = defaultApi;
+    document.getElementById("baseUrl").value = defaultApi;
+    document.getElementById("apiHost").textContent = defaultApi;
+
+    const { u, t } = loadAuth();
+    if (u && t) {
+      document.getElementById("loginBaseUrl").value = u;
+      document.getElementById("loginToken").value = t;
+
+      ROBOT_BASE_URL = u;
+      AUTH_TOKEN = t;
+
+      const r = await httpGet("/health").catch(() => null);
+      if (r && r.ok) {
+        unlockUI();
+        setStatus("Unlocked ✅ (remembered)", true);
+        await refreshSafetyStatus();
+        return;
+      }
+
+      // creds stale
+      AUTH_TOKEN = "";
+      ROBOT_BASE_URL = "";
+      clearAuth();
+    }
+
+    lockUI();
+  });
+  </script>
+</body>
+</html>
