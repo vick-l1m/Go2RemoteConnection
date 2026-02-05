@@ -34,7 +34,6 @@ class MapStore:
 
 _map_store = MapStore()
 
-
 async def _broadcast_map_payload(payload: dict):
     """
     Send 2 frames: JSON header then gzipped binary bytes.
@@ -57,7 +56,6 @@ async def _broadcast_map_payload(payload: dict):
             for ws in dead:
                 _map_store.clients.discard(ws)
 
-
 def _i8_list_to_bytes(data) -> bytes:
     return bytes((d & 0xFF) for d in data)
 
@@ -70,6 +68,7 @@ class WebRosBridge(Node):
         self.pub_twist = self.create_publisher(Twist, "/web_teleop", 10)
         self.pub_action = self.create_publisher(String, "/web_action", 10)
         self.pub_enabled = self.create_publisher(Bool, "/web_teleop_enabled", 1)
+        self.move_forward_pub = self.node.create_publisher(Float32, "/move_forward_meters", 10)
 
         # Map subscriptions
         map_qos = QoSProfile(
@@ -112,6 +111,12 @@ class WebRosBridge(Node):
         m = String()
         m.data = action
         self.pub_action.publish(m)
+
+    # ---------------- Move forward helper ----------------
+    def publish_move_forward(self, meters: float):
+        msg = Float32()
+        msg.data = float(meters)
+        self.move_forward_pub.publish(msg)
 
     # ---------------- Map callbacks ----------------
     def _on_map_full(self, msg: OccupancyGrid):

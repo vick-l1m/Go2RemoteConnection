@@ -91,10 +91,16 @@
         <div class="desc">Three terminals + safety + health (no teleop controls).</div>
       </a>
 
-      <!-- NEW: Map Viewer -->
+      <!-- Map Viewer -->
       <a class="btn" href="./go2_map_viewer.html" onclick="rememberMode('map')">
         <div class="title">Map Viewer</div>
         <div class="desc">Live 2D occupancy map (full load + incremental updates).</div>
+      </a>
+
+      <!-- NEW: Other Controls -->
+      <a class="btn" href="./other.html" onclick="rememberMode('other')">
+        <div class="title">Other Controls</div>
+        <div class="desc">Minimal page: Health + STOP/RESUME + Move X meters.</div>
       </a>
     </div>
 
@@ -112,16 +118,18 @@
       Direct links:
       <span class="mono">/app/go2_joystick.html</span> •
       <span class="mono">/app/go2_terminal_only.html</span> •
-      <span class="mono">/app/go2_map_viewer.html</span><br/>
+      <span class="mono">/app/go2_map_viewer.html</span> •
+      <span class="mono">/app/other.html</span><br/>
       Tip: You can set mode in the URL like:
       <span class="mono">/app/?mode=terminal</span> or
       <span class="mono">/app/?mode=joystick</span> or
-      <span class="mono">/app/?mode=map</span>
+      <span class="mono">/app/?mode=map</span> or
+      <span class="mono">/app/?mode=other</span>
     </div>
   </div>
 
   <script>
-    const LS_MODE_KEY = "go2_ui_last_mode"; // "joystick" | "terminal" | "map"
+    const LS_MODE_KEY = "go2_ui_last_mode"; // "joystick" | "terminal" | "map" | "other"
 
     function computeDefaultApi() {
       const host = window.location.hostname;
@@ -136,11 +144,11 @@
     function getModeFromUrlOrStorage() {
       const params = new URLSearchParams(window.location.search);
       const m = (params.get("mode") || "").toLowerCase();
-      if (m === "joystick" || m === "terminal" || m === "map") return m;
+      if (m === "joystick" || m === "terminal" || m === "map" || m === "other") return m;
 
       try {
         const saved = (localStorage.getItem(LS_MODE_KEY) || "").toLowerCase();
-        if (saved === "joystick" || saved === "terminal" || saved === "map") return saved;
+        if (saved === "joystick" || saved === "terminal" || saved === "map" || saved === "other") return saved;
       } catch (_) {}
 
       return "auto";
@@ -157,7 +165,8 @@
         mode === "auto" ? "Auto"
         : (mode === "joystick" ? "Joystick"
         : (mode === "terminal" ? "Terminal"
-        : "Map"));
+        : (mode === "map" ? "Map"
+        : "Other")));
 
       badgeText.textContent = `Mode: ${modeLabel} • Health: ${healthText}`;
     }

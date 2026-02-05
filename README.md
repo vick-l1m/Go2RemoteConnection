@@ -18,8 +18,13 @@ and exposes **HTTP endpoints** that trigger a **whitelisted set of shell command
 
 On the Go2 (or the device running the server)
 ```bash
-cd ~/p2_ws/P2RemoteConnection/src/p2_remote_connection
+# Install dependancies
 pip3 install fastapi uvicorn
+sudo apt update
+sudo apt install ros-humble-map-msgs
+
+# Setup the workspace
+cd ~/p2_ws/P2RemoteConnection/src/p2_remote_connection
 
 pip install -r requirements.txt
 source ~/unitree_ros2/install/setup.sh

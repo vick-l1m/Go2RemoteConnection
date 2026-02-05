@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go2 – Other Controls</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 14px; background:#fafafa; }
+    .card { max-width: 760px; margin: 0 auto; border: 1px solid #ddd; border-radius: 16px; padding: 14px; background:#fff; }
+    h1 { margin: 0 0 10px; font-size: 20px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    input { padding: 10px; border-radius: 12px; border: 1px solid #ccc; flex: 1; min-width: 220px; font-size: 16px; }
+    button {
+      padding: 12px 12px; border-radius: 12px; border: 1px solid #ccc; background: #f7f7f7;
+      font-size: 16px; cursor: pointer; min-width: 120px;
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .danger { background: #fff1f1; border-color: #ffb3b3; }
+    .small { font-size: 13px; color: #555; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
+    .status { margin-top: 12px; padding: 10px; border-radius: 12px; background: #fafafa; border: 1px solid #eee; }
+    .hint { margin-top: 6px; }
+    .box { margin-top: 10px; padding: 10px; border-radius: 12px; border: 1px solid #eee; background:#fafafa; }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <h1>Unitree Go2 – Other Controls</h1>
+
+    <div class="row">
+      <input id="baseUrl" placeholder="http://<go2-ip>:8000" />
+      <input id="token" placeholder="Password / token" type="password" />
+      <button onclick="checkHealth()">Health</button>
+      <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
+      <button id="moveBtn" onclick="toggleMoveBox()">Move X meters</button>
+    </div>
+
+    <div id="moveBox" class="box" style="display:none;">
+      <div class="small" style="margin-bottom:8px;">
+        Enter a distance (0–5 m) and press <b>Enter</b>.
+      </div>
+      <input id="moveMeters" type="number" min="0" max="5" step="0.1"
+             placeholder="e.g. 1.5" />
+      <div class="small hint">
+        Tip: This calls <span class="mono">POST /move_forward</span> which publishes to <span class="mono">/move_forward_meters</span>.
+      </div>
+    </div>
+
+    <div class="status">
+      <div id="msg" class="small">Ready.</div>
+      <div id="detail" class="mono"></div>
+    </div>
+
+    <div class="small hint">
+      UI host: <span id="uiHost" class="mono"></span><br/>
+      API base: <span id="apiHost" class="mono"></span>
+    </div>
+  </div>
+
+  <script>
+    // ----------------------------
+    // Simple config (no login overlay)
+    // ----------------------------
+    function baseUrl() {
+      return (document.getElementById("baseUrl").value || "").trim().replace(/\/+$/, "");
+    }
+    function token() {
+      return (document.getElementById("token").value || "").trim();
+    }
+    function authHeaders() {
+      const t = token();
+      return t ? { "Authorization": `Bearer ${t}` } : {};
+    }
+
+    function setStatus(text, ok=true, detail="") {
+      const msg = document.getElementById("msg");
+      const detailEl = document.getElementById("detail");
+      msg.textContent = text;
+      msg.style.color = ok ? "#0a7a0a" : "#b00020";
+      detailEl.textContent = detail || "";
+      const apiHost = document.getElementById("apiHost");
+      if (apiHost) apiHost.textContent = baseUrl();
+    }
+
+    async function httpGet(path) {
+      const url = baseUrl() + path;
+      const r = await fetch(url, { headers: authHeaders() });
+      const t = await r.text();
+      return { ok: r.ok, status: r.status, text: t, url };
+    }
+
+    async function httpPost(path, json=null) {
+      const url = baseUrl() + path;
+      const headers = { ...authHeaders() };
+      if (json !== null) headers["Content-Type"] = "application/json";
+      const r = await fetch(url, {
+        method: "POST",
+        headers,
+        body: (json !== null) ? JSON.stringify(json) : null
+      });
+      const t = await r.text();
+      return { ok: r.ok, status: r.status, text: t, url };
+    }
+
+    // ----------------------------
+    // Defaults
+    // ----------------------------
+    function computeDefaultApi() {
+      const host = window.location.hostname;
+      const proto = window.location.protocol;
+      return `${proto}//${host}:8000`;
+    }
+
+    window.addEventListener("DOMContentLoaded", () => {
+      const defaultApi = computeDefaultApi();
+      document.getElementById("baseUrl").value = defaultApi;
+      document.getElementById("uiHost").textContent = location.origin;
+      document.getElementById("apiHost").textContent = defaultApi;
+
+      // Enter to submit move
+      const moveInput = document.getElementById("moveMeters");
+      moveInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          submitMove();
+        }
+      });
+
+      // Load safety status on open (best effort)
+      refreshSafetyStatus().catch(() => {});
+    });
+
+    // ----------------------------
+    // Health
+    // ----------------------------
+    async function checkHealth() {
+      setStatus("Checking /health...");
+      try {
+        const r = await httpGet("/health");
+        setStatus(
+          r.ok ? "Health OK ✅" : `Health failed (HTTP ${r.status})`,
+          r.ok,
+          `URL: ${r.url}\n${r.text}`
+        );
+      } catch (e) {
+        setStatus("Health network error", false, String(e));
+      }
+    }
+
+    // ----------------------------
+    // STOP/RESUME
+    // ----------------------------
+    let stopLatched = false;
+    let safetyBusy = false;
+
+    function setSafetyButton(latched) {
+      const btn = document.getElementById("safetyToggleBtn");
+      stopLatched = !!latched;
+      if (stopLatched) {
+        btn.textContent = "RESUME";
+        btn.classList.remove("danger");
+      } else {
+        btn.textContent = "STOP";
+        btn.classList.add("danger");
+      }
+      btn.disabled = safetyBusy;
+    }
+
+    async function refreshSafetyStatus() {
+      const r = await httpGet("/safety/status");
+      if (r.ok) {
+        try {
+          const data = JSON.parse(r.text);
+          setSafetyButton(!!data.stop_latched);
+        } catch (_) {}
+      }
+      return r;
+    }
+
+    async function toggleSafety() {
+      if (safetyBusy) return;
+      safetyBusy = true;
+      setSafetyButton(stopLatched);
+
+      try {
+        if (!stopLatched) {
+          const r = await httpPost("/safety/stop");
+          setStatus(r.ok ? "STOP latched 🔒" : `STOP failed (HTTP ${r.status})`, r.ok, `URL: ${r.url}\n${r.text}`);
+        } else {
+          const r = await httpPost("/safety/resume");
+          setStatus(r.ok ? "RESUME ✅" : `RESUME failed (HTTP ${r.status})`, r.ok, `URL: ${r.url}\n${r.text}`);
+        }
+      } catch (e) {
+        setStatus("Safety network error", false, String(e));
+      } finally {
+        safetyBusy = false;
+        await refreshSafetyStatus().catch(() => {});
+      }
+    }
+
+    // ----------------------------
+    // Move X meters
+    // ----------------------------
+    function toggleMoveBox() {
+      const box = document.getElementById("moveBox");
+      const open = box.style.display !== "none";
+      box.style.display = open ? "none" : "block";
+      if (!open) {
+        const input = document.getElementById("moveMeters");
+        input.value = "";
+        input.focus();
+      }
+    }
+
+    async function submitMove() {
+      const metersStr = document.getElementById("moveMeters").value;
+      const meters = parseFloat(metersStr);
+
+      if (!Number.isFinite(meters) || meters <= 0 || meters > 5) {
+        setStatus("Invalid distance", false, "Enter a number > 0 and ≤ 5.");
+        return;
+      }
+
+      setStatus(`Moving ${meters.toFixed(2)} m...`);
+
+      try {
+        const r = await httpPost("/move_forward", { meters });
+        setStatus(
+          r.ok ? `Move command sent ✅ (${meters.toFixed(2)} m)` : `Move failed (HTTP ${r.status})`,
+          r.ok,
+          `URL: ${r.url}\n${r.text}`
+        );
+
+        if (r.ok) {
+          // optional: close box after sending
+          document.getElementById("moveBox").style.display = "none";
+        }
+      } catch (e) {
+        setStatus("Move network error", false, String(e));
+      }
+    }
+  </script>
+</body>
+</html>

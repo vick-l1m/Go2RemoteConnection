@@ -27,7 +27,9 @@ if os.getenv("DEPLOYMENT_ENV") == "ec2":
 else:
     from .terminal import terminal_ws
 
+# ------------------------------------------------------------
 # Authentication
+# ------------------------------------------------------------
 GO2_API_TOKEN = (os.getenv("GO2_API_TOKEN") or "").strip()
 if not GO2_API_TOKEN:
     raise RuntimeError("GO2_API_TOKEN is not set (or is empty)")
@@ -76,7 +78,9 @@ async def on_startup():
 async def health():
     return {"ok": True, "status": "ok"}
 
+# ------------------------------------------------------------
 # Actions
+# ------------------------------------------------------------
 STOP_LATCHED = False
 TELEOP_ENABLED = True
 ALLOWED_ACTIONS = {
@@ -124,8 +128,9 @@ async def safety_resume(_=Depends(require_token)):
 async def safety_status(_=Depends(require_token)):
     return {"stop_latched": STOP_LATCHED, "teleop_enabled": TELEOP_ENABLED}
 
-
+# ------------------------------------------------------------
 # Teleop
+# ------------------------------------------------------------
 class TeleopCommand(BaseModel):
     linear_x: float = Field(0.0)
     linear_y: float = Field(0.0)
@@ -152,13 +157,16 @@ async def teleop(cmd: TeleopCommand, request: Request, _=Depends(require_token))
     get_bridge().publish_teleop(lx, ly, az)
     return {"ok": True, "linear_x": lx, "linear_y": ly, "angular_z": az}
 
-
+# ------------------------------------------------------------
 # Terminal websocket
+# ------------------------------------------------------------
 @app.websocket("/ws/terminal")
 async def ws_terminal(websocket: WebSocket):
     await terminal_ws(websocket)
 
+# ------------------------------------------------------------
 # Map2D endpoints
+# ------------------------------------------------------------
 @app.get("/map2d/full")
 async def map2d_full(_=Depends(require_token)):
     store = get_map_store()
@@ -238,3 +246,24 @@ async def ws_map2d(websocket: WebSocket):
         async with store.lock:
             store.clients.discard(websocket)
 
+# ------------------------------------------------------------
+# MoveForward x meters
+# ------------------------------------------------------------
+class MoveForwardReq(BaseModel):
+    meters: float = Field(..., ge=0.0, le=5.0, description="Distance in meters (0–5)")
+
+@app.post("/move_forward")
+async def move_forward(req: MoveForwardReq, _=Depends(require_token)):
+    if STOP_LATCHED:
+        raise HTTPException(status_code=423, detail="STOP latched: move disabled")
+
+    if not TELEOP_ENABLED:
+        raise HTTPException(status_code=423, detail="Teleop disabled (safety stop)")
+
+    meters = float(req.meters)
+    if meters <= 0.0:
+        raise HTTPException(status_code=400, detail="meters must be > 0")
+
+    # ✅ This assumes you add publish_move_forward(meters) in ros_bridge.py
+    get_bridge().publish_move_forward(meters)
+    return {"ok": True, "meters": meters}
