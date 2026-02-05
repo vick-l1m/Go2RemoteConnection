@@ -114,6 +114,10 @@ else
 fi
 echo "[run_all] GO2_API_TOKEN loaded"
 
+# Turn on and Off Authentication via env var GO2_AUTH_ENABLED
+export GO2_AUTH_ENABLED="0"   # Disable auth (for testing)
+# export GO2_AUTH_ENABLED="1"   # Enable auth (default) 
+
 # ----------------------------
 # 1) Start FastAPI backend
 # ----------------------------

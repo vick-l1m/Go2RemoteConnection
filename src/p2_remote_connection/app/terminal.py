@@ -9,6 +9,7 @@ import hmac
 from fastapi import WebSocket, WebSocketDisconnect
 
 GO2_API_TOKEN = os.getenv("GO2_API_TOKEN", "")
+AUTH_ENABLED = os.getenv("GO2_AUTH_ENABLED", "1") not in ("0", "false", "False")
 
 class TerminalSession:
     def __init__(self):
@@ -74,14 +75,14 @@ async def terminal_ws(websocket: WebSocket):
     # Authenticate BEFORE accept
     token = websocket.query_params.get("token", "")
 
-    if not GO2_API_TOKEN:
-        await websocket.close(code=1011)
-        return
+    if AUTH_ENABLED:
+        if not GO2_API_TOKEN:
+            await websocket.close(code=1011)
+            return
 
-    # constant-time compare
-    if not hmac.compare_digest(token, GO2_API_TOKEN):
-        await websocket.close(code=1008)
-        return
+        if not hmac.compare_digest(token, GO2_API_TOKEN):
+            await websocket.close(code=1008)
+            return
 
     await websocket.accept()
 

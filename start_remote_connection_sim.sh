@@ -14,6 +14,24 @@ if [ "$(whoami)" = "unitree" ] && [ -d "/home/unitree" ]; then
   export HOME="/home/unitree"
 fi
 
+# ----------------------------
+# UI selection by CLI arg (parity)
+# ----------------------------
+MODE="${1:-joystick}"   # joystick | terminal
+
+case "$MODE" in
+  terminal|joystick|"")
+    ;;
+  *)
+    echo "[run_all] ❌ Unknown mode: '$MODE'"
+    echo "Usage:"
+    echo "  $0                # serve joystick UI + SIM bridge"
+    echo "  $0 joystick       # serve joystick UI + SIM bridge"
+    echo "  $0 terminal       # serve terminal-only UI (no bridge)"
+    exit 1
+    ;;
+esac
+
 pids=()
 
 cleanup() {
@@ -44,12 +62,10 @@ ok_or_die() {
 }
 
 echo "[run_all] Workspace: $WS_DIR"
+echo "[run_all] Mode: $MODE"
 
 # --- Source ROS safely ---
 set +u
-
-# 0) Change to fast rtps
-use_fastrtps
 
 # 1) Source ROS 2 environment (Humble preferred, fallback to Foxy)
 if [ -f /opt/ros/humble/setup.bash ]; then
@@ -63,8 +79,7 @@ else
   exit 1
 fi
 
-# 2) Unitree env: (SIM) intentionally not sourced
-# (keep your sim-unique behavior)
+# 2) Unitree env: (SIM) intentionally not sourced (KEEP sim behavior)
 
 # 3) Your overlay (P2RemoteConnection)
 if [ -f "$WS_DIR/install/setup.bash" ]; then
@@ -76,23 +91,29 @@ fi
 
 set -u
 
-# --- SIM: avoid CycloneDDS interface pinning issues (KEEP) ---
+# --- SIM: avoid CycloneDDS interface pinning issues ---
 unset CYCLONEDDS_URI
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 
 # ----------------------------
-# Load Go2 API token (NEW - same as Go2)
+# Load Go2 API token (parity w/ physical: strip CRLF)
 # ----------------------------
 if [ -f "$HOME/.go2_token" ]; then
-  export GO2_API_TOKEN="$(cat "$HOME/.go2_token")"
+  export GO2_API_TOKEN="$(tr -d '\r\n' < "$HOME/.go2_token")"
 else
   echo "[run_all] ❌ ERROR: ~/.go2_token not found"
   exit 1
 fi
 echo "[run_all] GO2_API_TOKEN loaded"
 
+# Turn on and Off Authentication via env var GO2_AUTH_ENABLED
+export GO2_AUTH_ENABLED="0"   # Disable auth (for testing)
+# export GO2_AUTH_ENABLED="1"   # Enable auth (default) 
+
+# ----------------------------
 # 1) Start FastAPI backend
+# ----------------------------
 echo "[run_all] Starting FastAPI (uvicorn) on :$API_PORT ..."
 cd "$PKG_DIR"
 python3 -m uvicorn app.main:app --host "$API_HOST" --port "$API_PORT" &
@@ -102,13 +123,18 @@ pids+=("$API_PID")
 sleep 0.5
 ok_or_die "FastAPI" "$API_PID"
 
+# ----------------------------
 # 2) Start static file server for frontend
+# ----------------------------
 echo "[run_all] Starting http.server on :$UI_PORT ..."
+cd "$PKG_DIR"
 python3 -m http.server "$UI_PORT" &
 UI_PID=$!
 pids+=("$UI_PID")
 
-# 3) Wait for Go2 driver before starting bridge (KEEP)
+# ----------------------------
+# 3) Wait for sim driver node before starting bridge (KEEP)
+# ----------------------------
 echo "[run_all] Waiting for /go2_driver_node..."
 for i in {1..30}; do
   if ros2 node list 2>/dev/null | grep -q "^/go2_driver_node$"; then
@@ -118,29 +144,43 @@ for i in {1..30}; do
   sleep 1
 done
 
-# 4) Start SIM bridge node (prefer launching the binary directly)
-SIM_BRIDGE_BIN="$WS_DIR/install/p2_remote_connection/lib/p2_remote_connection/web_teleop_bridge_sim"
+# ----------------------------
+# 4) Start SIM bridge node (ONLY in joystick mode; parity)
+# ----------------------------
+SIM_BRIDGE_PID=""
+if [ "$MODE" = "joystick" ] || [ -z "$MODE" ]; then
+  SIM_BRIDGE_BIN="$WS_DIR/install/p2_remote_connection/lib/p2_remote_connection/web_teleop_bridge_sim"
+  if [ -x "$SIM_BRIDGE_BIN" ]; then
+    echo "[run_all] Starting SIM bridge: $SIM_BRIDGE_BIN"
+    "$SIM_BRIDGE_BIN" --ros-args -p robot_index:=0 &
+    SIM_BRIDGE_PID=$!
+    pids+=("$SIM_BRIDGE_PID")
+  else
+    echo "[run_all] Starting SIM bridge via ros2 run (fallback)"
+    cd "$WS_DIR"
+    ros2 run p2_remote_connection web_teleop_bridge_sim --ros-args -p robot_index:=0 &
+    SIM_BRIDGE_PID=$!
+    pids+=("$SIM_BRIDGE_PID")
+  fi
 
-if [ -x "$SIM_BRIDGE_BIN" ]; then
-  echo "[run_all] Starting SIM bridge: $SIM_BRIDGE_BIN"
-  "$SIM_BRIDGE_BIN" --ros-args -p robot_index:=0 &
-  SIM_BRIDGE_PID=$!
-  pids+=("$SIM_BRIDGE_PID")
+  sleep 0.5
+  ok_or_die "SIM bridge" "$SIM_BRIDGE_PID"
 else
-  echo "[run_all] Starting SIM bridge via ros2 run (fallback)"
-  cd "$WS_DIR"
-  ros2 run p2_remote_connection web_teleop_bridge_sim --ros-args -p robot_index:=0 &
-  SIM_BRIDGE_PID=$!
-  pids+=("$SIM_BRIDGE_PID")
+  echo "[run_all] Terminal mode: skipping web_teleop_bridge_sim ✅"
 fi
 
 sleep 0.5
 ok_or_die "UI server" "$UI_PID"
-ok_or_die "SIM bridge" "$SIM_BRIDGE_PID"
 
 echo ""
 echo "[run_all] ✅ All started."
-echo "[run_all] UI:  http://<this-machine-ip>:$UI_PORT/app/go2_joystick.html"
+
+if [ "$MODE" = "terminal" ]; then
+  echo "[run_all] UI:  http://<this-machine-ip>:$UI_PORT/app/go2_terminal_only.html"
+else
+  echo "[run_all] UI:  http://<this-machine-ip>:$UI_PORT/app/go2_joystick.html"
+fi
+
 echo "[run_all] API: http://<this-machine-ip>:$API_PORT"
 echo "[run_all] Press Ctrl+C to stop everything."
 echo ""

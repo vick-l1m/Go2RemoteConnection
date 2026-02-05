@@ -35,27 +35,39 @@
 </head>
 
 <body>
-  <!-- LOGIN OVERLAY -->
-  <div id="loginOverlay" style="
-    position:fixed; inset:0; background:rgba(0,0,0,0.55);
-    display:flex; align-items:center; justify-content:center; z-index:9999;
-    pointer-events:auto;">
-    <div style="background:white; padding:16px; border-radius:16px; width:min(420px, 92vw);">
-      <h2 style="margin:0 0 10px; font-size:18px;">Connect to Go2</h2>
-      <div style="display:flex; flex-direction:column; gap:10px;">
-        <input id="loginBaseUrl" placeholder="http://robot-ip:8000 or https://robot.domain"
-               style="padding:10px; border-radius:12px; border:1px solid #ccc; font-size:16px;"
-               value="http://192.168.123.18:8000" />
-        <input id="loginToken" placeholder="Password" type="password"
-               style="padding:10px; border-radius:12px; border:1px solid #ccc; font-size:16px;" />
-        <button onclick="login()" style="padding:12px; border-radius:12px; border:1px solid #ccc; background:#f7f7f7; font-size:16px;">
-          Unlock
-        </button>
-        <div id="loginMsg" style="font-size:13px; color:#b00020;"></div>
-        <div style="font-size:12px; color:#555;">Tip: This password is unique per robot.</div>
+    <!-- LOGIN OVERLAY -->
+    <div id="loginOverlay" style="
+      position:fixed; inset:0; background:rgba(0,0,0,0.55);
+      display:flex; align-items:center; justify-content:center; z-index:9999;
+      pointer-events:auto;">
+      <div style="background:white; padding:16px; border-radius:16px; width:min(420px, 92vw);">
+        <h2 style="margin:0 0 10px; font-size:18px;">Connect to Go2</h2>
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          <input id="loginBaseUrl" placeholder="http://robot-ip:8000 or https://robot.domain"
+                 style="padding:10px; border-radius:12px; border:1px solid #ccc; font-size:16px;"
+                 value="" />
+
+          <input id="loginToken" placeholder="Password" type="password"
+                 style="padding:10px; border-radius:12px; border:1px solid #ccc; font-size:16px;" />
+
+          <!-- ✅ Show password -->
+          <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#333;">
+            <input id="showPw" type="checkbox" onclick="togglePasswordVisibility()" />
+            Show password
+          </label>
+
+          <!-- ✅ Enter-to-unlock uses this id -->
+          <button id="unlockBtn" onclick="login()"
+                  style="padding:12px; border-radius:12px; border:1px solid #ccc; background:#f7f7f7; font-size:16px;">
+            Unlock
+          </button>
+
+          <div id="loginMsg" style="font-size:13px; color:#b00020;"></div>
+          <div style="font-size:12px; color:#555;">Tip: This password is unique per robot.</div>
+        </div>
       </div>
     </div>
-  </div>
+
 
   <!-- MAIN APP -->
   <div id="appRoot" style="filter: blur(6px); pointer-events:none; user-select:none;">
@@ -213,12 +225,48 @@
     ROBOT_BASE_URL = "";
     COMMS_ENABLED = true;
     clearAuth();
-
+  
     const t = document.getElementById("loginToken");
     if (t) t.value = "";
-
+  
+    const cb = document.getElementById("showPw");
+    if (cb) cb.checked = false;
+    if (t) t.type = "password";
+  
     lockUI();
     setStatus("Logged out.", true);
+  }
+
+  function togglePasswordVisibility() {
+    const pw = document.getElementById("loginToken");
+    const cb = document.getElementById("showPw");
+    if (!pw || !cb) return;
+    pw.type = cb.checked ? "text" : "password";
+  }
+  
+  function wireEnterToUnlock() {
+    const urlEl = document.getElementById("loginBaseUrl");
+    const passEl = document.getElementById("loginToken");
+    const btn = document.getElementById("unlockBtn");
+  
+    const handler = (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (btn) btn.click();
+        else login();
+      }
+    };
+  
+    if (urlEl)  urlEl.addEventListener("keydown", handler);
+    if (passEl) passEl.addEventListener("keydown", handler);
+  }
+  
+  function computeDefaultApi() {
+    // UI opened like http(s)://<host>:<port>/... => default API is same host on :8000
+    const host = window.location.hostname;
+    const apiPort = 8000;
+    const proto = window.location.protocol; // "http:" or "https:"
+    return `${proto}//${host}:${apiPort}`;
   }
 
   // ----------------------------
@@ -472,20 +520,37 @@
     if (r.status === 204) throw new Error("No map yet");
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
 
-    const width = parseInt(r.headers.get("X-Map-Width"), 10);
-    const height = parseInt(r.headers.get("X-Map-Height"), 10);
+    const width  = parseInt(r.headers.get("x-map-width"), 10);
+    const height = parseInt(r.headers.get("x-map-height"), 10);
 
-    MAP_META = {
-      frame_id: r.headers.get("X-Map-Frame") || "",
-      resolution: parseFloat(r.headers.get("X-Map-Resolution") || "0.0"),
-      width, height,
-      origin_x: parseFloat(r.headers.get("X-Map-Origin-X") || "0.0"),
-      origin_y: parseFloat(r.headers.get("X-Map-Origin-Y") || "0.0"),
-      seq: parseInt(r.headers.get("X-Map-Seq") || "0", 10),
+    if (!Number.isFinite(width) || !Number.isFinite(height)) {
+      throw new Error(
+        `Invalid map headers: width=${width}, height=${height}`
+      );
+    }
+    
+    const MAP_META = {
+      frame_id: r.headers.get("x-map-frame") || "",
+      resolution: parseFloat(r.headers.get("x-map-resolution") || "0.0"),
+      width,
+      height,
+      origin_x: parseFloat(r.headers.get("x-map-origin-x") || "0.0"),
+      origin_y: parseFloat(r.headers.get("x-map-origin-y") || "0.0"),
+      seq: parseInt(r.headers.get("x-map-seq") || "0", 10),
     };
 
-    const gz = new Uint8Array(await r.arrayBuffer());
-    const rawU8 = await gunzipToBytes(gz);
+    const buf = new Uint8Array(await r.arrayBuffer());
+
+    let rawU8;
+    try {
+      // Try gzip decode (works when server sends raw gz bytes)
+      rawU8 = await gunzipToBytes(buf);
+    } catch (e) {
+      // If browser already decompressed (because Content-Encoding was set),
+      // then buf is already the raw int8 map
+      rawU8 = buf;
+    }
+
     MAP_GRID = u8ToI8(rawU8);
 
     if (MAP_GRID.length !== width * height) {
@@ -588,27 +653,29 @@
   // Boot: restore saved creds
   // ----------------------------
   window.addEventListener("DOMContentLoaded", async () => {
-    const defaultApi = "http://192.168.123.18:8000";
+    wireEnterToUnlock();
+  
+    const defaultApi = computeDefaultApi();
     document.getElementById("uiHost").textContent = location.origin;
-
+  
     document.getElementById("loginBaseUrl").value = defaultApi;
     document.getElementById("baseUrl").value = defaultApi;
     document.getElementById("apiHost").textContent = defaultApi;
-
+  
     const { u, t } = loadAuth();
     if (u && t) {
       document.getElementById("loginBaseUrl").value = u;
       document.getElementById("loginToken").value = t;
-
+  
       ROBOT_BASE_URL = u;
       AUTH_TOKEN = t;
-
+  
       const r = await httpGet("/health").catch(() => null);
       if (r && r.ok) {
         unlockUI();
         setStatus("Unlocked ✅ (remembered)", true);
         await refreshSafetyStatus();
-
+      
         if (COMMS_ENABLED && !stopLatched) {
           await startMapStreaming(true);
         } else {
@@ -616,12 +683,12 @@
         }
         return;
       }
-
+  
       AUTH_TOKEN = "";
       ROBOT_BASE_URL = "";
       clearAuth();
     }
-
+  
     lockUI();
   });
   </script>

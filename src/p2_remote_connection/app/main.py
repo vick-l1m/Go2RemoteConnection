@@ -27,7 +27,9 @@ if os.getenv("DEPLOYMENT_ENV") == "ec2":
 else:
     from .terminal import terminal_ws
 
-# ------------------------------------------------------------
+# Option to disable auth for testing
+AUTH_ENABLED = os.getenv("GO2_AUTH_ENABLED", "1") not in ("0", "false", "False")
+
 # Authentication
 # ------------------------------------------------------------
 GO2_API_TOKEN = (os.getenv("GO2_API_TOKEN") or "").strip()
@@ -35,6 +37,10 @@ if not GO2_API_TOKEN:
     raise RuntimeError("GO2_API_TOKEN is not set (or is empty)")
 
 def require_token(authorization: str = Header(None)) -> str:
+    # 🔓 Auth disabled (dev / sim mode)
+    if not AUTH_ENABLED:
+        return ""
+
     if not GO2_API_TOKEN:
         raise HTTPException(status_code=500, detail="Server missing GO2_API_TOKEN")
 
@@ -48,7 +54,6 @@ def require_token(authorization: str = Header(None)) -> str:
 
     token = parts[1].strip()
 
-    # constant-time compare (safer)
     if not hmac.compare_digest(token, GO2_API_TOKEN):
         raise HTTPException(status_code=403, detail="Invalid token")
 
@@ -65,6 +70,16 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
+    expose_headers=[
+        "x-map-frame",
+        "x-map-resolution",
+        "x-map-width",
+        "x-map-height",
+        "x-map-origin-x",
+        "x-map-origin-y",
+        "x-map-seq",
+        "content-encoding",
+    ],
     max_age=86400,
 )
 
@@ -185,7 +200,9 @@ async def map2d_full(_=Depends(require_token)):
             "X-Map-Origin-X": str(meta["origin_x"]),
             "X-Map-Origin-Y": str(meta["origin_y"]),
             "X-Map-Seq": str(store.seq),
-            "Content-Encoding": "gzip",
+
+            # IMPORTANT: do NOT set Content-Encoding gzip (browser auto-decompresses)
+            "X-Map-Encoding": "gzip",
             "Content-Type": "application/octet-stream",
         }
         return Response(content=gz, headers=headers)
@@ -195,13 +212,14 @@ async def ws_map2d(websocket: WebSocket):
     # Authenticate BEFORE accept (same style as terminal.py)
     token = websocket.query_params.get("token", "")
 
-    if not GO2_API_TOKEN:
-        await websocket.close(code=1011)
-        return
+    if AUTH_ENABLED:
+        if not GO2_API_TOKEN:
+            await websocket.close(code=1011)
+            return
 
-    if not hmac.compare_digest(token, GO2_API_TOKEN):
-        await websocket.close(code=1008)
-        return
+        if not hmac.compare_digest(token, GO2_API_TOKEN):
+            await websocket.close(code=1008)
+            return
 
     await websocket.accept()
 
