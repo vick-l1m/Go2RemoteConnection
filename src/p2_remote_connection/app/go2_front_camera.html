@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go2 Front Camera</title>
+
+  <link rel="stylesheet" href="/app/static/shared.css">
+  <script src="/app/static/shared.js"></script>
+
+  <style>
+    /* Camera panel styled like map panels */
+    .camPanel { margin-top: 12px; border: 1px solid var(--soft-border); border-radius: var(--radius); overflow: hidden; background:#fff; }
+    .camHeader { display:flex; justify-content: space-between; align-items:center; padding: 10px 12px; background: var(--soft-2); border-bottom:1px solid var(--soft-border); }
+    .camTitle { font-size:14px; font-weight:600; }
+    .camHint { color:#777; }
+    .camViewport{
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background:#000;
+      overflow:hidden;
+    }
+    #camImg{
+      width: 100%;
+      height: 100%;
+      display:block;
+      object-fit: contain;
+      background:#000;
+    }
+    /* Optional: make it taller on big screens */
+    @media (min-width: 1200px){
+      .camViewport{
+        max-width: 920px;   /* clamp the size */
+        margin: 0 auto;     /* center it */
+      }
+    }
+
+    /* Joysticks: same as map viewer */
+    .joyRow {
+      margin-top: 12px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    @media (max-width: 820px) {
+      .joyRow { grid-template-columns: 1fr; }
+    }
+    .joyBox {
+      border: 1px solid var(--soft-border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      background: #fff;
+    }
+    .joyTitle { font-size: 13px; color: #333; margin-bottom: 8px; }
+    .joyCanvas {
+      width: 100%;
+      height: 260px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: #fff;
+      touch-action: none;
+      display:block;
+    }
+  </style>
+
+  <script>
+    window.addEventListener("DOMContentLoaded", async () => {
+      await Go2Shared.init({ defaultApi: "", showAuthButtons: true });
+
+      setTimeout(refreshSafetyStatus, 200);
+
+      initJoysticks();
+      // Optional: auto-connect camera after login (if remembered auth works)
+      // setTimeout(() => { if (Go2Shared.ensureLoggedIn()) startStream(); }, 600);
+    });
+  </script>
+</head>
+
+<body>
+  <!-- LOGIN OVERLAY (shared.css styles) -->
+  <div id="loginOverlay" class="loginOverlay">
+    <div class="loginCard">
+      <h2>Connect to Go2</h2>
+      <div class="loginForm">
+        <input id="loginBaseUrl" placeholder="http://robot-ip:8000 or https://robot.domain" />
+        <input id="loginToken" placeholder="Password" type="password" />
+
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#333;">
+          <input id="showPw" type="checkbox" onclick="Go2Shared.togglePasswordVisibility()" />
+          Show password
+        </label>
+
+        <button id="unlockBtn" onclick="loginAndStart()">Unlock</button>
+        <div id="loginMsg" class="loginMsg"></div>
+        <div class="loginTip">Tip: This password is unique per robot.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="appRoot">
+    <div class="card">
+      <h1>Unitree Go2 – Front Camera</h1>
+
+      <!-- ✅ SAME TOP ROW AS MAP VIEWER -->
+      <div class="row">
+        <input id="baseUrl" placeholder="http://<go2-ip>:8000" />
+        <button onclick="Go2Shared.checkHealth()">Health</button>
+
+        <button onclick="postAction('stand')">Stand</button>
+        <button onclick="postAction('sit')">Sit</button>
+
+        <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
+        <button onclick="Go2Shared.logout()">Logout</button>
+      </div>
+
+      <div class="small hint">
+        UI host: <span id="uiHost" class="mono"></span><br/>
+        API base: <span id="apiHost" class="mono"></span>
+      </div>
+
+      <!-- CAMERA PANEL -->
+      <div class="camPanel">
+        <div class="camHeader">
+          <div class="camTitle">Front camera stream</div>
+          <div class="camHint small" id="camHint">Idle</div>
+        </div>
+      
+        <!-- ✅ VIDEO AREA ONLY -->
+        <div class="camViewport">
+          <img id="camImg" alt="Front camera" />
+        </div>
+      
+        <!-- ✅ CONTROLS BELOW (not inside black box) -->
+        <div class="row" style="margin-top:10px;">
+          <button onclick="startStream()">Start Stream</button>
+          <button onclick="stopStream()">Stop Stream</button>
+          <span class="pill">Frames: <span id="frameCount">0</span></span>
+          <span class="pill">Last: <span id="frameBytes">0</span> bytes</span>
+        </div>
+      
+        <div class="small" style="margin-top:10px;">
+          Raw JPEG pushed over WebSocket (<span class="mono">/ws/cam_front</span>).
+        </div>
+      </div>
+
+      <!-- ✅ JOYSTICKS (SAME AS MAP VIEWER) -->
+      <div class="joyRow">
+        <div class="joyBox">
+          <div class="joyTitle">Left joystick: X=fwd/back, Y=strafe</div>
+          <canvas id="joyLeft" class="joyCanvas"></canvas>
+        </div>
+        <div class="joyBox">
+          <div class="joyTitle">Right joystick: X=turn (yaw). Y unused.</div>
+          <canvas id="joyRight" class="joyCanvas"></canvas>
+        </div>
+      </div>
+
+      <div class="status">
+        <div id="msg" class="small">Ready.</div>
+        <div id="detail" class="mono"></div>
+      </div>
+
+      <div class="small" style="margin-top:10px;">
+        STOP pauses camera streaming (closes WS). RESUME allows reconnect.
+        Teleop sends only while joystick is non-zero.
+      </div>
+    </div>
+  </div>
+
+<script>
+  // ----------------------------
+  // STOP/RESUME latch (same as map viewer)
+  // ----------------------------
+  let stopLatched = false;
+  let safetyBusy = false;
+
+  function setSafetyButton(latched) {
+    stopLatched = !!latched;
+    const btn = document.getElementById("safetyToggleBtn");
+    if (!btn) return;
+    btn.textContent = stopLatched ? "RESUME" : "STOP";
+    btn.classList.toggle("danger", !stopLatched);
+    btn.disabled = safetyBusy;
+  }
+
+  async function refreshSafetyStatus() {
+    if (!Go2Shared.ensureLoggedIn()) return;
+    const r = await Go2Shared.httpGet("/safety/status", { bypassCommsGate: true });
+    if (r.ok) {
+      try {
+        const data = JSON.parse(r.text);
+        setSafetyButton(!!data.stop_latched);
+        Go2Shared.state.COMMS_ENABLED = !stopLatched;
+      } catch {}
+    }
+    return r;
+  }
+
+  async function toggleSafety() {
+    if (!Go2Shared.ensureLoggedIn() || safetyBusy) return;
+    safetyBusy = true;
+    setSafetyButton(stopLatched);
+
+    try {
+      if (!stopLatched) {
+        const r = await Go2Shared.httpPost("/safety/stop", null, { bypassCommsGate: true });
+        if (!r.ok) { Go2Shared.setStatus(`STOP failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`); return; }
+        Go2Shared.state.COMMS_ENABLED = false;
+        setSafetyButton(true);
+        stopStream();
+        setCamHint("STOP latched: camera paused");
+        Go2Shared.setStatus("STOP latched 🔒 (camera paused)", true, `URL: ${r.url}\n${r.text}`);
+      } else {
+        const r2 = await Go2Shared.httpPost("/safety/resume", null, { bypassCommsGate: true });
+        if (!r2.ok) { Go2Shared.setStatus(`RESUME failed (HTTP ${r2.status})`, false, `URL: ${r2.url}\n${r2.text}`); return; }
+        Go2Shared.state.COMMS_ENABLED = true;
+        setSafetyButton(false);
+        setCamHint("Resumed ✅");
+        Go2Shared.setStatus("RESUME ✅", true, `URL: ${r2.url}\n${r2.text}`);
+        await refreshSafetyStatus();
+      }
+    } finally {
+      safetyBusy = false;
+      setSafetyButton(stopLatched);
+    }
+  }
+
+  async function loginAndStart() {
+    await Go2Shared.login();
+    await refreshSafetyStatus();
+    // optional auto-start after login
+    // startStream();
+  }
+
+  // ----------------------------
+  // Actions
+  // ----------------------------
+  async function postAction(action) {
+    if (!Go2Shared.ensureLoggedIn()) return;
+    if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
+      Go2Shared.setStatus("STOP latched 🔒", false, "No actions until RESUME.");
+      return;
+    }
+
+    const r = await Go2Shared.httpPost(`/actions/${action}`);
+    Go2Shared.setStatus(
+      r.ok ? `${action} started ✅` : `${action} failed (HTTP ${r.status})`,
+      r.ok,
+      `URL: ${r.url}\n${r.text}`
+    );
+  }
+
+  // ----------------------------
+  // Camera streaming (WS: JSON header + raw jpg bytes)
+  // ----------------------------
+  let CAM_WS = null;
+  let camPendingHeader = null;
+  let camKeepalive = null;
+  let frames = 0;
+  let lastBlobUrl = "";
+
+  function setCamHint(t) {
+    const el = document.getElementById("camHint");
+    if (el) el.textContent = t;
+  }
+
+  function camWsUrl() {
+    let wsUrl = `${Go2Shared.apiWsBase()}/ws/cam_front`;
+    if (Go2Shared.cfg.authEnabled) {
+      if (!Go2Shared.state.AUTH_TOKEN) throw new Error("Login required");
+      wsUrl += `?token=${encodeURIComponent(Go2Shared.state.AUTH_TOKEN)}`;
+    }
+    return wsUrl;
+  }
+
+  function stopStream() {
+    try { if (CAM_WS) CAM_WS.close(); } catch {}
+    CAM_WS = null;
+    camPendingHeader = null;
+    if (camKeepalive) { clearInterval(camKeepalive); camKeepalive = null; }
+
+    if (lastBlobUrl) {
+      URL.revokeObjectURL(lastBlobUrl);
+      lastBlobUrl = "";
+    }
+    setCamHint(stopLatched ? "STOP latched: camera paused" : "Idle");
+  }
+
+  function startStream() {
+    if (!Go2Shared.ensureLoggedIn()) return;
+    if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
+      setCamHint("STOP latched: camera paused");
+      return;
+    }
+
+    // Reset counters
+    frames = 0;
+    document.getElementById("frameCount").textContent = "0";
+    document.getElementById("frameBytes").textContent = "0";
+
+    stopStream();
+    setCamHint("Connecting...");
+
+    let wsUrl;
+    try { wsUrl = camWsUrl(); }
+    catch (e) { setCamHint(String(e)); return; }
+
+    CAM_WS = new WebSocket(wsUrl);
+    CAM_WS.binaryType = "arraybuffer";
+
+    CAM_WS.onopen = () => {
+      setCamHint("Live ✅");
+      camKeepalive = setInterval(() => {
+        if (CAM_WS && CAM_WS.readyState === WebSocket.OPEN) {
+          try { CAM_WS.send("ping"); } catch {}
+        }
+      }, 10000);
+    };
+
+    // --- globals ---
+    let jpegBuf = new Uint8Array(0);
+    
+    function appendBuf(a, b) {
+      const out = new Uint8Array(a.length + b.length);
+      out.set(a, 0);
+      out.set(b, a.length);
+      return out;
+    }
+    
+    function findMarker(buf, m0, m1, start = 0) {
+      if (!buf || buf.length < 2) return -1;   // ✅ guard
+      for (let i = start; i + 1 < buf.length; i++) {
+        if (buf[i] === m0 && buf[i + 1] === m1) return i;
+      }
+      return -1;
+    }
+    
+    function tryExtractJpegFrames() {
+      // JPEG SOI = FF D8, EOI = FF D9
+      while (true) {
+        const soi = findMarker(jpegBuf, 0xff, 0xd8, 0);
+        if (soi < 0) {
+          // no start marker yet, keep buffering
+          return;
+        }
+        const eoi = findMarker(jpegBuf, 0xff, 0xd9, soi + 2);
+        if (eoi < 0) {
+          // have SOI but not EOI yet
+          // trim any leading junk before SOI to avoid growth
+          if (soi > 0) jpegBuf = jpegBuf.slice(soi);
+          return;
+        }
+    
+        // Extract one full JPEG [soi .. eoi+2)
+        const frame = jpegBuf.slice(soi, eoi + 2);
+        jpegBuf = jpegBuf.slice(eoi + 2);
+    
+        const blob = new Blob([frame], { type: "image/jpeg" });
+        const url = URL.createObjectURL(blob);
+        if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+        lastBlobUrl = url;
+        const img = document.getElementById("camImg");
+        img.src = url;
+      }
+    }
+        
+    CAM_WS.onmessage = async (ev) => {
+      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) return;
+    
+      // 1) JSON header
+      if (typeof ev.data === "string") {
+        // optional: console.log("header:", ev.data);
+        return;
+      }
+    
+      // 2) Binary jpeg bytes
+      let u8;
+      if (ev.data instanceof ArrayBuffer) {
+        u8 = new Uint8Array(ev.data);
+      } else if (ev.data instanceof Blob) {
+        u8 = new Uint8Array(await ev.data.arrayBuffer());
+      } else {
+        return;
+      }
+    
+      const bytes = u8.length;
+      frames++;
+      document.getElementById("frameCount").textContent = String(frames);
+      document.getElementById("frameBytes").textContent = String(bytes);
+    
+      // If backend is sending whole JPEG per message (most common):
+      const blob = new Blob([u8], { type: "image/jpeg" });
+      const url = URL.createObjectURL(blob);
+      if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+      lastBlobUrl = url;
+      document.getElementById("camImg").src = url;
+    
+      // If your backend might chunk frames, you can re-enable your marker-buffer logic later.
+    };
+
+    CAM_WS.onclose = () => {
+      if (camKeepalive) { clearInterval(camKeepalive); camKeepalive = null; }
+      CAM_WS = null;
+      setCamHint(stopLatched ? "STOP latched: camera paused" : "Disconnected");
+    };
+
+    CAM_WS.onerror = () => setCamHint("WS error");
+  }
+
+  // ----------------------------
+  // ✅ Joysticks (same as map viewer)
+  // ----------------------------
+  let latest = { lx: 0, ly: 0, rx: 0 };
+  const MAX_LIN = 0.6;
+  const MAX_ANG = 1.2;
+  const SEND_HZ = 20;
+  const SEND_PERIOD_MS = Math.floor(1000 / SEND_HZ);
+
+  function mapToCmd(lx, ly, rx) {
+    const linear_x  = (-ly) * MAX_LIN;
+    const linear_y  = (lx)  * MAX_LIN;
+    const angular_z = (rx)  * MAX_ANG;
+    return { linear_x, linear_y, angular_z };
+  }
+
+  async function sendTeleop(lx, ly, rx) {
+    if (!Go2Shared.ensureLoggedIn() || !Go2Shared.state.COMMS_ENABLED || stopLatched) return;
+    const cmd = mapToCmd(lx, ly, rx);
+    const r = await Go2Shared.httpPost("/teleop", cmd);
+    if (!r.ok) {
+      Go2Shared.setStatus(`Teleop failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+    }
+  }
+
+  function makeJoystick(canvasId, onMove) {
+    const canvas = document.getElementById(canvasId);
+    const ctx = canvas.getContext("2d");
+
+    function resize() {
+      const rect = canvas.getBoundingClientRect();
+      canvas.width  = Math.floor(rect.width  * devicePixelRatio);
+      canvas.height = Math.floor(rect.height * devicePixelRatio);
+      draw(0, 0, false);
+    }
+
+    let active = false;
+
+    function draw(nx, ny, isActive) {
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const cx = w/2, cy = h/2;
+      const r = Math.min(w,h)*0.35;
+      const kr = Math.min(w,h)*0.08;
+
+      ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
+      ctx.strokeStyle="#ddd"; ctx.lineWidth=4*devicePixelRatio; ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(cx-r,cy); ctx.lineTo(cx+r,cy);
+      ctx.moveTo(cx,cy-r); ctx.lineTo(cx,cy+r);
+      ctx.strokeStyle="#eee"; ctx.lineWidth=2*devicePixelRatio; ctx.stroke();
+
+      const kx = cx + nx*r;
+      const ky = cy + ny*r;
+      ctx.beginPath(); ctx.arc(kx,ky,kr,0,Math.PI*2);
+      ctx.fillStyle = isActive ? "#e9f2ff" : "#f5f5f5";
+      ctx.strokeStyle="#bbb"; ctx.lineWidth=3*devicePixelRatio;
+      ctx.fill(); ctx.stroke();
+    }
+
+    function pointerToNorm(e) {
+      const rect = canvas.getBoundingClientRect();
+      const x = (e.clientX - rect.left) / rect.width;
+      const y = (e.clientY - rect.top) / rect.height;
+      let nx = (x - 0.5) * 2;
+      let ny = (y - 0.5) * 2;
+      const mag = Math.hypot(nx, ny);
+      if (mag > 1) { nx/=mag; ny/=mag; }
+      return { nx, ny };
+    }
+
+    canvas.addEventListener("pointerdown", (e) => {
+      canvas.setPointerCapture(e.pointerId);
+      active = true;
+      const {nx,ny} = pointerToNorm(e);
+      draw(nx,ny,true);
+      onMove(nx,ny,true);
+    });
+
+    canvas.addEventListener("pointermove", (e) => {
+      if (!active) return;
+      const {nx,ny} = pointerToNorm(e);
+      draw(nx,ny,true);
+      onMove(nx,ny,true);
+    });
+
+    function release() {
+      if (!active) return;
+      active = false;
+      draw(0,0,false);
+      onMove(0,0,false);
+    }
+
+    canvas.addEventListener("pointerup", release);
+    canvas.addEventListener("pointercancel", release);
+    window.addEventListener("resize", resize);
+
+    resize();
+  }
+
+  function initJoysticks() {
+    makeJoystick("joyLeft", (x,y,active) => {
+      latest.lx = active ? x : 0;
+      latest.ly = active ? y : 0;
+    });
+
+    makeJoystick("joyRight", (x,y,active) => {
+      latest.rx = active ? x : 0;
+    });
+
+    window.setInterval(() => {
+      if (!Go2Shared.ensureLoggedIn() || !Go2Shared.state.COMMS_ENABLED || stopLatched) return;
+      const eps = 0.01;
+      if (Math.abs(latest.lx) < eps && Math.abs(latest.ly) < eps && Math.abs(latest.rx) < eps) return;
+      sendTeleop(latest.lx, latest.ly, latest.rx);
+    }, SEND_PERIOD_MS);
+  }
+</script>
+
+</body>
+</html>

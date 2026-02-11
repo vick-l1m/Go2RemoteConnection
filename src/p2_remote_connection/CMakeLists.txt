@@ -39,19 +39,19 @@ find_package(unitree_api REQUIRED)
 find_package(unitree_go REQUIRED)
 
 # ------------------------------------------------------------
-# Executable: web_teleop_bridge (real robot)
+# Executable: web_bridge
 # ------------------------------------------------------------
-add_executable(web_teleop_bridge
-  src/web_teleop_bridge.cpp
+add_executable(web_bridge
+  src/web_bridge.cpp
   src/common/ros2_sport_client.cpp
 )
 
-target_include_directories(web_teleop_bridge PRIVATE
+target_include_directories(web_bridge PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${CMAKE_CURRENT_SOURCE_DIR}/include/p2_remote_connection
 )
 
-ament_target_dependencies(web_teleop_bridge
+ament_target_dependencies(web_bridge
   rclcpp
   geometry_msgs
   std_msgs
@@ -84,34 +84,6 @@ ament_target_dependencies(move_forward_meters_node
   std_msgs
   nav_msgs
   geometry_msgs
-)
-
-# ------------------------------------------------------------
-# Executable: advanced_gamepad_controller_web
-# ------------------------------------------------------------
-add_executable(advanced_gamepad_controller_web
-  src/advanced_gamepad_controller_web.cpp
-  src/common/ros2_sport_client.cpp
-)
-
-target_include_directories(advanced_gamepad_controller_web PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/include
-  ${CMAKE_CURRENT_SOURCE_DIR}/include/p2_remote_connection
-)
-
-find_package(nlohmann_json REQUIRED)
-target_link_libraries(
-  advanced_gamepad_controller_web
-  nlohmann_json::nlohmann_json
-)
-
-ament_target_dependencies(advanced_gamepad_controller_web
-  rclcpp
-  geometry_msgs
-  std_msgs
-  nav_msgs
-  unitree_api
-  unitree_go
 )
 
 # ------------------------------------------------------------
@@ -156,10 +128,9 @@ install(DIRECTORY include/
 )
 
 install(TARGETS
-  web_teleop_bridge
+  web_bridge
   web_teleop_bridge_sim
   move_forward_meters_node
-  advanced_gamepad_controller_web
   flatten_l1_data
   L1_pcd_web_packer
   DESTINATION lib/${PROJECT_NAME}

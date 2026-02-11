@@ -504,7 +504,8 @@
       <a class="navBtn" href="/app/go2_map_viewer.html">Map</a>
       <a class="navBtn" href="/app/go2_terminal_only.html">Terminal</a>
       <a class="navBtn" href="/app/go2_other.html">Other</a>
-    `;
+      <a class="navBtn" href="/app/go2_front_camera.html">Camera</a>
+`   ;
   
     const h1 = card.querySelector("h1");
     if (h1 && h1.nextSibling) card.insertBefore(nav, h1.nextSibling);

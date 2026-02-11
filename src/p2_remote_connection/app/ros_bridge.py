@@ -15,6 +15,8 @@ from std_msgs.msg import Bool, Float32, UInt8MultiArray
 from nav_msgs.msg import OccupancyGrid
 from map_msgs.msg import OccupancyGridUpdate
 from fastapi import WebSocket
+from sensor_msgs.msg import CompressedImage
+
 
 
 # ============================================================
@@ -98,6 +100,46 @@ async def _broadcast_pcd_payload(payload: dict):
                 _pcd_store.clients.discard(ws)
 
 
+# ============================================================
+# CAMERA STORE (JPEG bytes)
+# ============================================================
+@dataclass
+class CameraStore:
+    meta: Optional[Dict[str, Any]] = None   # {frame_id, format}
+    jpg: Optional[bytes] = None            # raw JPEG bytes
+    seq: int = 0
+    clients: Set[WebSocket] = None
+    lock: asyncio.Lock = None
+
+    def __post_init__(self):
+        if self.clients is None:
+            self.clients = set()
+        if self.lock is None:
+            self.lock = asyncio.Lock()
+
+_cam_store = CameraStore()
+
+async def _broadcast_cam_payload(payload: dict):
+    dead = []
+    async with _cam_store.lock:
+        clients = list(_cam_store.clients)
+
+    for ws in clients:
+        try:
+            header = payload.copy()
+            jpg = header.pop("jpg")
+            await ws.send_text(json.dumps(header))
+            await ws.send_bytes(jpg)
+        except Exception:
+            dead.append(ws)
+
+    if dead:
+        async with _cam_store.lock:
+            for ws in dead:
+                _cam_store.clients.discard(ws)
+
+def get_cam_store() -> CameraStore:
+    return _cam_store
 
 # ============================================================
 # ROS <-> WEB BRIDGE NODE
@@ -162,6 +204,21 @@ class WebRosBridge(Node):
         )
 
         self._pcd_meta_cache = {"frame_id": "unknown", "fmt": "xyz32", "stride": 12}
+        
+        # ---------------- Front camera subscription ----------------
+        self.declare_parameter("front_cam_topic", "/web/front_cam/compressed")
+        cam_topic = self.get_parameter("front_cam_topic").value
+
+        cam_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=2,
+        )
+
+        self.sub_front_cam = self.create_subscription(
+            CompressedImage, cam_topic, self._on_front_cam, cam_qos
+        )
 
         # AsyncIO loop provided by FastAPI
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -323,6 +380,42 @@ class WebRosBridge(Node):
     
         self._loop.call_soon_threadsafe(_schedule)
 
+    # ---------------- Front camera callback ----------------
+    def _on_front_cam(self, msg: CompressedImage):
+        store = get_cam_store()
+    
+        jpg = bytes(msg.data)   # JPEG payload
+        meta = {
+            "stamp": {"sec": int(msg.header.stamp.sec), "nanosec": int(msg.header.stamp.nanosec)},
+            "frame_id": msg.header.frame_id,
+            "format": msg.format,
+        }
+    
+        async def fanout(clients):
+            header = {"t": "cam", "seq": store.seq, "meta": store.meta, "n": len(store.jpg)}
+            dead = []
+            for ws in list(clients):
+                try:
+                    await ws.send_text(json.dumps(header))
+                    await ws.send_bytes(store.jpg)
+                except Exception:
+                    dead.append(ws)
+            for ws in dead:
+                clients.discard(ws)
+    
+        async def update_and_send():
+            async with store.lock:
+                store.seq += 1
+                store.jpg = jpg
+                store.meta = meta
+                clients = set(store.clients)  # snapshot under lock
+    
+            # send outside lock
+            await fanout(clients)
+    
+        # schedule into FastAPI event loop
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(update_and_send(), self._loop)
 
 
 # ============================================================

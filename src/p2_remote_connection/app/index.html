@@ -103,10 +103,16 @@
         <div class="desc">Minimal page: Health + STOP/RESUME + Move X meters.</div>
       </a>
 
-      <!-- NEW: Movement Controller -->
+      <!-- Movement Controller -->
       <a class="btn" href="./go2_movement_controller.html" onclick="rememberMode('movement')">
         <div class="title">Movement Controller</div>
         <div class="desc">Web version of your advanced gamepad controller (SportClient actions + modes).</div>
+      </a>
+
+      <!-- Front Camera -->
+      <a class="btn" href="./go2_front_camera.html" onclick="rememberMode('camera')">
+        <div class="title">Front Camera</div>
+        <div class="desc">Live front camera stream (raw JPEG over WebSocket) + safety + teleop sticks.</div>
       </a>
     </div>
 
@@ -126,18 +132,20 @@
       <span class="mono">/app/go2_terminal_only.html</span> •
       <span class="mono">/app/go2_map_viewer.html</span> •
       <span class="mono">/app/go2_other.html</span> •
-      <span class="mono">/app/go2_movement_controller.html</span><br/>
+      <span class="mono">/app/go2_movement_controller.html</span> •
+      <span class="mono">/app/go2_front_camera.html</span><br/>
       Tip: You can set mode in the URL like:
       <span class="mono">/app/?mode=terminal</span> or
       <span class="mono">/app/?mode=joystick</span> or
       <span class="mono">/app/?mode=map</span> or
       <span class="mono">/app/?mode=other</span> or
-      <span class="mono">/app/?mode=movement</span>
+      <span class="mono">/app/?mode=movement</span> or
+      <span class="mono">/app/?mode=camera</span>
     </div>
   </div>
 
   <script>
-    const LS_MODE_KEY = "go2_ui_last_mode"; // "joystick" | "terminal" | "map" | "other" | "movement"
+    const LS_MODE_KEY = "go2_ui_last_mode"; // "joystick" | "terminal" | "map" | "other" | "movement" | "camera"
 
     function computeDefaultApi() {
       const host = window.location.hostname;
@@ -152,11 +160,11 @@
     function getModeFromUrlOrStorage() {
       const params = new URLSearchParams(window.location.search);
       const m = (params.get("mode") || "").toLowerCase();
-      if (m === "joystick" || m === "terminal" || m === "map" || m === "other" || m === "movement") return m;
+      if (m === "joystick" || m === "terminal" || m === "map" || m === "other" || m === "movement" || m === "camera") return m;
 
       try {
         const saved = (localStorage.getItem(LS_MODE_KEY) || "").toLowerCase();
-        if (saved === "joystick" || saved === "terminal" || saved === "map" || saved === "other" || saved === "movement") return saved;
+        if (saved === "joystick" || saved === "terminal" || saved === "map" || saved === "other" || saved === "movement" || saved === "camera") return saved;
       } catch (_) {}
 
       return "auto";
@@ -175,7 +183,8 @@
         : (mode === "terminal" ? "Terminal"
         : (mode === "map" ? "Map"
         : (mode === "other" ? "Other"
-        : "Movement"))));
+        : (mode === "movement" ? "Movement"
+        : "Camera")))));
 
       badgeText.textContent = `Mode: ${modeLabel} • Health: ${healthText}`;
     }

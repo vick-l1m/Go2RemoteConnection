@@ -142,7 +142,7 @@ else
 fi
 
 # ----------------------------
-# 0) Start L1 -> 2D map generator (flatten_l1_data) and 3D point cloud streamer (flatten_l1_data with different params)
+# 0a) Start L1 -> 2D map generator (flatten_l1_data) and 3D point cloud streamer (flatten_l1_data with different params)
 # ----------------------------
 echo "[run_all] Starting flatten_l1_data (L1 -> /map2d)..."
 ros2 run p2_remote_connection flatten_l1_data \
@@ -181,6 +181,30 @@ pids+=("$PCD_PID")
 sleep 0.3
 ok_or_die "flatten_l1_data" "$FLATTEN_PID"
 ok_or_die "L1_pcd_web_packer" "$PCD_PID"
+
+# ------------------------------------------------------------
+# 0b) Front camera capture node, Image -> JPEG compressed bridge
+# ------------------------------------------------------------
+chmod +x "$PKG_DIR/src/front_camera_node.py" "$PKG_DIR/src/image_to_compressed_bridge.py"
+
+echo "[run_all] Starting front camera node (/front_camera/image_raw)..."
+python3 "$PKG_DIR/src/front_camera_node.py" \
+  > /tmp/front_camera_node.log 2>&1 &
+
+front_cam_node_PID=$!
+pids+=("$front_cam_node_PID")
+sleep 2.0
+ok_or_die "front_camera_node" "$front_cam_node_PID"
+
+echo "[run_all] Starting image_to_compressed_bridge (/front_camera/image_raw -> /web/front_cam/compressed)..."
+python3 "$PKG_DIR/src/image_to_compressed_bridge.py" --ros-args \
+  -p jpeg_quality:=80 \
+  > /tmp/image_to_compressed_bridge.log 2>&1 &
+
+front_cam_bridge_PID=$!
+pids+=("$front_cam_bridge_PID")
+sleep 1.0
+ok_or_die "image_to_compressed_bridge" "$front_cam_bridge_PID"
 
 # ----------------------------
 # 1) Start FastAPI backend
@@ -229,24 +253,22 @@ kill_conflicting_nodes() {
   pkill -f "p2_remote_connection.*web_teleop_bridge" || true
   pkill -f "p2_remote_connection.*web_advanced_bridge" || true
   pkill -f "p2_remote_connection.*advanced_gamepad_controller_web" || true
+  pkill -f "ros2 run p2_remote_connection web_bridge" || true
+  pkill -f "p2_remote_connection.*web_bridge" || true
   sleep 0.3
 }
 
 kill_conflicting_nodes
-if [ "$MODE" = "joystick" ] || [ -z "$MODE" ]; then
-  echo "[run_all] Mode joystick: starting web_teleop_bridge + move_forward_meters_node"
-  ros2 run p2_remote_connection web_teleop_bridge &
+if [ "$MODE" = "terminal" ]; then
+  echo "[run_all] Terminal mode: skipping motion nodes ✅"
+else
+  echo "[run_all] Starting web_bridge (for ALL web UIs)"
+  ros2 run p2_remote_connection web_bridge &
   pids+=("$!")
+
+  # optional helper if you still use it from API
   ros2 run p2_remote_connection move_forward_meters_node &
   pids+=("$!")
-
-elif [ "$MODE" = "movement" ]; then
-  echo "[run_all] Mode movement: starting advanced_gamepad_controller_web"
-  ros2 run p2_remote_connection advanced_gamepad_controller_web &
-  pids+=("$!")
-
-elif [ "$MODE" = "terminal" ]; then
-  echo "[run_all] Terminal mode: skipping motion nodes ✅"
 fi
 
 # Give them a moment to crash if they will

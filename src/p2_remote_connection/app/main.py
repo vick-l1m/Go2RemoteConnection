@@ -25,11 +25,14 @@ from dataclasses import dataclass, field
 from fastapi.staticfiles import StaticFiles
 from .ros_bridge import get_pcd_store 
 
+from app.ros_bridge import get_cam_store
+
 # Conditional import: use terminal_ec2 for EC2 deployment, terminal for robot
 if os.getenv("DEPLOYMENT_ENV") == "ec2":
     from .terminal_ec2 import terminal_ws
 else:
     from .terminal import terminal_ws
+
 
 # Authentication
 # ------------------------------------------------------------
@@ -401,4 +404,51 @@ async def ws_pcd(websocket: WebSocket):
         async with store.lock:
             store.clients.discard(websocket)
 
-    
+# ------------------------------------------------------------
+# CAMERA STORE (JPEG bytes)
+# ------------------------------------------------------------
+@app.websocket("/ws/cam_front")
+async def ws_cam_front(websocket: WebSocket):
+    token = websocket.query_params.get("token", "")
+
+    if AUTH_ENABLED:
+        if not GO2_API_TOKEN:
+            await websocket.close(code=1011); return
+        if not hmac.compare_digest(token, GO2_API_TOKEN):
+            await websocket.close(code=1008); return
+
+    await websocket.accept()
+    if STOP_LATCHED:
+        await websocket.close(code=1013); return
+
+    store = get_cam_store()
+
+    # register + initial
+    async with store.lock:
+        store.clients.add(websocket)
+        initial_header = None
+        initial_jpg = None
+        if store.meta is not None and store.jpg is not None:
+            initial_header = {
+                "t": "cam",
+                "seq": store.seq,
+                "meta": store.meta,
+                "n": len(store.jpg),
+            }
+            initial_jpg = store.jpg
+
+    try:
+        if initial_header:
+            await websocket.send_text(json.dumps(initial_header))
+            await websocket.send_bytes(initial_jpg)
+
+        while True:
+            _ = await websocket.receive_text()  # keepalive ping
+            if STOP_LATCHED:
+                await websocket.close(code=1013)
+                return
+    except Exception:
+        pass
+    finally:
+        async with store.lock:
+            store.clients.discard(websocket)
