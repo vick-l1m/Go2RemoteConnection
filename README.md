@@ -7,6 +7,10 @@ Creating a web access interface to connect to Go2 functions.
 This project runs a small FastAPI server on the Unitree Go2 (or a machine with the same ROS 2/Unitree environment)
 and exposes **HTTP endpoints** that trigger a **whitelisted set of shell commands**.
 
+## Prerequisites
+- Unitree ROS2: Install the Unitree ROS2 for GO2 robot, please refer to [Unitree ROS2](https://github.com/unitreerobotics/unitree_ros2)
+- Unitree SDK2 Python: please refer to [Unitree SDK2 Python](https://github.com/unitreerobotics/unitree_sdk2_python)
+
 ## 1. Build the workspace
 
 ### 1.1. Clone this workspace
@@ -22,6 +26,14 @@ On the Go2 (or the device running the server)
 pip3 install fastapi uvicorn
 sudo apt update
 sudo apt install ros-humble-map-msgs
+
+# For YOLO and Camera
+sudo apt install -y \
+  ros-humble-cv-bridge \
+  ros-humble-image-transport \
+  ros-humble-sensor-msgs
+cd ~/p2_ws/P2RemoteConnection/src/p2_remote_connection/src/cv/model
+python3 model_download.py
 
 # Setup the workspace
 cd ~/p2_ws/P2RemoteConnection/src/p2_remote_connection
@@ -94,6 +106,15 @@ Launching with
 ./start_remote_connection terminal
 ``` 
 Will disable the web_teleop node, allowing the ```go2_terminal_only.html``` to run interupted.
+
+### Debugging:
+Each node comes with a log, you can read each log using the command
+```bash
+sed -n '1,200p' /tmp/<node>log
+
+# Eg front_camera_node
+sed -n '1,200p' /tmp/front_camera_node.log
+```
 
 ## 2. Making the script run on startup
 
