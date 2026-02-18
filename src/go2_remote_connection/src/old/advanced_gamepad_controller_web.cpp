@@ -11,7 +11,7 @@
 #include "std_msgs/msg/bool.hpp"
 
 #include "unitree_api/msg/request.hpp"
-#include "p2_remote_connection/common/ros2_sport_client.h"
+#include "go2_remote_connection/common/ros2_sport_client.h"
 
 using namespace std::chrono_literals;
 

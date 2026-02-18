@@ -3,7 +3,7 @@ set -eo pipefail
 # NOTE: we intentionally do NOT enable 'set -u' until after sourcing ROS
 
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PKG_DIR="$WS_DIR/src/p2_remote_connection"
+PKG_DIR="$WS_DIR/src/go2_remote_connection"
 
 API_HOST="0.0.0.0"
 API_PORT="8000"
@@ -95,7 +95,7 @@ else
   echo "[run_all] WARNING: Unitree env not found at $HOME/unitree_ros2/install/setup.(sh|bash)"
 fi
 
-# 3) Your overlay (P2RemoteConnection)
+# 3) Your overlay (Go2RemoteConnection)
 if [ -f "$WS_DIR/install/setup.bash" ]; then
   echo "[run_all] Sourcing overlay: $WS_DIR/install/setup.bash"
   source "$WS_DIR/install/setup.bash"
@@ -145,7 +145,7 @@ fi
 # 0a) Start L1 -> 2D map generator (flatten_l1_data) and 3D point cloud streamer (flatten_l1_data with different params)
 # ----------------------------
 echo "[run_all] Starting flatten_l1_data (L1 -> /map2d)..."
-ros2 run p2_remote_connection flatten_l1_data \
+ros2 run go2_remote_connection flatten_l1_data \
   --ros-args \
   -p cloud_topic:=/utlidar/cloud_base \
   -p map2d_topic:=/map2d \
@@ -162,7 +162,7 @@ FLATTEN_PID=$!
 pids+=("$FLATTEN_PID")
 
 echo "[run_all] Starting L1_pcd_web_packer (L1 -> /pcd/xyz32)..."
-ros2 run p2_remote_connection L1_pcd_web_packer \
+ros2 run go2_remote_connection L1_pcd_web_packer \
   --ros-args \
   -p cloud_topic:=/utlidar/cloud_deskewed \
   -p target_frame:=odom \
@@ -272,14 +272,14 @@ done
 # ----------------------------
 kill_conflicting_nodes() {
   echo "[run_all] Killing conflicting motion nodes (if any)..."
-  pkill -f "ros2 run p2_remote_connection web_teleop_bridge" || true
-  pkill -f "ros2 run p2_remote_connection web_advanced_bridge" || true
-  pkill -f "ros2 run p2_remote_connection advanced_gamepad_controller_web" || true
-  pkill -f "p2_remote_connection.*web_teleop_bridge" || true
-  pkill -f "p2_remote_connection.*web_advanced_bridge" || true
-  pkill -f "p2_remote_connection.*advanced_gamepad_controller_web" || true
-  pkill -f "ros2 run p2_remote_connection web_bridge" || true
-  pkill -f "p2_remote_connection.*web_bridge" || true
+  pkill -f "ros2 run go2_remote_connection web_teleop_bridge" || true
+  pkill -f "ros2 run go2_remote_connection web_advanced_bridge" || true
+  pkill -f "ros2 run go2_remote_connection advanced_gamepad_controller_web" || true
+  pkill -f "go2_remote_connection.*web_teleop_bridge" || true
+  pkill -f "go2_remote_connection.*web_advanced_bridge" || true
+  pkill -f "go2_remote_connection.*advanced_gamepad_controller_web" || true
+  pkill -f "ros2 run go2_remote_connection web_bridge" || true
+  pkill -f "go2_remote_connection.*web_bridge" || true
   sleep 0.3
 }
 
@@ -288,11 +288,11 @@ if [ "$MODE" = "terminal" ]; then
   echo "[run_all] Terminal mode: skipping motion nodes ✅"
 else
   echo "[run_all] Starting web_bridge (for ALL web UIs)"
-  ros2 run p2_remote_connection web_bridge &
+  ros2 run go2_remote_connection web_bridge &
   pids+=("$!")
 
   # optional helper if you still use it from API
-  ros2 run p2_remote_connection move_forward_meters_node &
+  ros2 run go2_remote_connection move_forward_meters_node &
   pids+=("$!")
 fi
 

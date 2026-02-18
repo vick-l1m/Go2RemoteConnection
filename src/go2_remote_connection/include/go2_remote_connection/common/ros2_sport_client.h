@@ -6,7 +6,7 @@
 #include <iostream>
 #include <rclcpp/rclcpp.hpp>
 
-#include "p2_remote_connection/nlohmann/json.hpp"
+#include "go2_remote_connection/nlohmann/json.hpp"
 // #include "nlohmann/json.hpp"
 #include "patch.hpp"
 #include "unitree_api/msg/request.hpp"

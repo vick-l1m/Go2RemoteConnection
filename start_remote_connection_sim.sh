@@ -3,7 +3,7 @@ set -eo pipefail
 # NOTE: we intentionally do NOT enable 'set -u' until after sourcing ROS
 
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PKG_DIR="$WS_DIR/src/p2_remote_connection"
+PKG_DIR="$WS_DIR/src/go2_remote_connection"
 
 API_HOST="0.0.0.0"
 API_PORT="8000"
@@ -81,7 +81,7 @@ fi
 
 # 2) Unitree env: (SIM) intentionally not sourced (KEEP sim behavior)
 
-# 3) Your overlay (P2RemoteConnection)
+# 3) Your overlay (Go2RemoteConnection)
 if [ -f "$WS_DIR/install/setup.bash" ]; then
   echo "[run_all] Sourcing overlay: $WS_DIR/install/setup.bash"
   source "$WS_DIR/install/setup.bash"
@@ -149,7 +149,7 @@ done
 # ----------------------------
 SIM_BRIDGE_PID=""
 if [ "$MODE" = "joystick" ] || [ -z "$MODE" ]; then
-  SIM_BRIDGE_BIN="$WS_DIR/install/p2_remote_connection/lib/p2_remote_connection/web_teleop_bridge_sim"
+  SIM_BRIDGE_BIN="$WS_DIR/install/go2_remote_connection/lib/go2_remote_connection/web_teleop_bridge_sim"
   if [ -x "$SIM_BRIDGE_BIN" ]; then
     echo "[run_all] Starting SIM bridge: $SIM_BRIDGE_BIN"
     "$SIM_BRIDGE_BIN" --ros-args -p robot_index:=0 &
@@ -158,7 +158,7 @@ if [ "$MODE" = "joystick" ] || [ -z "$MODE" ]; then
   else
     echo "[run_all] Starting SIM bridge via ros2 run (fallback)"
     cd "$WS_DIR"
-    ros2 run p2_remote_connection web_teleop_bridge_sim --ros-args -p robot_index:=0 &
+    ros2 run go2_remote_connection web_teleop_bridge_sim --ros-args -p robot_index:=0 &
     SIM_BRIDGE_PID=$!
     pids+=("$SIM_BRIDGE_PID")
   fi

@@ -1,7 +1,7 @@
 /**********************************************************************
  Copyright (c) 2020-2023, Unitree Robotics.Co.Ltd. All rights reserved.
 ***********************************************************************/
-#include "p2_remote_connection/common/ros2_sport_client.h"
+#include "go2_remote_connection/common/ros2_sport_client.h"
 
 void SportClient::Damp(unitree_api::msg::Request &req) {
   req.header.identity.api_id = ROBOT_SPORT_API_ID_DAMP;

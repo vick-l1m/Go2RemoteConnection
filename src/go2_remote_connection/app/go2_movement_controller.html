@@ -34,6 +34,9 @@
         <input id="baseUrl" placeholder="http://<go2-ip>:8000" />
         <button onclick="Go2Shared.checkHealth()">Health</button>
 
+        <button onclick="postAction('stand')">Stand</button>
+        <button onclick="postAction('sit')">Sit</button>
+
         <button id="modeMovement" onclick="setMode('movement')">Mode: Movement</button>
         <button id="modePosing"   onclick="setMode('posing')">Mode: Posing</button>
         <button id="modeActions"  onclick="setMode('actions')">Mode: Actions</button>

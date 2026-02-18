@@ -42,15 +42,15 @@ class TerminalSession:
                   source ~/unitree_ros2/install/setup.bash
                 fi
 
-                if [ -f ~/p2_ws/P2RemoteConnection/install/setup.bash ]; then
-                  source ~/p2_ws/P2RemoteConnection/install/setup.bash
+                if [ -f ~/go2_ws/Go2RemoteConnection/install/setup.bash ]; then
+                  source ~/go2_ws/Go2RemoteConnection/install/setup.bash
                 fi
 
                 # Nice-to-have: force color for ls if not already configured
                 alias ls='ls --color=auto' 2>/dev/null || true
 
-                # Start in p2_ws
-                cd ~/p2_ws 2>/dev/null || cd ~
+                # Start in go2_ws
+                cd ~/go2_ws 2>/dev/null || cd ~
 
                 exec bash -i
                 """

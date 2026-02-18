@@ -1,4 +1,4 @@
-# P2RemoteConnection
+# Go2RemoteConnection
 
 Creating a web access interface to connect to Go2 functions.
 
@@ -17,7 +17,7 @@ and exposes **HTTP endpoints** that trigger a **whitelisted set of shell command
 ```bash
   mkdir p2_ws
   cd p2_ws
-  git clone https://github.com/vick-l1m/P2RemoteConnection.git
+  git clone https://github.com/vick-l1m/Go2RemoteConnection.git
 ```
 
 On the Go2 (or the device running the server)
@@ -32,15 +32,15 @@ sudo apt install -y \
   ros-humble-cv-bridge \
   ros-humble-image-transport \
   ros-humble-sensor-msgs
-cd ~/p2_ws/P2RemoteConnection/src/p2_remote_connection/src/cv/model
+cd ~/p2_ws/Go2RemoteConnection/src/p2_remote_connection/src/cv/model
 python3 model_download.py
 
 # Setup the workspace
-cd ~/p2_ws/P2RemoteConnection/src/p2_remote_connection
+cd ~/p2_ws/Go2RemoteConnection/src/p2_remote_connection
 
 pip install -r requirements.txt
 source ~/unitree_ros2/install/setup.sh
-cd ~/p2_ws/P2RemoteConnection
+cd ~/p2_ws/Go2RemoteConnection
 colcon build
 source install/setup.bash
 ```
@@ -62,7 +62,7 @@ This token will be used to ensure security and that each Go2 has a unique id.
 ### 1.3. Launch the backend and ros2 node
 Make the command runnable and launch:
 ```bash
-cd ~/p2_ws/P2RemoteConnection
+cd ~/p2_ws/Go2RemoteConnection
 chmod +x start_remote_connection.sh
 ./start_remote_connection.sh
 ```
@@ -70,7 +70,7 @@ chmod +x start_remote_connection.sh
 To run on the Issac Sim:
 ```bash
 use_fastrtps
-cd ~/p2_ws/P2RemoteConnection
+cd ~/p2_ws/Go2RemoteConnection
 chmod +x start_remote_connection_humble.sh
 ./start_remote_connection_humble.sh
 ```

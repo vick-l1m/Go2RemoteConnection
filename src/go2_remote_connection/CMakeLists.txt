@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.10)
 # ------------------------------------------------------------
 # Package definition
 # ------------------------------------------------------------
-project(p2_remote_connection)
+project(go2_remote_connection)
 
 # ------------------------------------------------------------
 # C++ standard and warnings
@@ -48,7 +48,7 @@ add_executable(web_bridge
 
 target_include_directories(web_bridge PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
-  ${CMAKE_CURRENT_SOURCE_DIR}/include/p2_remote_connection
+  ${CMAKE_CURRENT_SOURCE_DIR}/include/go2_remote_connection
 )
 
 ament_target_dependencies(web_bridge
