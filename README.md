@@ -15,8 +15,8 @@ and exposes **HTTP endpoints** that trigger a **whitelisted set of shell command
 
 ### 1.1. Clone this workspace
 ```bash
-  mkdir p2_ws
-  cd p2_ws
+  mkdir go2_ws
+  cd go2_ws
   git clone https://github.com/vick-l1m/Go2RemoteConnection.git
 ```
 
@@ -32,15 +32,15 @@ sudo apt install -y \
   ros-humble-cv-bridge \
   ros-humble-image-transport \
   ros-humble-sensor-msgs
-cd ~/p2_ws/Go2RemoteConnection/src/p2_remote_connection/src/cv/model
+cd ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection/src/cv/model
 python3 model_download.py
 
 # Setup the workspace
-cd ~/p2_ws/Go2RemoteConnection/src/p2_remote_connection
+cd ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection
 
 pip install -r requirements.txt
 source ~/unitree_ros2/install/setup.sh
-cd ~/p2_ws/Go2RemoteConnection
+cd ~/go2_ws/Go2RemoteConnection
 colcon build
 source install/setup.bash
 ```
@@ -62,7 +62,7 @@ This token will be used to ensure security and that each Go2 has a unique id.
 ### 1.3. Launch the backend and ros2 node
 Make the command runnable and launch:
 ```bash
-cd ~/p2_ws/Go2RemoteConnection
+cd ~/go2_ws/Go2RemoteConnection
 chmod +x start_remote_connection.sh
 ./start_remote_connection.sh
 ```
@@ -70,7 +70,7 @@ chmod +x start_remote_connection.sh
 To run on the Issac Sim:
 ```bash
 use_fastrtps
-cd ~/p2_ws/Go2RemoteConnection
+cd ~/go2_ws/Go2RemoteConnection
 chmod +x start_remote_connection_humble.sh
 ./start_remote_connection_humble.sh
 ```
@@ -127,46 +127,46 @@ A systemd service can be created so the system
 
 **Create the service file**: 
 ```swift
-sudo vim /etc/systemd/system/p2-remote-connection.service
+sudo vim /etc/systemd/system/go2-remote-connection.service
 ```
 ### 2.2. Enable and start the service:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable p2-remote-connection.service
-sudo systemctl start p2-remote-connection.service
+sudo systemctl enable go2-remote-connection.service
+sudo systemctl start go2-remote-connection.service
 ```
 
 ### 2.3. Monitoring the service:
 ```bash
 # Check service status
-systemctl status p2-remote-connection.service
+systemctl status go2-remote-connection.service
 # View logs live
-journalctl -u p2-remote-connection.service -f
+journalctl -u go2-remote-connection.service -f
 # Restart the system
-sudo systemctl restart p2-remote-connection.service
+sudo systemctl restart go2-remote-connection.service
 ```
 
 ### 2.4. To make changes to the startup:
 ```bash
 # Edit the file with access
-sudo vim /etc/systemd/system/p2-remote-connection.service   
+sudo vim /etc/systemd/system/go2-remote-connection.service   
 # Reload after edit
 sudo systemctl daemon-reload                                
-sudo systemctl restart p2-remote-connection.service
+sudo systemctl restart go2-remote-connection.service
 # Check that it is still active
-systemctl status p2-remote-connection.service --no-pager    
+systemctl status go2-remote-connection.service --no-pager    
 ```
 
 ### 2.5. To turn off the startup and test manually:
 ```bash
 # Stop the service
-sudo systemctl stop p2-remote-connection.service
+sudo systemctl stop go2-remote-connection.service
 # Confirm the ports are free
 sudo ss -ltnp | egrep ':8000|:8081'
 # They should show nothing
 
 # To restart
-sudo systemctl restart p2-remote-connection.service
+sudo systemctl restart go2-remote-connection.service
 ```
 
 ## 3. How it works
@@ -182,7 +182,7 @@ python3 -m http.server 8081
 ```
 **The Ros2 bridge to run Go2 commands**
 ```bash
-ros2 run p2_remote_connection web_teleop_bridge
+ros2 run go2_remote_connection web_teleop_bridge
 ```
 The script does the following:
   - Source ROS 2 Foxy
