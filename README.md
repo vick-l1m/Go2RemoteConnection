@@ -23,9 +23,11 @@ and exposes **HTTP endpoints** that trigger a **whitelisted set of shell command
 On the Go2 (or the device running the server)
 ```bash
 # Install dependancies
-pip3 install fastapi uvicorn
 sudo apt update
 sudo apt install ros-humble-map-msgs
+cd ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection
+pip install -r requirements.txt
+
 
 # For YOLO and Camera
 sudo apt install -y \
@@ -36,30 +38,14 @@ cd ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection/src/cv/model
 python3 model_download.py
 
 # Setup the workspace
-cd ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection
-
-pip install -r requirements.txt
+cd ~/go2_ws/Go2RemoteConnection/
 source ~/unitree_ros2/install/setup.sh
 cd ~/go2_ws/Go2RemoteConnection
 colcon build
 source install/setup.bash
 ```
 
-### 1.2. Setup the unique token:
-On the Go2, create a file in the robot user’s home directory:
-
-```bash
-vim ~/.go2_token
-``` 
-Put the token inside the file - one line with no spaces
-
-Secure the token file ensureing that it is read-only:
-```bash
-chmod 600 ~/.go2_token
-```
-This token will be used to ensure security and that each Go2 has a unique id.
-
-### 1.3. Launch the backend and ros2 node
+### 1.2. Launch the backend and ros2 node
 Make the command runnable and launch:
 ```bash
 cd ~/go2_ws/Go2RemoteConnection
@@ -74,7 +60,7 @@ cd ~/go2_ws/Go2RemoteConnection
 chmod +x start_remote_connection_humble.sh
 ./start_remote_connection_humble.sh
 ```
-### 1.4. Connect and run 
+### 1.3. Connect and run 
 Check the device ip address:
 ```bash
 # search for wlan0 ip
@@ -88,19 +74,27 @@ Open the website on a device connected to the same wifi:
 192.168.123.18/app/
 ```
 
-### 1.5. Landing page and login
+### 1.4. Landing page and login
 ```/app``` will open a landing page allowing you to choose between: 
 1. ```go2_joystick.html```
-    - ```sit``` and ```stand``` commands
-    - 2 joysticks allowing you to move the go2
-    - 3 accessable and toggelable terminals
-    - ```stop``` and ```resume``` toggle, latching all movement commands and stopping the web_teleop node
+    - Basic movement
+    - Terminal access
+    - Sit and stand commands
 
 2. ```go2_terminal_only.html```
     - 3 accessable and toggelable terminals
-    - ```stop``` and ```resume``` toggle, stops all terminals
 
-### Operating without ```web_teleop_node```
+3. ```go2_movement_controller.html```
+    - 3 modes
+      - Movement - accessing all go2 sports client movement controls
+      - Posing - keeping the robot still and posing with yaw, roll and pitch
+      - Actions - accessing all special commands of the go2
+4. ```go2_front_camera.html```
+    - Allows the user to view the front camera stream with a toggleable YOLO
+5. ```go2_map_viewer.html```
+    - Allows the user to view the 2D and 3D lidar point clouds
+
+### Operating without ```web_bridge```
 Launching with
 ```bash
 ./start_remote_connection terminal
@@ -115,6 +109,22 @@ sed -n '1,200p' /tmp/<node>log
 # Eg front_camera_node
 sed -n '1,200p' /tmp/front_camera_node.log
 ```
+
+### 1.6. Setup the unique token:
+There is an option to add security to the app.
+On the Go2, create a file in the robot user’s home directory:
+
+```bash
+vim ~/.go2_token
+``` 
+Put the token inside the file - one line with no spaces
+
+Secure the token file ensureing that it is read-only:
+```bash
+chmod 600 ~/.go2_token
+```
+This token will be used to ensure security and that each Go2 has a unique id.
+Currently this mode is turned off
 
 ## 2. Making the script run on startup
 
