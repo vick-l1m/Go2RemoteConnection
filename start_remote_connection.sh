@@ -3,8 +3,16 @@ set -eo pipefail
 # NOTE: we intentionally do NOT enable 'set -u' until after sourcing ROS
 
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PKG_DIR="$WS_DIR/src/go2_remote_connection"
-
+# If the script is in workspace root:
+if [ -d "$WS_DIR/src/go2_remote_connection" ]; then
+  PKG_DIR="$WS_DIR/src/go2_remote_connection"
+# If the script is inside the package (e.g. .../src/go2_remote_connection):
+elif [ -d "$WS_DIR/app" ] && [ -d "$WS_DIR/src" ]; then
+  PKG_DIR="$WS_DIR"
+else
+  echo "[run_all] ❌ Can't locate go2_remote_connection package from $WS_DIR"
+  exit 1
+fi
 API_HOST="0.0.0.0"
 API_PORT="8000"
 UI_PORT="8081"
@@ -185,10 +193,10 @@ ok_or_die "L1_pcd_web_packer" "$PCD_PID"
 # ------------------------------------------------------------
 # 0b) Front camera capture node, Image -> JPEG compressed bridge
 # ------------------------------------------------------------
-chmod +x "$PKG_DIR/src/front_camera_node.py" "$PKG_DIR/src/image_to_compressed_bridge.py"
+chmod +x "$PKG_DIR/src/cv/front_camera_node.py" "$PKG_DIR/src/cv/image_to_compressed_bridge.py"
 
-echo "[run_all] Starting front camera node (/front_camera/image_raw)..."
-python3 "$PKG_DIR/src/front_camera_node.py" \
+echo "[run_all] Starting front camera node (/cv/front_camera/image_raw)..."
+python3 "$PKG_DIR/src/cv/front_camera_node.py" \
   > /tmp/front_camera_node.log 2>&1 &
 
 front_cam_node_PID=$!
@@ -196,8 +204,8 @@ pids+=("$front_cam_node_PID")
 sleep 2.0
 ok_or_die "front_camera_node" "$front_cam_node_PID"
 
-echo "[run_all] Starting image_to_compressed_bridge (/front_camera/image_raw -> /web/front_cam/compressed)..."
-python3 "$PKG_DIR/src/image_to_compressed_bridge.py" --ros-args \
+echo "[run_all] Starting image_to_compressed_bridge (/cv/front_camera/image_raw -> /web/front_cam/compressed)..."
+python3 "$PKG_DIR/src/cv/image_to_compressed_bridge.py" --ros-args \
   -p jpeg_quality:=80 \
   > /tmp/image_to_compressed_bridge.log 2>&1 &
 
@@ -219,8 +227,8 @@ pids+=("$yolo_PID")
 sleep 2.0
 ok_or_die "ROS_yolo" "$yolo_PID"
 
-echo "[run_all] Starting yolo_to_compressed_bridge (/yolo_depth/image_raw -> /web/yolo_cam/compressed)..."
-python3 "$PKG_DIR/src/image_to_compressed_bridge.py" --ros-args \
+echo "[run_all] Starting yolo_to_compressed_bridge (/cv/yolo_depth/image_raw -> /web/yolo_cam/compressed)..."
+python3 "$PKG_DIR/src/cv/image_to_compressed_bridge.py" --ros-args \
   -p in_topic:=/yolo_depth/image_raw \
   -p out_topic:=/web/yolo_cam/compressed \
   -p jpeg_quality:=80 \
@@ -325,6 +333,6 @@ echo "[run_all] API: http://$HOST_IP:$API_PORT"
 echo "[run_all] Press Ctrl+C to stop everything."
 echo ""
 
-wait -n
+wait
 echo "[run_all] A process exited; shutting down..."
 exit 0

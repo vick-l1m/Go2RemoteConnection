@@ -8,6 +8,7 @@ This project runs a small FastAPI server on the Unitree Go2 (or a machine with t
 and exposes **HTTP endpoints** that trigger a **whitelisted set of shell commands**.
 
 ## Prerequisites
+- Ros2 Humble
 - Unitree ROS2: Install the Unitree ROS2 for GO2 robot, please refer to [Unitree ROS2](https://github.com/unitreerobotics/unitree_ros2)
 - Unitree SDK2 Python: please refer to [Unitree SDK2 Python](https://github.com/unitreerobotics/unitree_sdk2_python)
 
@@ -39,6 +40,8 @@ python3 model_download.py
 cd ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection
 
 pip install -r requirements.txt
+
+source /opt/ros/humble/setup.sh
 source ~/unitree_ros2/install/setup.sh
 cd ~/go2_ws/Go2RemoteConnection
 colcon build
