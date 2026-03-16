@@ -1,0 +1,249 @@
+/* shared.css - starter (common look & feel for all Go2 pages) */
+
+:root {
+  --bg: #fafafa;
+  --card-bg: #fff;
+  --border: #ddd;
+  --soft-border: #eee;
+  --soft: #f7f7f7;
+  --soft-2: #fafafa;
+  --danger-bg: #fff1f1;
+  --danger-border: #ffb3b3;
+  --accent-bg: #eaf2ff;
+  --accent-border: #7aa7ff;
+
+  --radius: 16px;
+  --radius-sm: 12px;
+  --pill-radius: 999px;
+
+  --pad: 14px;
+  --gap: 12px;
+  --font: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Base */
+* { box-sizing: border-box; }
+body { font-family: var(--font); margin: 0; padding: var(--pad); background: var(--bg); }
+h1 { margin: 0 0 10px; font-size: 20px; }
+.pageNav{
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+  margin: 10px 0 12px;
+}
+.navBtn{
+  display:inline-block;
+  padding:10px 12px;
+  border-radius:12px;
+  border:1px solid #ddd;
+  background:#f7f7f7;
+  text-decoration:none;
+  color:inherit;
+  font-size:14px;
+}
+.navBtn.active{
+  border-color:#7aa7ff;
+  background:#eaf2ff;
+}
+input {
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid #ccc;
+  flex: 1;
+  min-width: 220px;
+  font-size: 16px;
+}
+button {
+  padding: 12px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid #ccc;
+  background: var(--soft);
+  font-size: 15px;
+  cursor: pointer;
+  min-width: 120px;
+}
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.card {
+  max-width: 1050px;
+  margin: 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--pad);
+  background: var(--card-bg);
+}
+
+/* Layout helpers */
+.row { display:flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.grid { display:grid; grid-template-columns: 1fr 1fr; gap: var(--gap); margin-top: var(--gap); }
+.grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: var(--gap); margin-top: var(--gap); }
+
+.small { font-size: 13px; color: #555; }
+.mono { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; }
+.hint { margin-top: 6px; }
+
+/* Pills / toggles / modes */
+.pill {
+  padding: 6px 10px;
+  border-radius: var(--pill-radius);
+  border: 1px solid var(--border);
+  background: var(--soft-2);
+  font-size: 12px;
+}
+.danger { background: var(--danger-bg); border-color: var(--danger-border); }
+.activeMode { border-color: var(--accent-border); background: var(--accent-bg); }
+.toggleOn { border-color: var(--accent-border); background: var(--accent-bg); }
+
+/* Panels */
+.panel {
+  border: 1px solid var(--soft-border);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-top: 12px;
+  background: var(--soft-2);
+}
+.panel h2 { margin: 0 0 10px; font-size: 16px; }
+
+.btnGrid {
+  display:grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+/* Status box */
+.status {
+  margin-top: 12px;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--soft-2);
+  border: 1px solid var(--soft-border);
+}
+
+/* Joysticks */
+.joyBox {
+  border: 1px solid var(--soft-border);
+  border-radius: var(--radius);
+  padding: 10px;
+  background: var(--soft-2);
+}
+.joyTitle { font-size: 14px; color:#333; margin: 0 0 8px; }
+canvas {
+  width: 100%;
+  height: 280px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid var(--soft-border);
+  touch-action: none;
+}
+
+/* Login overlay */
+.loginOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  pointer-events: auto;
+}
+.loginCard {
+  background: #fff;
+  padding: 16px;
+  border-radius: var(--radius);
+  width: min(420px, 92vw);
+}
+.loginCard h2 { margin: 0 0 10px; font-size: 18px; }
+.loginForm { display:flex; flex-direction:column; gap:10px; }
+.loginMsg { font-size: 13px; color: #b00020; }
+.loginTip { font-size: 12px; color: #555; }
+
+/* Locked appRoot state */
+.appLocked {
+  filter: blur(6px);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Terminals (for joystick page) */
+.termGrid {
+  margin-top: 12px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(520px, 1fr));
+}
+.termPanel {
+  min-width: 520px;
+  border: 1px solid var(--soft-border);
+  border-radius: var(--radius);
+  background: #0f0f0f;
+  overflow: hidden;
+}
+.termHeader {
+  display:flex;
+  justify-content: space-between;
+  align-items:center;
+  padding: 10px 12px;
+  background:#171717;
+  border-bottom: 1px solid #2a2a2a;
+}
+.termTitle { color:#fff; font-size:14px; font-weight:600; }
+.termHint { color:#bbb; }
+.termBox {
+  width: 100%;
+  height: 320px;
+  overflow: auto;
+  touch-action: pan-y;
+}
+html[data-auth-enabled="0"] .loginOverlay {
+  display: none !important;
+}
+.pageNav{
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+  margin: 10px 0 12px;
+}
+.navBtn{
+  display:inline-block;
+  padding:10px 12px;
+  border-radius:12px;
+  border:1px solid #ddd;
+  background:#f7f7f7;
+  text-decoration:none;
+  color:inherit;
+  font-size:14px;
+}
+.navBtn.active{
+  border-color:#7aa7ff;
+  background:#eaf2ff;
+}
+.modalOverlay{
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.45);
+  padding: 14px;
+  z-index: 9999;
+}
+.modalCard{
+  width: min(520px, 100%);
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+}
+#pcdCanvas {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #fff;
+  touch-action: none;
+}
+

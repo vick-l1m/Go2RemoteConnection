@@ -1,0 +1,979 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go2 Map Viewer</title>
+
+  <link rel="stylesheet" href="/app/static/shared.css">
+  <script src="/app/static/shared.js"></script>
+  
+  <style>
+    /* Map-specific bits only (everything else comes from shared.css) */
+    .mapPanel { margin-top: 12px; border: 1px solid var(--soft-border); border-radius: var(--radius); overflow: hidden; background:#fff; }
+    .mapHeader { display:flex; justify-content: space-between; align-items:center; padding: 10px 12px; background: var(--soft-2); border-bottom:1px solid var(--soft-border); }
+    .mapTitle { font-size:14px; font-weight:600; }
+    .mapHint { color:#777; }
+    .mapBox { padding: 12px; height: 72vh; min-height: 520px; }
+    #mapCanvas {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      width: 100%;
+      height: 100%;
+      display: block;
+      image-rendering: pixelated;
+      background: #fff;
+      touch-action: none; /* needed for pan/zoom on touchpads + phones */
+    }
+
+    /* Layout: show panels stacked by default; split side-by-side on wide screens */
+    #panel2d, #panel3d { height: auto; }
+    @media (min-width: 1100px) {
+      .mapGrid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-top: 12px;
+      }
+    }
+    
+    /* Joysticks */
+    .joyRow {
+      margin-top: 12px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    @media (max-width: 820px) {
+      .joyRow { grid-template-columns: 1fr; }
+    }
+    .joyBox {
+      border: 1px solid var(--soft-border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      background: #fff;
+    }
+    .joyTitle { font-size: 13px; color: #333; margin-bottom: 8px; }
+    .joyCanvas {
+      width: 100%;
+      height: 260px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: #fff;
+      touch-action: none; /* critical for pointer joystick */
+      display:block;
+    }
+  </style>
+
+  <script>
+    window.addEventListener("DOMContentLoaded", async () => {
+      // Initialize shared behavior (auto defaultApi from UI host -> :8000)
+      await Go2Shared.init({ defaultApi: "", showAuthButtons: true });
+
+      setTimeout(refreshSafetyStatus, 200);
+      setTimeout(() => setViewMode("both"), 350);
+      
+      // Init joysticks after DOM is ready
+      initJoysticks();
+    });
+  </script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+    }
+  }
+  </script>
+</head>
+
+<body>
+  <!-- LOGIN OVERLAY (shared.css styles) -->
+  <div id="loginOverlay" class="loginOverlay">
+    <div class="loginCard">
+      <h2>Connect to Go2</h2>
+      <div class="loginForm">
+        <input id="loginBaseUrl" placeholder="http://robot-ip:8000 or https://robot.domain" />
+        <input id="loginToken" placeholder="Password" type="password" />
+
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#333;">
+          <input id="showPw" type="checkbox" onclick="Go2Shared.togglePasswordVisibility()" />
+          Show password
+        </label>
+
+        <button id="unlockBtn" onclick="loginAndStart()">Unlock</button>
+        <div id="loginMsg" class="loginMsg"></div>
+        <div class="loginTip">Tip: This password is unique per robot.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="appRoot">
+    <div class="card">
+      <h1>Unitree Go2 – Map Viewer</h1>
+
+      <div class="row">
+        <input id="baseUrl" placeholder="http://<go2-ip>:8000" />
+        <button onclick="Go2Shared.checkHealth()">Health</button>
+      
+        <button onclick="postAction('stand')">Stand</button>
+        <button onclick="postAction('sit')">Sit</button>
+      
+        <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
+        <button onclick="Go2Shared.logout()">Logout</button>
+      </div>
+
+      <div class="small hint">
+        UI host: <span id="uiHost" class="mono"></span><br/>
+        API base: <span id="apiHost" class="mono"></span>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <button id="btnToggle2D" onclick="togglePanel('2d')">2D</button>
+        <button id="btnToggle3D" onclick="togglePanel('3d')">3D</button>
+        <span class="small hint" id="viewModeHint">2D: off, 3D: off</span>
+      </div>
+
+      <div class="mapGrid">
+        <div class="mapPanel" id="panel2d" style="display:none;">
+          <div class="mapHeader">
+            <div class="mapTitle">2D Map</div>
+            <div class="mapHint small" id="mapHint">Idle</div>
+          </div>
+          <div class="mapBox">
+            <canvas id="mapCanvas"></canvas>
+          </div>
+        </div>
+      
+        <div class="mapPanel" id="panel3d" style="display:none;">
+          <div class="mapHeader">
+            <div class="mapTitle">3D Point Cloud</div>
+            <div class="mapHint small" id="pcdHint">Idle</div>
+          </div>
+          <div class="mapBox">
+            <canvas id="pcdCanvas"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- ✅ JOYSTICKS -->
+      <div class="joyRow">
+        <div class="joyBox">
+          <div class="joyTitle">Left joystick: X=fwd/back, Y=strafe</div>
+          <canvas id="joyLeft" class="joyCanvas"></canvas>
+        </div>
+        <div class="joyBox">
+          <div class="joyTitle">Right joystick: X=turn (yaw). Y unused.</div>
+          <canvas id="joyRight" class="joyCanvas"></canvas>
+        </div>
+      </div>
+
+      <div class="status">
+        <div id="msg" class="small">Ready.</div>
+        <div id="detail" class="mono"></div>
+      </div>
+
+      <div class="small" style="margin-top:10px;">
+        STOP pauses map streaming (closes WS, stops HTTP fetch). RESUME reloads + continues.
+        Teleop commands only send while joystick is non-zero.
+      </div>
+    </div>
+  </div>
+  
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js";
+    window.__THREE__ = { THREE, OrbitControls };
+  </script>
+<script>
+  // ----------------------------
+  // STOP/RESUME latch (same idea as your other pages)
+  // ----------------------------
+  let stopLatched = false;
+  let safetyBusy = false;
+
+  function setMapHint(t) {
+    const el = document.getElementById("mapHint");
+    if (el) el.textContent = t;
+  }
+
+  function setSafetyButton(latched) {
+    stopLatched = !!latched;
+    const btn = document.getElementById("safetyToggleBtn");
+    if (!btn) return;
+    btn.textContent = stopLatched ? "RESUME" : "STOP";
+    btn.classList.toggle("danger", !stopLatched);
+    btn.disabled = safetyBusy;
+  }
+
+  async function refreshSafetyStatus() {
+    if (!Go2Shared.ensureLoggedIn()) return;
+    const r = await Go2Shared.httpGet("/safety/status", { bypassCommsGate: true });
+    if (r.ok) {
+      try {
+        const data = JSON.parse(r.text);
+        setSafetyButton(!!data.stop_latched);
+        Go2Shared.state.COMMS_ENABLED = !stopLatched;
+      } catch {}
+    }
+    return r;
+  }
+
+  const panelState = { show2d: false, show3d: false };
+
+  function setBtnActive(btnId, active) {
+    const b = document.getElementById(btnId);
+    if (!b) return;
+    b.classList.toggle("primary", !!active); // if you have a primary class
+  }
+  
+  function applyPanelState(forceReload = false) {
+    const p2 = document.getElementById("panel2d");
+    const p3 = document.getElementById("panel3d");
+  
+    p2.style.display = panelState.show2d ? "" : "none";
+    p3.style.display = panelState.show3d ? "" : "none";
+  
+    document.getElementById("viewModeHint").textContent =
+      `2D: ${panelState.show2d ? "on" : "off"}, 3D: ${panelState.show3d ? "on" : "off"}`;
+  
+    // Start/stop streams
+    if (panelState.show2d) startMapStreaming(forceReload);
+    else stopMapStreaming();
+  
+    if (panelState.show3d) startPcdStreaming();
+    else stopPcdStreaming();
+  }
+  
+  function togglePanel(which) {
+    if (which === "2d") panelState.show2d = !panelState.show2d;
+    if (which === "3d") panelState.show3d = !panelState.show3d;
+    applyPanelState(false);
+  }
+
+  async function loginAndStart() {
+    await Go2Shared.login();          // shows overlay/sets token
+    await refreshSafetyStatus();
+  
+    // Optional: auto-enable both after login, or keep them off.
+    // Here we auto-enable both:
+    panelState.show2d = true;
+    panelState.show3d = true;
+    applyPanelState(true); // true = force reload
+  }
+
+  // ----------------------------
+  // Actions
+  // ----------------------------
+  async function postAction(action) {
+    if (!Go2Shared.ensureLoggedIn()) return;
+    if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
+      Go2Shared.setStatus("STOP latched 🔒", false, "No actions until RESUME.");
+      return;
+    }
+  
+    const r = await Go2Shared.httpPost(`/actions/${action}`);
+    Go2Shared.setStatus(
+      r.ok ? `${action} started ✅` : `${action} failed (HTTP ${r.status})`,
+      r.ok,
+      `URL: ${r.url}\n${r.text}`
+    );
+  }
+
+  async function toggleSafety() {
+    if (!Go2Shared.ensureLoggedIn() || safetyBusy) return;
+    safetyBusy = true;
+    setSafetyButton(stopLatched);
+
+    try {
+      if (!stopLatched) {
+        const r = await Go2Shared.httpPost("/safety/stop", null, { bypassCommsGate: true });
+        if (!r.ok) { Go2Shared.setStatus(`STOP failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`); return; }
+        Go2Shared.state.COMMS_ENABLED = false;
+        setSafetyButton(true);
+        stopMapStreaming();
+        stopPcdStreaming();
+        setMapHint("STOP latched: map paused");
+        setPcdHint("STOP latched: 3D paused");
+        Go2Shared.setStatus("STOP latched 🔒 (map paused)", true, `URL: ${r.url}\n${r.text}`);
+      } else {
+        const r2 = await Go2Shared.httpPost("/safety/resume", null, { bypassCommsGate: true });
+        if (!r2.ok) { Go2Shared.setStatus(`RESUME failed (HTTP ${r2.status})`, false, `URL: ${r2.url}\n${r2.text}`); return; }
+        Go2Shared.state.COMMS_ENABLED = true;
+        await setViewMode(VIEW_MODE); // restarts whichever mode you’re in
+        setSafetyButton(false);
+        setMapHint("Resuming map...");
+        Go2Shared.setStatus("RESUME ✅ (map resumed)", true, `URL: ${r2.url}\n${r2.text}`);
+        await startMapStreaming(true);
+        await refreshSafetyStatus();
+      }
+    } finally {
+      safetyBusy = false;
+      setSafetyButton(stopLatched);
+    }
+  }
+
+  // ============================================================
+  // ✅ JOYSTICK TELEOP 
+  // ============================================================
+  let latest = { lx: 0, ly: 0, rx: 0 };
+  const MAX_LIN = 0.6;
+  const MAX_ANG = 1.2;
+  const SEND_HZ = 20;
+  const SEND_PERIOD_MS = Math.floor(1000 / SEND_HZ);
+
+  function mapToCmd(lx, ly, rx) {
+    const linear_x  = (-ly) * MAX_LIN;
+    const linear_y  = (lx)  * MAX_LIN;
+    const angular_z = (rx)  * MAX_ANG;
+    return { linear_x, linear_y, angular_z };
+  }
+
+  async function sendTeleop(lx, ly, rx) {
+    if (!Go2Shared.ensureLoggedIn() || !Go2Shared.state.COMMS_ENABLED || stopLatched) return;
+    const cmd = mapToCmd(lx, ly, rx);
+    const r = await Go2Shared.httpPost("/teleop", cmd);
+    if (!r.ok) {
+      Go2Shared.setStatus(`Teleop failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+    }
+  }
+
+  function makeJoystick(canvasId, onMove) {
+    const canvas = document.getElementById(canvasId);
+    const ctx = canvas.getContext("2d");
+
+    function resize() {
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.floor(rect.width * devicePixelRatio);
+      canvas.height = Math.floor(rect.height * devicePixelRatio);
+      draw(0, 0, false);
+    }
+
+    let active = false;
+
+    function draw(nx, ny, isActive) {
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const cx = w/2, cy = h/2;
+      const r = Math.min(w,h)*0.35;
+      const kr = Math.min(w,h)*0.08;
+
+      ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
+      ctx.strokeStyle="#ddd"; ctx.lineWidth=4*devicePixelRatio; ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(cx-r,cy); ctx.lineTo(cx+r,cy);
+      ctx.moveTo(cx,cy-r); ctx.lineTo(cx,cy+r);
+      ctx.strokeStyle="#eee"; ctx.lineWidth=2*devicePixelRatio; ctx.stroke();
+
+      const kx = cx + nx*r;
+      const ky = cy + ny*r;
+      ctx.beginPath(); ctx.arc(kx,ky,kr,0,Math.PI*2);
+      ctx.fillStyle = isActive ? "#e9f2ff" : "#f5f5f5";
+      ctx.strokeStyle="#bbb"; ctx.lineWidth=3*devicePixelRatio;
+      ctx.fill(); ctx.stroke();
+    }
+
+    function pointerToNorm(e) {
+      const rect = canvas.getBoundingClientRect();
+      const x = (e.clientX - rect.left) / rect.width;
+      const y = (e.clientY - rect.top) / rect.height;
+      let nx = (x - 0.5) * 2;
+      let ny = (y - 0.5) * 2;
+      const mag = Math.hypot(nx, ny);
+      if (mag > 1) { nx/=mag; ny/=mag; }
+      return { nx, ny };
+    }
+
+    canvas.addEventListener("pointerdown", (e) => {
+      canvas.setPointerCapture(e.pointerId);
+      active = true;
+      const {nx,ny} = pointerToNorm(e);
+      draw(nx,ny,true);
+      onMove(nx,ny,true);
+    });
+
+    canvas.addEventListener("pointermove", (e) => {
+      if (!active) return;
+      const {nx,ny} = pointerToNorm(e);
+      draw(nx,ny,true);
+      onMove(nx,ny,true);
+    });
+
+    function release() {
+      if (!active) return;
+      active = false;
+      draw(0,0,false);
+      onMove(0,0,false);
+    }
+
+    canvas.addEventListener("pointerup", release);
+    canvas.addEventListener("pointercancel", release);
+    window.addEventListener("resize", resize);
+
+    resize();
+  }
+
+  function initJoysticks() {
+    makeJoystick("joyLeft", (x,y,active) => {
+      latest.lx = active ? x : 0;
+      latest.ly = active ? y : 0;
+    });
+
+    makeJoystick("joyRight", (x,y,active) => {
+      latest.rx = active ? x : 0;
+    });
+
+    window.setInterval(() => {
+      if (!Go2Shared.ensureLoggedIn() || !Go2Shared.state.COMMS_ENABLED || stopLatched) return;
+      const eps = 0.01;
+      if (Math.abs(latest.lx) < eps && Math.abs(latest.ly) < eps && Math.abs(latest.rx) < eps) return;
+      sendTeleop(latest.lx, latest.ly, latest.rx);
+    }, SEND_PERIOD_MS);
+  }
+
+  // ============================================================
+  // MAP VIEWER (your existing pan/zoom + OccupancyGrid streaming)
+  // ============================================================
+  let canvas, ctx;
+
+  let MAP_META = null;
+  let MAP_GRID = null;   // Int8Array
+  let IMG = null;        // ImageData at 1:1 map resolution
+  let MAP_WS = null;
+  let pendingHeader = null;
+  let keepaliveTimer = null;
+
+  let OFF = null, OFF_CTX = null; // persistent offscreen
+  let view = { scale: 3.0, ox: 0, oy: 0, dragging: false, lx: 0, ly: 0 };
+  let panZoomInstalled = false;
+
+  function valToRGBA(v, out, idx) {
+    const UNKNOWN = 170;
+    const FREE = 245;
+    const OCC_DARK = 20;
+    const THRESH = 8;
+
+    let r,g,b,a=255;
+
+    if (v === -1) r=g=b=UNKNOWN;
+    else if (v === 0) r=g=b=FREE;
+    else {
+      const occ = Math.max(0, Math.min(100, v));
+      if (occ >= THRESH) r=g=b=OCC_DARK;
+      else {
+        const t = occ / THRESH;
+        const c = Math.round(120 - 60 * t);
+        r=g=b=c;
+      }
+    }
+
+    out[idx+0]=r; out[idx+1]=g; out[idx+2]=b; out[idx+3]=a;
+  }
+
+  async function gunzipToBytes(gzBytes) {
+    const ds = new DecompressionStream("gzip");
+    const blob = new Blob([gzBytes]);
+    const stream = blob.stream().pipeThrough(ds);
+    const ab = await new Response(stream).arrayBuffer();
+    return new Uint8Array(ab);
+  }
+
+  function u8ToI8(u8) {
+    return new Int8Array(u8.buffer, u8.byteOffset, u8.byteLength);
+  }
+
+  function ensureOffscreen(w, h) {
+    if (OFF && OFF.width === w && OFF.height === h) return;
+
+    OFF = new OffscreenCanvas(w, h);
+    OFF_CTX = OFF.getContext("2d");
+    OFF_CTX.imageSmoothingEnabled = false;
+
+    view.scale = 1.0;
+    view.ox = 0;
+    view.oy = 0;
+  }
+
+  function resizeDisplayCanvas() {
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.max(1, Math.floor(rect.width));
+    canvas.height = Math.max(1, Math.floor(rect.height));
+    ctx.imageSmoothingEnabled = false;
+  }
+
+  function clampView() {
+    if (!OFF) return;
+    const vw = canvas.width / view.scale;
+    const vh = canvas.height / view.scale;
+    view.ox = Math.max(0, Math.min(OFF.width - vw, view.ox));
+    view.oy = Math.max(0, Math.min(OFF.height - vh, view.oy));
+  }
+
+  function renderView() {
+    if (!OFF) return;
+    clampView();
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const sx = view.ox, sy = view.oy;
+    const sw = canvas.width / view.scale;
+    const sh = canvas.height / view.scale;
+
+    ctx.drawImage(OFF, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  }
+
+  function installPanZoom() {
+    if (panZoomInstalled) return;
+    panZoomInstalled = true;
+
+    canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      if (!OFF) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+
+      const worldX = view.ox + mx / view.scale;
+      const worldY = view.oy + my / view.scale;
+
+      const factor = (e.deltaY < 0) ? 1.15 : (1 / 1.15);
+      const newScale = Math.max(0.5, Math.min(30, view.scale * factor));
+
+      view.scale = newScale;
+      view.ox = worldX - mx / view.scale;
+      view.oy = worldY - my / view.scale;
+
+      renderView();
+    }, { passive: false });
+
+    canvas.addEventListener("mousedown", (e) => {
+      view.dragging = true;
+      view.lx = e.clientX;
+      view.ly = e.clientY;
+    });
+
+    window.addEventListener("mouseup", () => { view.dragging = false; });
+
+    window.addEventListener("mousemove", (e) => {
+      if (!view.dragging) return;
+      const dx = e.clientX - view.lx;
+      const dy = e.clientY - view.ly;
+      view.lx = e.clientX;
+      view.ly = e.clientY;
+      view.ox -= dx / view.scale;
+      view.oy -= dy / view.scale;
+      renderView();
+    });
+
+    window.addEventListener("resize", () => {
+      if (!canvas) return;
+      resizeDisplayCanvas();
+      renderView();
+    });
+  }
+
+  function drawFull() {
+    if (!MAP_META || !MAP_GRID) return;
+    const w = MAP_META.width, h = MAP_META.height;
+    ensureOffscreen(w, h);
+
+    IMG = OFF_CTX.createImageData(w, h);
+    const out = IMG.data;
+
+    for (let i = 0; i < MAP_GRID.length; i++) {
+      valToRGBA(MAP_GRID[i], out, i * 4);
+    }
+
+    OFF_CTX.putImageData(IMG, 0, 0);
+
+    resizeDisplayCanvas();
+    renderView();
+  }
+
+  function drawROI(x, y, w, h) {
+    if (!IMG || !MAP_META || !MAP_GRID || !OFF_CTX) return;
+
+    const out = IMG.data;
+    for (let j = 0; j < h; j++) {
+      for (let i = 0; i < w; i++) {
+        const gx = x + i;
+        const gy = y + j;
+        const gidx = gy * MAP_META.width + gx;
+        valToRGBA(MAP_GRID[gidx], out, gidx * 4);
+      }
+    }
+
+    OFF_CTX.putImageData(IMG, 0, 0);
+    renderView();
+  }
+
+  async function loadInitialMap() {
+    const url = Go2Shared.baseUrl() + "/map2d/full";
+    const r = await fetch(url, { headers: Go2Shared.authHeaders() });
+
+    if (r.status === 204) throw new Error("No map yet");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+
+    const width  = parseInt(r.headers.get("x-map-width"), 10);
+    const height = parseInt(r.headers.get("x-map-height"), 10);
+
+    if (!Number.isFinite(width) || !Number.isFinite(height)) {
+      throw new Error(`Invalid map headers: width=${width}, height=${height}`);
+    }
+
+    MAP_META = {
+      frame_id: r.headers.get("x-map-frame") || "",
+      resolution: parseFloat(r.headers.get("x-map-resolution") || "0.0"),
+      width,
+      height,
+      origin_x: parseFloat(r.headers.get("x-map-origin-x") || "0.0"),
+      origin_y: parseFloat(r.headers.get("x-map-origin-y") || "0.0"),
+      seq: parseInt(r.headers.get("x-map-seq") || "0", 10),
+    };
+
+    const buf = new Uint8Array(await r.arrayBuffer());
+    let rawU8;
+    try { rawU8 = await gunzipToBytes(buf); } catch { rawU8 = buf; }
+    MAP_GRID = u8ToI8(rawU8);
+
+    if (MAP_GRID.length !== width * height) {
+      throw new Error(`Bad map length: got ${MAP_GRID.length}, expected ${width * height}`);
+    }
+
+    drawFull();
+  }
+
+  function stopMapStreaming() {
+    try { if (MAP_WS) MAP_WS.close(); } catch {}
+    MAP_WS = null;
+    pendingHeader = null;
+    if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
+  }
+
+  async function connectMapWS() {
+    let wsUrl = `${Go2Shared.apiWsBase()}/ws/map2d`;
+    if (Go2Shared.cfg.authEnabled) {
+      if (!Go2Shared.state.AUTH_TOKEN) throw new Error("Login required");
+      wsUrl += `?token=${encodeURIComponent(Go2Shared.state.AUTH_TOKEN)}`;
+    }
+
+    MAP_WS = new WebSocket(wsUrl);
+    MAP_WS.binaryType = "arraybuffer";
+
+    MAP_WS.onopen = () => setMapHint("Map live ✅ (updates connected)");
+
+    MAP_WS.onmessage = async (ev) => {
+      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) return;
+
+      if (typeof ev.data === "string") {
+        pendingHeader = JSON.parse(ev.data);
+        return;
+      }
+
+      if (!pendingHeader) return;
+      const h = pendingHeader;
+      pendingHeader = null;
+
+      const gz = new Uint8Array(ev.data);
+      const rawU8 = await gunzipToBytes(gz);
+      const rawI8 = u8ToI8(rawU8);
+
+      if (h.t === "f") {
+        MAP_META = { ...h.meta, seq: h.seq };
+        MAP_GRID = rawI8;
+        drawFull();
+      } else if (h.t === "u") {
+        if (!MAP_META || !MAP_GRID) return;
+
+        const x = h.x|0, y = h.y|0, w = h.w|0, hh = h.h|0;
+
+        let k = 0;
+        for (let row = 0; row < hh; row++) {
+          const dstStart = (y + row) * MAP_META.width + x;
+          MAP_GRID.set(rawI8.subarray(k, k + w), dstStart);
+          k += w;
+        }
+
+        drawROI(x, y, w, hh);
+      }
+    };
+
+    MAP_WS.onclose = () => setMapHint((Go2Shared.state.COMMS_ENABLED && !stopLatched) ? "Map updates disconnected" : "Map paused");
+    MAP_WS.onerror = () => setMapHint("Map WS error");
+
+    keepaliveTimer = setInterval(() => {
+      if (MAP_WS && MAP_WS.readyState === WebSocket.OPEN) {
+        try { MAP_WS.send("ping"); } catch {}
+      }
+    }, 10000);
+  }
+
+  async function startMapStreaming(forceReloadFull = false) {
+    if (!Go2Shared.ensureLoggedIn()) return;
+
+    if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
+      setMapHint("STOP latched: map paused");
+      return;
+    }
+
+    if (!canvas) {
+      canvas = document.getElementById("mapCanvas");
+      ctx = canvas.getContext("2d", { willReadFrequently: false });
+      installPanZoom();
+      resizeDisplayCanvas();
+    }
+
+    stopMapStreaming();
+    setMapHint("Loading full map...");
+
+    try {
+      if (forceReloadFull || !MAP_META || !MAP_GRID) {
+        await loadInitialMap();
+      }
+      await connectMapWS();
+    } catch (e) {
+      setMapHint("Map not available yet");
+      Go2Shared.setStatus("Map load failed", false, String(e));
+    }
+  }
+  // ============================================================
+  // 3D POINT CLOUD VIEWER (Three.js + /ws/pcd)
+  // ============================================================
+  let PCD_WS = null;
+  let pcdPendingHeader = null;
+  let pcdKeepalive = null;
+  
+  let three = {
+    inited: false,
+    renderer: null,
+    scene: null,
+    camera: null,
+    controls: null,
+    points: null,
+    geom: null,
+    mat: null
+  };
+  
+  function setPcdHint(t) {
+    const el = document.getElementById("pcdHint");
+    if (el) el.textContent = t;
+  }
+  
+  async function waitForThree(ms=4000) {
+    const t0 = Date.now();
+    while (!window.__THREE__) {
+      if (Date.now() - t0 > ms) return false;
+      await new Promise(r => setTimeout(r, 50));
+    }
+    return true;
+  }
+
+  let canvas3d = null;
+
+  function init3DIfNeeded() {
+    if (three.inited) return;
+  
+    const mod = window.__THREE__;
+    if (!mod) { setPcdHint("Three.js not loaded"); return; }
+  
+    const { THREE, OrbitControls } = mod;
+  
+    canvas3d = document.getElementById("pcdCanvas");
+    const rect = canvas3d.getBoundingClientRect();
+  
+    three.renderer = new THREE.WebGLRenderer({ canvas: canvas3d, antialias: true });
+    three.renderer.setPixelRatio(devicePixelRatio);
+    three.renderer.setSize(Math.max(1, rect.width), Math.max(1, rect.height), false);
+  
+    three.scene = new THREE.Scene();
+    three.scene.background = new THREE.Color(0xffffff);
+  
+    three.camera = new THREE.PerspectiveCamera(60, rect.width / rect.height, 0.05, 2000);
+    three.camera.position.set(2, 2, 2);
+  
+    three.controls = new OrbitControls(three.camera, canvas3d);
+    three.controls.enableDamping = true;
+  
+    // ✅ Create geometry + material + points ONCE
+    three.geom = new THREE.BufferGeometry();
+    three.mat = new THREE.PointsMaterial({
+      size: 0.02,           // tweak if needed
+      sizeAttenuation: true,
+      colour: 0x0077ff, // blue
+      needsUpdate: true
+    });
+    three.points = new THREE.Points(three.geom, three.mat);
+    three.scene.add(three.points);
+  
+    // optional helpers (good for debugging)
+    three.scene.add(new THREE.GridHelper(2, 20));
+    three.scene.add(new THREE.AxesHelper(0.5));
+  
+    three._autoFrame = true; // only frame camera once
+  
+    function onResize3D() {
+      if (!three.inited || !canvas3d) return;
+      const r = canvas3d.getBoundingClientRect();
+      const w = Math.max(1, r.width);
+      const h = Math.max(1, r.height);
+      three.renderer.setSize(w, h, false);
+      three.camera.aspect = w / h;
+      three.camera.updateProjectionMatrix();
+    }
+    window.addEventListener("resize", onResize3D);
+  
+    (function animate(){
+      requestAnimationFrame(animate);
+      if (!three.inited) return;
+      three.controls.update();
+      three.renderer.render(three.scene, three.camera);
+    })();
+  
+    three.inited = true;
+  }
+  
+  function stopPcdStreaming() {
+    try { if (PCD_WS) PCD_WS.close(); } catch {}
+    PCD_WS = null;
+    pcdPendingHeader = null;
+    if (pcdKeepalive) { clearInterval(pcdKeepalive); pcdKeepalive = null; }
+  }
+  
+  async function connectPcdWS() {
+    init3DIfNeeded();
+    if (!three.inited || !three.geom) return;
+  
+    let wsUrl = `${Go2Shared.apiWsBase()}/ws/pcd`;
+    if (Go2Shared.cfg.authEnabled) {
+      if (!Go2Shared.state.AUTH_TOKEN) throw new Error("Login required");
+      wsUrl += `?token=${encodeURIComponent(Go2Shared.state.AUTH_TOKEN)}`;
+    }
+  
+    PCD_WS = new WebSocket(wsUrl);
+    PCD_WS.binaryType = "arraybuffer";
+  
+    PCD_WS.onopen  = () => { console.log("[pcd] ws open"); setPcdHint("3D live ✅"); };
+    PCD_WS.onerror = (e) => { console.log("[pcd] ws error", e); setPcdHint("3D WS error"); };
+    PCD_WS.onclose = (e) => { console.log("[pcd] ws close", e.code, e.reason); setPcdHint("3D closed"); };
+      
+    PCD_WS.onmessage = async (ev) => {
+      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) return;
+    
+      if (typeof ev.data === "string") {
+        pcdPendingHeader = JSON.parse(ev.data);
+        return;
+      }
+      if (!pcdPendingHeader) return;
+    
+      const h = pcdPendingHeader;
+      pcdPendingHeader = null;
+    
+      const gz = new Uint8Array(ev.data);
+      const rawU8 = await gunzipToBytes(gz);
+    
+      // ✅ Ensure Float32 alignment + exact length
+      const byteLen = rawU8.byteLength - (rawU8.byteLength % 4);
+      const buf = rawU8.buffer.slice(rawU8.byteOffset, rawU8.byteOffset + byteLen);
+      const f32 = new Float32Array(buf);
+    
+      const nFloats = f32.length;
+      const nPts = Math.floor(nFloats / 3);
+    
+      if (nPts <= 0) {
+        setPcdHint("No points");
+        return;
+      }
+    
+      const mod = window.__THREE__;
+      const { THREE } = mod;
+    
+      // ✅ Update / replace attribute
+      three.geom.setAttribute("position", new THREE.BufferAttribute(f32, 3));
+      three.geom.computeBoundingSphere();
+    
+      if (three._autoFrame && three.geom.boundingSphere) {
+        const c = three.geom.boundingSphere.center;
+        let r = three.geom.boundingSphere.radius;
+      
+        // ✅ clamp to a sane range (meters)
+        r = Math.max(0.4, Math.min(r, 8.0));
+      
+        // camera direction (diagonal)
+        const dir = new (window.__THREE__.THREE.Vector3)(1, 0.6, 1).normalize();
+      
+        three.controls.target.copy(c);
+        three.camera.position.copy(c).addScaledVector(dir, r * 2.0);
+      
+        three.camera.near = 0.01;
+        three.camera.far  = r * 60;
+        three.camera.updateProjectionMatrix();
+      
+        // optional: limit orbit distances so you can’t end up miles away
+        three.controls.minDistance = r * 0.2;
+        three.controls.maxDistance = r * 20;
+      
+        three.controls.update();
+        three._autoFrame = false;
+      }
+    
+      setPcdHint(`3D live ✅ (${nPts} pts, frame=${h.meta?.frame_id || "?"})`);
+    };
+  
+    pcdKeepalive = setInterval(() => {
+      if (PCD_WS && PCD_WS.readyState === WebSocket.OPEN) {
+        try { PCD_WS.send("ping"); } catch {}
+      }
+    }, 10000);
+  }
+  
+  async function startPcdStreaming() {
+    if (!Go2Shared.ensureLoggedIn()) return;
+    if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
+      setPcdHint("STOP latched: 3D paused");
+      return;
+    }
+    stopPcdStreaming();
+    setPcdHint("Connecting 3D...");
+    await connectPcdWS();
+  }
+
+  let VIEW_MODE = "both"; // "2d" | "3d" | "both"
+
+  function setViewMode(mode) {
+    VIEW_MODE = mode;
+    document.getElementById("viewModeHint").textContent =
+      mode === "2d" ? "Mode: 2D" : mode === "3d" ? "Mode: 3D" : "Mode: Split";
+  
+    const p2 = document.getElementById("panel2d");
+    const p3 = document.getElementById("panel3d");
+  
+    if (mode === "2d") {
+      p2.style.display = "";
+      p3.style.display = "none";
+    } else if (mode === "3d") {
+      p2.style.display = "none";
+      p3.style.display = "";
+    } else {
+      p2.style.display = "";
+      p3.style.display = "";
+    }
+  
+    // Kick off streams as needed
+    if (mode === "2d") {
+      startMapStreaming(false);
+      stopPcdStreaming();
+    } else if (mode === "3d") {
+      stopMapStreaming();
+      startPcdStreaming();
+    } else {
+      startMapStreaming(false);
+      startPcdStreaming();
+    }
+  }
+
+</script>
+</body>
+</html>

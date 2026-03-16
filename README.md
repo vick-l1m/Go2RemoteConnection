@@ -1,4 +1,4 @@
-# P2RemoteConnection
+# Go2RemoteConnection
 
 Creating a web access interface to connect to Go2 functions.
 
@@ -7,28 +7,116 @@ Creating a web access interface to connect to Go2 functions.
 This project runs a small FastAPI server on the Unitree Go2 (or a machine with the same ROS 2/Unitree environment)
 and exposes **HTTP endpoints** that trigger a **whitelisted set of shell commands**.
 
-It’s designed for quick experiments: phone → HTTP → Go2 command.
+## Prerequisites
+- Ros2 Humble
+- Unitree ROS2: Install the Unitree ROS2 for GO2 robot, please refer to [Unitree ROS2](https://github.com/unitreerobotics/unitree_ros2)
+- Unitree SDK2 Python: please refer to [Unitree SDK2 Python](https://github.com/unitreerobotics/unitree_sdk2_python)
 
+## 1. Build the workspace
 
-## Build the workspace
-
-### 1. Clone this workspace
+### 1.1. Clone this workspace
 ```bash
-  git clone https://github.com/vick-l1m/P2RemoteConnection.git
+  mkdir go2_ws
+  cd go2_ws
+  git clone https://github.com/vick-l1m/Go2RemoteConnection.git
 ```
 
 On the Go2 (or the device running the server)
 ```bash
-cd ~/P2RemoteConnection/src/p2_remote_connection
-pip3 install fastapi uvicorn
+# Install dependancies
+sudo apt update
+sudo apt install ros-humble-map-msgs
+cd ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection
 pip install -r requirements.txt
+
+
+# For YOLO and Camera
+sudo apt install -y \
+  ros-humble-cv-bridge \
+  ros-humble-image-transport \
+  ros-humble-sensor-msgs
+cd ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection/src/cv/model
+python3 model_download.py
+
+# Setup the workspace
+cd ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection
+
+pip install -r requirements.txt
+
+source /opt/ros/humble/setup.sh
 source ~/unitree_ros2/install/setup.sh
-cd ~/P2RemoteConnection
+cd ~/go2_ws/Go2RemoteConnection
 colcon build
 source install/setup.bash
 ```
 
-### 2. Setup the unique token:
+### 1.2. Launch the backend and ros2 node
+Make the command runnable and launch:
+```bash
+cd ~/go2_ws/Go2RemoteConnection
+chmod +x start_remote_connection.sh
+./start_remote_connection.sh
+```
+
+To run on the Issac Sim:
+```bash
+use_fastrtps
+cd ~/go2_ws/Go2RemoteConnection
+chmod +x start_remote_connection_humble.sh
+./start_remote_connection_humble.sh
+```
+### 1.3. Connect and run 
+Check the device ip address:
+```bash
+# search for wlan0 ip
+ip -br a 
+```
+Open the website on a device connected to the same wifi: 
+```bash
+<device_ip>::8081/app/
+
+# Local Go2 (ethernet connected)
+192.168.123.18/app/
+```
+
+### 1.4. Landing page and login
+```/app``` will open a landing page allowing you to choose between: 
+1. ```go2_joystick.html```
+    - Basic movement
+    - Terminal access
+    - Sit and stand commands
+
+2. ```go2_terminal_only.html```
+    - 3 accessable and toggelable terminals
+
+3. ```go2_movement_controller.html```
+    - 3 modes
+      - Movement - accessing all go2 sports client movement controls
+      - Posing - keeping the robot still and posing with yaw, roll and pitch
+      - Actions - accessing all special commands of the go2
+4. ```go2_front_camera.html```
+    - Allows the user to view the front camera stream with a toggleable YOLO
+5. ```go2_map_viewer.html```
+    - Allows the user to view the 2D and 3D lidar point clouds
+
+### Operating without ```web_bridge```
+Launching with
+```bash
+./start_remote_connection terminal
+``` 
+Will disable the web_teleop node, allowing the ```go2_terminal_only.html``` to run interupted.
+
+### Debugging:
+Each node comes with a log, you can read each log using the command
+```bash
+sed -n '1,200p' /tmp/<node>log
+
+# Eg front_camera_node
+sed -n '1,200p' /tmp/front_camera_node.log
+```
+
+### 1.6. Setup the unique token:
+There is an option to add security to the app.
 On the Go2, create a file in the robot user’s home directory:
 
 ```bash
@@ -41,88 +129,62 @@ Secure the token file ensureing that it is read-only:
 chmod 600 ~/.go2_token
 ```
 This token will be used to ensure security and that each Go2 has a unique id.
+Currently this mode is turned off
 
-### 3. Launch the backend and ros2 node
-Make the command runnable and launch:
-```bash
-cd ~/P2RemoteConnection
-chmod +x start_remote_connection.sh
-./start_remote_connection.sh
-```
+## 2. Making the script run on startup
 
-To run on the Issac Sim:
-```bash
-use_fastrtps
-cd ~/P2RemoteConnection
-chmod +x start_remote_connection_humble.sh
-./start_remote_connection_humble.sh
-```
-### 4. Connect and run 
-Check the device ip address:
-```bash
-hostname -I
-```
-Open the website on a device connected to the same wifi: 
-```bash
-<device_ip>::8081/go2_joystick.html
-
-go2: 192.168.123.18/go2_joystick.html
-```
-
-## Making the script run on startup
-
-### 1. Create a systemd service (autostart on boot)
-- A systemd service was created so the system:
+### 2.1. Create a systemd service (autostart on boot)
+A systemd service can be created so the system
 - Starts automatically on robot boot
 - Restarts if it crashes
 - Runs without any terminal attached
 - Logs output to journalctl
 
-**Service File Location**: 
+**Create the service file**: 
 ```swift
-/etc/systemd/system/p2-remote-connection.service
+sudo vim /etc/systemd/system/go2-remote-connection.service
 ```
-### 2. Enable and start the service:
+### 2.2. Enable and start the service:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable p2-remote-connection.service
-sudo systemctl start p2-remote-connection.service
+sudo systemctl enable go2-remote-connection.service
+sudo systemctl start go2-remote-connection.service
 ```
 
-### 3. Monitoring the service:
+### 2.3. Monitoring the service:
 ```bash
 # Check service status
-systemctl status p2-remote-connection.service
+systemctl status go2-remote-connection.service
 # View logs live
-journalctl -u p2-remote-connection.service -f
+journalctl -u go2-remote-connection.service -f
 # Restart the system
-sudo systemctl restart p2-remote-connection.service
+sudo systemctl restart go2-remote-connection.service
 ```
 
-### 4. To make changes to the startup:
+### 2.4. To make changes to the startup:
 ```bash
 # Edit the file with access
-sudo vim /etc/systemd/system/p2-remote-connection.service   
+sudo vim /etc/systemd/system/go2-remote-connection.service   
 # Reload after edit
 sudo systemctl daemon-reload                                
-sudo systemctl restart p2-remote-connection.service
+sudo systemctl restart go2-remote-connection.service
 # Check that it is still active
-systemctl status p2-remote-connection.service --no-pager    
+systemctl status go2-remote-connection.service --no-pager    
 ```
 
-### 5. To turn off the startup and test manually:
+### 2.5. To turn off the startup and test manually:
 ```bash
 # Stop the service
-sudo systemctl stop p2-remote-connection.service
+sudo systemctl stop go2-remote-connection.service
 # Confirm the ports are free
 sudo ss -ltnp | egrep ':8000|:8081'
 # They should show nothing
 
 # To restart
-sudo systemctl restart p2-remote-connection.service
+sudo systemctl restart go2-remote-connection.service
 ```
 
-## How it works
+## 3. How it works
 The start up script: ```./start_remote_connection.sh``` runs 3 seperate process':
 
 **The backend (FastAPI)**:
@@ -135,7 +197,7 @@ python3 -m http.server 8081
 ```
 **The Ros2 bridge to run Go2 commands**
 ```bash
-ros2 run p2_remote_connection web_teleop_bridge
+ros2 run go2_remote_connection web_teleop_bridge
 ```
 The script does the following:
   - Source ROS 2 Foxy
@@ -163,25 +225,26 @@ You can explore and test everything using FastAPI’s built-in UI:
 
 - `http://<go2-ip>:8000/docs`
 
-### Features
-#### 1.Login gate / UI lock
+### 4. Features
+#### 4.1. Login gate / UI lock
 - Shows login Overlay
 - Stores ROBOT_BASE_URL (where the robot’s API is) and AUTH_TOKEN (your password token)
 - Saves them into localStorage so the browser remembers them
 
-#### 2.Teleop joystick
+#### 4.2. Teleop joystick
 - Renders two canvas joysticks
 - Converts joystick position into a command {linear_x, linear_y, angular_z}
-- Sends that command to the robot API at /teleop about 10 times per second while the stick is active
+- Sends that command to the robot API at /teleop 20 times per second while the stick is active
 
-#### 3.Terminal
+#### 4.3. Terminal
 - Creates an xterm.js terminal
 - Opens a websocket to the robot API at /ws/terminal?token=...
 - Streams keystrokes to backend, and streams output back to the browser
+- Up to 3 terminals can be accessed at a time
 
-## Authentication Overview
+## 5. Authentication Overview
 
-### 1. Unique Token
+### 5.1. Unique Token
 
 Each Go2 has a **unique secret string** (“token” / “password”) that must be provided by the user before the website will send robot commands.
 
@@ -191,9 +254,9 @@ The browser sends this token with each API request using an HTTP header:
 
 The backend checks whether the supplied token matches the Go2’s expected token.
 
-### 2. How the token is used
+### 5.2. How the token is used
 
-### Uvicorn Backend
+#### Uvicorn Backend
 All endpoints depend on the ```require_token``` dependancy, meaning that you cannot run any actions without entering the correct token.
 
 #### Fontend (WebUI) login

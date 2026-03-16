@@ -4,7 +4,18 @@ install/
 log/
 _colcon_build/
 
-# Specific packages within build/ or install/
 */build/
 */install/
 */log/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor junk
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store

@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go2 Joysticks</title>
+
+  <link rel="stylesheet" href="/app/static/shared.css">
+  <script src="/app/static/shared.js"></script>
+  
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+</head>
+
+<body>
+  <!-- LOGIN OVERLAY -->
+  <div id="loginOverlay" class="loginOverlay">
+    <div class="loginCard">
+      <h2>Connect to Go2</h2>
+      <div class="loginForm">
+        <input id="loginBaseUrl" placeholder="http://robot-ip:8000 or https://robot.domain"/>
+        <input id="loginToken" placeholder="Password" type="password" />
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#333;">
+          <input id="showPw" type="checkbox" onclick="Go2Shared.togglePasswordVisibility()" />
+          Show password
+        </label>
+        <button id="unlockBtn" onclick="Go2Shared.login()">Unlock</button>
+        <div id="loginMsg" class="loginMsg"></div>
+        <div class="loginTip">Tip: This password is unique per robot.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="appRoot">
+    <div class="card" style="max-width: 760px;">
+      <h1>Unitree Go2 – Phone Teleop</h1>
+
+      <div class="row">
+        <input id="baseUrl" placeholder="http://<go2-ip>:8000" />
+        <button onclick="Go2Shared.checkHealth()">Health</button>
+        <button onclick="postAction('stand')">Stand</button>
+        <button onclick="postAction('sit')">Sit</button>
+
+        <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
+
+        <button id="termBtn1" onclick="toggleTerminalN(1)">Terminal 1</button>
+        <button id="termBtn2" onclick="toggleTerminalN(2)">Terminal 2</button>
+        <button id="termBtn3" onclick="toggleTerminalN(3)">Terminal 3</button>
+
+        <button onclick="Go2Shared.logout()">Logout</button>
+      </div>
+
+      <div class="small hint">
+        UI host: <span id="uiHost" class="mono"></span><br/>
+        API base: <span id="apiHost" class="mono"></span>
+      </div>
+
+      <div class="grid">
+        <div class="joyBox">
+          <div class="joyTitle">Left joystick: X=fwd/back, Y=strafe</div>
+          <canvas id="joyLeft"></canvas>
+        </div>
+        <div class="joyBox">
+          <div class="joyTitle">Right joystick: X=turn (yaw). Y unused.</div>
+          <canvas id="joyRight"></canvas>
+        </div>
+      </div>
+
+      <div id="terminalsWrap" class="termGrid" style="display:none;">
+        <div id="terminalPanel1" class="termPanel" style="display:none;">
+          <div class="termHeader">
+            <div class="termTitle">Remote Terminal 1</div>
+            <div class="termHint small">API (:8000)</div>
+          </div>
+          <div id="terminal1" class="termBox"></div>
+        </div>
+
+        <div id="terminalPanel2" class="termPanel" style="display:none;">
+          <div class="termHeader">
+            <div class="termTitle">Remote Terminal 2</div>
+            <div class="termHint small">API (:8000)</div>
+          </div>
+          <div id="terminal2" class="termBox"></div>
+        </div>
+
+        <div id="terminalPanel3" class="termPanel" style="display:none;">
+          <div class="termHeader">
+            <div class="termTitle">Remote Terminal 3</div>
+            <div class="termHint small">API (:8000)</div>
+          </div>
+          <div id="terminal3" class="termBox"></div>
+        </div>
+      </div>
+
+      <div class="status">
+        <div id="msg" class="small">Ready.</div>
+        <div id="detail" class="mono"></div>
+      </div>
+
+      <div class="small" style="margin-top:10px;">
+        Tip: Teleop sends commands only while joystick is non-zero.
+      </div>
+    </div>
+  </div>
+
+<script>
+  // ---- init shared ----
+  window.addEventListener("DOMContentLoaded", async () => {
+    await Go2Shared.init({ defaultApi: "", showAuthButtons: true });
+    updateModeUI();
+    setTimeout(refreshSafetyStatus, 200);
+  });
+
+  // ----------------------------
+  // Actions
+  // ----------------------------
+  async function postAction(action) {
+    if (!Go2Shared.ensureLoggedIn()) return;
+    if (!Go2Shared.state.COMMS_ENABLED) {
+      Go2Shared.setStatus("STOP latched 🔒", false, "No actions until RESUME.");
+      return;
+    }
+
+    const r = await Go2Shared.httpPost(`/actions/${action}`);
+    Go2Shared.setStatus(
+      r.ok ? `${action} started ✅` : `${action} failed (HTTP ${r.status})`,
+      r.ok,
+      `URL: ${r.url}\n${r.text}`
+    );
+  }
+
+  // ----------------------------
+  // Safety STOP/RESUME latch
+  // ----------------------------
+  let stopLatched = false;
+  let safetyBusy = false;
+
+  function setSafetyButton(latched) {
+    const btn = document.getElementById("safetyToggleBtn");
+    stopLatched = !!latched;
+    btn.textContent = stopLatched ? "RESUME" : "STOP";
+    btn.classList.toggle("danger", !stopLatched);
+    btn.disabled = safetyBusy;
+  }
+
+  async function refreshSafetyStatus() {
+    if (!Go2Shared.ensureLoggedIn()) return;
+    const r = await Go2Shared.httpGet("/safety/status", { bypassCommsGate: true });
+    if (r.ok) {
+      try { setSafetyButton(JSON.parse(r.text).stop_latched); } catch {}
+    }
+    return r;
+  }
+
+  async function toggleSafety() {
+    if (!Go2Shared.ensureLoggedIn() || safetyBusy) return;
+    safetyBusy = true;
+    setSafetyButton(stopLatched);
+
+    try {
+      if (!stopLatched) {
+        const r = await Go2Shared.httpPost("/safety/stop", null, { bypassCommsGate: true });
+        if (!r.ok) { Go2Shared.setStatus(`STOP failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`); return; }
+        Go2Shared.state.COMMS_ENABLED = false;
+        Go2Shared.setStatus("STOP latched 🔒", true, `URL: ${r.url}\n${r.text}`);
+      } else {
+        const r = await Go2Shared.httpPost("/safety/resume", null, { bypassCommsGate: true });
+        if (!r.ok) { Go2Shared.setStatus(`RESUME failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`); return; }
+        Go2Shared.state.COMMS_ENABLED = true;
+        Go2Shared.setStatus("RESUME ✅", true, `URL: ${r.url}\n${r.text}`);
+
+        // reconnect open terminals
+        for (const n of [1,2,3]) {
+          if (terminals[n].open) connectTerminalWs(n);
+        }
+      }
+    } finally {
+      safetyBusy = false;
+      await refreshSafetyStatus();
+    }
+  }
+
+  // ----------------------------
+  // Joystick -> /teleop
+  // ----------------------------
+  let latest = { lx: 0, ly: 0, rx: 0 };
+  const MAX_LIN = 0.6;
+  const MAX_ANG = 1.2;
+  const SEND_HZ = 20;
+  const SEND_PERIOD_MS = Math.floor(1000 / SEND_HZ);
+
+  function mapToCmd(lx, ly, rx) {
+    const linear_x  = (-ly) * MAX_LIN;
+    const linear_y  = (lx)  * MAX_LIN;
+    const angular_z = (rx)  * MAX_ANG;
+    return { linear_x, linear_y, angular_z };
+  }
+
+  async function sendTeleop(lx, ly, rx) {
+    if (!Go2Shared.ensureLoggedIn() || !Go2Shared.state.COMMS_ENABLED) return;
+    const cmd = mapToCmd(lx, ly, rx);
+    const r = await Go2Shared.httpPost("/teleop", cmd);
+    if (!r.ok) {
+      Go2Shared.setStatus(`Teleop failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+    }
+  }
+
+  function makeJoystick(canvasId, onMove) {
+    const canvas = document.getElementById(canvasId);
+    const ctx = canvas.getContext("2d");
+
+    function resize() {
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.floor(rect.width * devicePixelRatio);
+      canvas.height = Math.floor(rect.height * devicePixelRatio);
+      draw(0, 0, false);
+    }
+
+    let active = false;
+
+    function draw(nx, ny, isActive) {
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const cx = w/2, cy = h/2;
+      const r = Math.min(w,h)*0.35;
+      const kr = Math.min(w,h)*0.08;
+
+      ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
+      ctx.strokeStyle="#ddd"; ctx.lineWidth=4*devicePixelRatio; ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(cx-r,cy); ctx.lineTo(cx+r,cy);
+      ctx.moveTo(cx,cy-r); ctx.lineTo(cx,cy+r);
+      ctx.strokeStyle="#eee"; ctx.lineWidth=2*devicePixelRatio; ctx.stroke();
+
+      const kx = cx + nx*r;
+      const ky = cy + ny*r;
+      ctx.beginPath(); ctx.arc(kx,ky,kr,0,Math.PI*2);
+      ctx.fillStyle = isActive ? "#e9f2ff" : "#f5f5f5";
+      ctx.strokeStyle="#bbb"; ctx.lineWidth=3*devicePixelRatio;
+      ctx.fill(); ctx.stroke();
+    }
+
+    function pointerToNorm(e) {
+      const rect = canvas.getBoundingClientRect();
+      const x = (e.clientX - rect.left) / rect.width;
+      const y = (e.clientY - rect.top) / rect.height;
+      let nx = (x - 0.5) * 2;
+      let ny = (y - 0.5) * 2;
+      const mag = Math.hypot(nx, ny);
+      if (mag > 1) { nx/=mag; ny/=mag; }
+      return { nx, ny };
+    }
+
+    canvas.addEventListener("pointerdown", (e) => {
+      canvas.setPointerCapture(e.pointerId);
+      active = true;
+      const {nx,ny} = pointerToNorm(e);
+      draw(nx,ny,true);
+      onMove(nx,ny,true);
+    });
+
+    canvas.addEventListener("pointermove", (e) => {
+      if (!active) return;
+      const {nx,ny} = pointerToNorm(e);
+      draw(nx,ny,true);
+      onMove(nx,ny,true);
+    });
+
+    function release() {
+      if (!active) return;
+      active = false;
+      draw(0,0,false);
+      onMove(0,0,false);
+    }
+
+    canvas.addEventListener("pointerup", release);
+    canvas.addEventListener("pointercancel", release);
+    window.addEventListener("resize", resize);
+
+    resize();
+  }
+
+  makeJoystick("joyLeft", (x,y,active) => {
+    latest.lx = active ? x : 0;
+    latest.ly = active ? y : 0;
+  });
+
+  makeJoystick("joyRight", (x,y,active) => {
+    latest.rx = active ? x : 0;
+  });
+
+  window.setInterval(() => {
+    if (!Go2Shared.ensureLoggedIn() || !Go2Shared.state.COMMS_ENABLED) return;
+    const eps = 0.01;
+    if (Math.abs(latest.lx) < eps && Math.abs(latest.ly) < eps && Math.abs(latest.rx) < eps) return;
+    sendTeleop(latest.lx, latest.ly, latest.rx);
+  }, SEND_PERIOD_MS);
+
+  // ----------------------------
+  // Terminals using Go2Shared.connectTerminalWs
+  // ----------------------------
+  const terminals = {
+    1: { term: null, fit: null, ws: null, open: false, ro: null },
+    2: { term: null, fit: null, ws: null, open: false, ro: null },
+    3: { term: null, fit: null, ws: null, open: false, ro: null },
+  };
+
+  function anyTerminalOpen() {
+    return terminals[1].open || terminals[2].open || terminals[3].open;
+  }
+
+  function updateTerminalsWrapVisibility() {
+    const wrap = document.getElementById("terminalsWrap");
+    wrap.style.display = anyTerminalOpen() ? "grid" : "none";
+  }
+
+  function sendTermResize(n) {
+    const st = terminals[n];
+    if (!st.term || !st.ws || st.ws.readyState !== WebSocket.OPEN) return;
+    st.ws.send(JSON.stringify({ resize: { cols: st.term.cols, rows: st.term.rows } }));
+  }
+
+  function destroyTerminal(n) {
+    const st = terminals[n];
+
+    try { if (st.ws && st.ws.readyState === WebSocket.OPEN) st.ws.close(); } catch (_) {}
+    st.ws = null;
+
+    try { if (st.ro) st.ro.disconnect(); } catch (_) {}
+    st.ro = null;
+
+    try { if (st.term) st.term.dispose(); } catch (_) {}
+    st.term = null;
+    st.fit = null;
+
+    const container = document.getElementById(`terminal${n}`);
+    if (container) container.innerHTML = "";
+
+    st.open = false;
+    document.getElementById(`terminalPanel${n}`).style.display = "none";
+
+    updateTerminalsWrapVisibility();
+  }
+
+  function connectTerminalWs(n) {
+    const st = terminals[n];
+    Go2Shared.connectTerminalWs(st, n, () => {
+      if (st.fit) st.fit.fit();
+      sendTermResize(n);
+    });
+  }
+
+  function ensureTerminalStarted(n) {
+    const st = terminals[n];
+    if (st.term) return;
+
+    const container = document.getElementById(`terminal${n}`);
+
+    st.term = new Terminal({
+      cursorBlink: true,
+      fontSize: 14,
+      convertEol: true,
+      scrollback: 5000,
+      scrollOnUserInput: true,
+      scrollOnOutput: true,
+      theme: { background: "#0f0f0f" }
+    });
+
+    st.fit = new FitAddon.FitAddon();
+    st.term.loadAddon(st.fit);
+
+    st.term.open(container);
+    st.fit.fit();
+
+    container.addEventListener("pointerdown", () => st.term && st.term.focus());
+
+    st.term.onData((data) => {
+      if (st.ws && st.ws.readyState === WebSocket.OPEN) st.ws.send(data);
+    });
+
+    st.ro = new ResizeObserver(() => {
+      window.clearTimeout(window[`__termResizeT${n}`]);
+      window[`__termResizeT${n}`] = window.setTimeout(() => {
+        if (!st.fit || !st.term) return;
+        st.fit.fit();
+        sendTermResize(n);
+      }, 50);
+    });
+    st.ro.observe(container);
+
+    connectTerminalWs(n);
+  }
+
+  function openTerminal(n) {
+    if (!Go2Shared.ensureLoggedIn()) return;
+
+    document.getElementById(`terminalPanel${n}`).style.display = "block";
+    terminals[n].open = true;
+    updateTerminalsWrapVisibility();
+
+    ensureTerminalStarted(n);
+
+    setTimeout(() => {
+      const st = terminals[n];
+      if (!st.term) return;
+      if (st.fit) st.fit.fit();
+      sendTermResize(n);
+      st.term.focus();
+    }, 120);
+  }
+
+  function toggleTerminalN(n) {
+    const st = terminals[n];
+    if (st.open) { destroyTerminal(n); return; }
+    openTerminal(n);
+  }
+</script>
+</body>
+</html>
