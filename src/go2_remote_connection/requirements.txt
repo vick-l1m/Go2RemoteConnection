@@ -2,4 +2,4 @@ fastapi
 uvicorn[standard]
 opencv-python
 ultralytics
-numpy
+numpy<2

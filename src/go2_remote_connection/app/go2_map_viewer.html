@@ -27,14 +27,9 @@
     }
 
     /* Layout: show panels stacked by default; split side-by-side on wide screens */
-    #panel2d, #panel3d { height: auto; }
-    @media (min-width: 1100px) {
-      .mapGrid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 12px;
-        margin-top: 12px;
-      }
+    #panel2d { height: auto; }
+    .mapGrid {
+      margin-top: 12px;
     }
     
     /* Joysticks */
@@ -76,13 +71,6 @@
       // Init joysticks after DOM is ready
       initJoysticks();
     });
-  </script>
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
-    }
-  }
   </script>
 </head>
 
@@ -130,8 +118,7 @@
 
       <div class="row" style="margin-top:10px;">
         <button id="btnToggle2D" onclick="togglePanel('2d')">2D</button>
-        <button id="btnToggle3D" onclick="togglePanel('3d')">3D</button>
-        <span class="small hint" id="viewModeHint">2D: off, 3D: off</span>
+        <span class="small hint" id="viewModeHint">2D: off</span>
       </div>
 
       <div class="mapGrid">
@@ -142,16 +129,6 @@
           </div>
           <div class="mapBox">
             <canvas id="mapCanvas"></canvas>
-          </div>
-        </div>
-      
-        <div class="mapPanel" id="panel3d" style="display:none;">
-          <div class="mapHeader">
-            <div class="mapTitle">3D Point Cloud</div>
-            <div class="mapHint small" id="pcdHint">Idle</div>
-          </div>
-          <div class="mapBox">
-            <canvas id="pcdCanvas"></canvas>
           </div>
         </div>
       </div>
@@ -179,12 +156,6 @@
       </div>
     </div>
   </div>
-  
-  <script type="module">
-    import * as THREE from "three";
-    import { OrbitControls } from "https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js";
-    window.__THREE__ = { THREE, OrbitControls };
-  </script>
 <script>
   // ----------------------------
   // STOP/RESUME latch (same idea as your other pages)
@@ -219,7 +190,7 @@
     return r;
   }
 
-  const panelState = { show2d: false, show3d: false };
+  const panelState = { show2d: false};
 
   function setBtnActive(btnId, active) {
     const b = document.getElementById(btnId);
@@ -229,25 +200,17 @@
   
   function applyPanelState(forceReload = false) {
     const p2 = document.getElementById("panel2d");
-    const p3 = document.getElementById("panel3d");
-  
     p2.style.display = panelState.show2d ? "" : "none";
-    p3.style.display = panelState.show3d ? "" : "none";
-  
+
     document.getElementById("viewModeHint").textContent =
-      `2D: ${panelState.show2d ? "on" : "off"}, 3D: ${panelState.show3d ? "on" : "off"}`;
-  
-    // Start/stop streams
+      `2D: ${panelState.show2d ? "on" : "off"}`;
+
     if (panelState.show2d) startMapStreaming(forceReload);
     else stopMapStreaming();
-  
-    if (panelState.show3d) startPcdStreaming();
-    else stopPcdStreaming();
   }
   
   function togglePanel(which) {
     if (which === "2d") panelState.show2d = !panelState.show2d;
-    if (which === "3d") panelState.show3d = !panelState.show3d;
     applyPanelState(false);
   }
 
@@ -255,10 +218,9 @@
     await Go2Shared.login();          // shows overlay/sets token
     await refreshSafetyStatus();
   
-    // Optional: auto-enable both after login, or keep them off.
-    // Here we auto-enable both:
+    // Optional: auto-enable after login, or keep them off.
+    // Here we auto-enable:
     panelState.show2d = true;
-    panelState.show3d = true;
     applyPanelState(true); // true = force reload
   }
 
@@ -288,23 +250,26 @@
     try {
       if (!stopLatched) {
         const r = await Go2Shared.httpPost("/safety/stop", null, { bypassCommsGate: true });
-        if (!r.ok) { Go2Shared.setStatus(`STOP failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`); return; }
+        if (!r.ok) {
+          Go2Shared.setStatus(`STOP failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+          return;
+        }
         Go2Shared.state.COMMS_ENABLED = false;
         setSafetyButton(true);
         stopMapStreaming();
-        stopPcdStreaming();
         setMapHint("STOP latched: map paused");
-        setPcdHint("STOP latched: 3D paused");
         Go2Shared.setStatus("STOP latched 🔒 (map paused)", true, `URL: ${r.url}\n${r.text}`);
       } else {
         const r2 = await Go2Shared.httpPost("/safety/resume", null, { bypassCommsGate: true });
-        if (!r2.ok) { Go2Shared.setStatus(`RESUME failed (HTTP ${r2.status})`, false, `URL: ${r2.url}\n${r2.text}`); return; }
+        if (!r2.ok) {
+          Go2Shared.setStatus(`RESUME failed (HTTP ${r2.status})`, false, `URL: ${r2.url}\n${r2.text}`);
+          return;
+        }
         Go2Shared.state.COMMS_ENABLED = true;
-        await setViewMode(VIEW_MODE); // restarts whichever mode you’re in
         setSafetyButton(false);
         setMapHint("Resuming map...");
         Go2Shared.setStatus("RESUME ✅ (map resumed)", true, `URL: ${r2.url}\n${r2.text}`);
-        await startMapStreaming(true);
+        if (panelState.show2d) await startMapStreaming(true);
         await refreshSafetyStatus();
       }
     } finally {
@@ -739,241 +704,6 @@
       Go2Shared.setStatus("Map load failed", false, String(e));
     }
   }
-  // ============================================================
-  // 3D POINT CLOUD VIEWER (Three.js + /ws/pcd)
-  // ============================================================
-  let PCD_WS = null;
-  let pcdPendingHeader = null;
-  let pcdKeepalive = null;
-  
-  let three = {
-    inited: false,
-    renderer: null,
-    scene: null,
-    camera: null,
-    controls: null,
-    points: null,
-    geom: null,
-    mat: null
-  };
-  
-  function setPcdHint(t) {
-    const el = document.getElementById("pcdHint");
-    if (el) el.textContent = t;
-  }
-  
-  async function waitForThree(ms=4000) {
-    const t0 = Date.now();
-    while (!window.__THREE__) {
-      if (Date.now() - t0 > ms) return false;
-      await new Promise(r => setTimeout(r, 50));
-    }
-    return true;
-  }
-
-  let canvas3d = null;
-
-  function init3DIfNeeded() {
-    if (three.inited) return;
-  
-    const mod = window.__THREE__;
-    if (!mod) { setPcdHint("Three.js not loaded"); return; }
-  
-    const { THREE, OrbitControls } = mod;
-  
-    canvas3d = document.getElementById("pcdCanvas");
-    const rect = canvas3d.getBoundingClientRect();
-  
-    three.renderer = new THREE.WebGLRenderer({ canvas: canvas3d, antialias: true });
-    three.renderer.setPixelRatio(devicePixelRatio);
-    three.renderer.setSize(Math.max(1, rect.width), Math.max(1, rect.height), false);
-  
-    three.scene = new THREE.Scene();
-    three.scene.background = new THREE.Color(0xffffff);
-  
-    three.camera = new THREE.PerspectiveCamera(60, rect.width / rect.height, 0.05, 2000);
-    three.camera.position.set(2, 2, 2);
-  
-    three.controls = new OrbitControls(three.camera, canvas3d);
-    three.controls.enableDamping = true;
-  
-    // ✅ Create geometry + material + points ONCE
-    three.geom = new THREE.BufferGeometry();
-    three.mat = new THREE.PointsMaterial({
-      size: 0.02,           // tweak if needed
-      sizeAttenuation: true,
-      colour: 0x0077ff, // blue
-      needsUpdate: true
-    });
-    three.points = new THREE.Points(three.geom, three.mat);
-    three.scene.add(three.points);
-  
-    // optional helpers (good for debugging)
-    three.scene.add(new THREE.GridHelper(2, 20));
-    three.scene.add(new THREE.AxesHelper(0.5));
-  
-    three._autoFrame = true; // only frame camera once
-  
-    function onResize3D() {
-      if (!three.inited || !canvas3d) return;
-      const r = canvas3d.getBoundingClientRect();
-      const w = Math.max(1, r.width);
-      const h = Math.max(1, r.height);
-      three.renderer.setSize(w, h, false);
-      three.camera.aspect = w / h;
-      three.camera.updateProjectionMatrix();
-    }
-    window.addEventListener("resize", onResize3D);
-  
-    (function animate(){
-      requestAnimationFrame(animate);
-      if (!three.inited) return;
-      three.controls.update();
-      three.renderer.render(three.scene, three.camera);
-    })();
-  
-    three.inited = true;
-  }
-  
-  function stopPcdStreaming() {
-    try { if (PCD_WS) PCD_WS.close(); } catch {}
-    PCD_WS = null;
-    pcdPendingHeader = null;
-    if (pcdKeepalive) { clearInterval(pcdKeepalive); pcdKeepalive = null; }
-  }
-  
-  async function connectPcdWS() {
-    init3DIfNeeded();
-    if (!three.inited || !three.geom) return;
-  
-    let wsUrl = `${Go2Shared.apiWsBase()}/ws/pcd`;
-    if (Go2Shared.cfg.authEnabled) {
-      if (!Go2Shared.state.AUTH_TOKEN) throw new Error("Login required");
-      wsUrl += `?token=${encodeURIComponent(Go2Shared.state.AUTH_TOKEN)}`;
-    }
-  
-    PCD_WS = new WebSocket(wsUrl);
-    PCD_WS.binaryType = "arraybuffer";
-  
-    PCD_WS.onopen  = () => { console.log("[pcd] ws open"); setPcdHint("3D live ✅"); };
-    PCD_WS.onerror = (e) => { console.log("[pcd] ws error", e); setPcdHint("3D WS error"); };
-    PCD_WS.onclose = (e) => { console.log("[pcd] ws close", e.code, e.reason); setPcdHint("3D closed"); };
-      
-    PCD_WS.onmessage = async (ev) => {
-      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) return;
-    
-      if (typeof ev.data === "string") {
-        pcdPendingHeader = JSON.parse(ev.data);
-        return;
-      }
-      if (!pcdPendingHeader) return;
-    
-      const h = pcdPendingHeader;
-      pcdPendingHeader = null;
-    
-      const gz = new Uint8Array(ev.data);
-      const rawU8 = await gunzipToBytes(gz);
-    
-      // ✅ Ensure Float32 alignment + exact length
-      const byteLen = rawU8.byteLength - (rawU8.byteLength % 4);
-      const buf = rawU8.buffer.slice(rawU8.byteOffset, rawU8.byteOffset + byteLen);
-      const f32 = new Float32Array(buf);
-    
-      const nFloats = f32.length;
-      const nPts = Math.floor(nFloats / 3);
-    
-      if (nPts <= 0) {
-        setPcdHint("No points");
-        return;
-      }
-    
-      const mod = window.__THREE__;
-      const { THREE } = mod;
-    
-      // ✅ Update / replace attribute
-      three.geom.setAttribute("position", new THREE.BufferAttribute(f32, 3));
-      three.geom.computeBoundingSphere();
-    
-      if (three._autoFrame && three.geom.boundingSphere) {
-        const c = three.geom.boundingSphere.center;
-        let r = three.geom.boundingSphere.radius;
-      
-        // ✅ clamp to a sane range (meters)
-        r = Math.max(0.4, Math.min(r, 8.0));
-      
-        // camera direction (diagonal)
-        const dir = new (window.__THREE__.THREE.Vector3)(1, 0.6, 1).normalize();
-      
-        three.controls.target.copy(c);
-        three.camera.position.copy(c).addScaledVector(dir, r * 2.0);
-      
-        three.camera.near = 0.01;
-        three.camera.far  = r * 60;
-        three.camera.updateProjectionMatrix();
-      
-        // optional: limit orbit distances so you can’t end up miles away
-        three.controls.minDistance = r * 0.2;
-        three.controls.maxDistance = r * 20;
-      
-        three.controls.update();
-        three._autoFrame = false;
-      }
-    
-      setPcdHint(`3D live ✅ (${nPts} pts, frame=${h.meta?.frame_id || "?"})`);
-    };
-  
-    pcdKeepalive = setInterval(() => {
-      if (PCD_WS && PCD_WS.readyState === WebSocket.OPEN) {
-        try { PCD_WS.send("ping"); } catch {}
-      }
-    }, 10000);
-  }
-  
-  async function startPcdStreaming() {
-    if (!Go2Shared.ensureLoggedIn()) return;
-    if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
-      setPcdHint("STOP latched: 3D paused");
-      return;
-    }
-    stopPcdStreaming();
-    setPcdHint("Connecting 3D...");
-    await connectPcdWS();
-  }
-
-  let VIEW_MODE = "both"; // "2d" | "3d" | "both"
-
-  function setViewMode(mode) {
-    VIEW_MODE = mode;
-    document.getElementById("viewModeHint").textContent =
-      mode === "2d" ? "Mode: 2D" : mode === "3d" ? "Mode: 3D" : "Mode: Split";
-  
-    const p2 = document.getElementById("panel2d");
-    const p3 = document.getElementById("panel3d");
-  
-    if (mode === "2d") {
-      p2.style.display = "";
-      p3.style.display = "none";
-    } else if (mode === "3d") {
-      p2.style.display = "none";
-      p3.style.display = "";
-    } else {
-      p2.style.display = "";
-      p3.style.display = "";
-    }
-  
-    // Kick off streams as needed
-    if (mode === "2d") {
-      startMapStreaming(false);
-      stopPcdStreaming();
-    } else if (mode === "3d") {
-      stopMapStreaming();
-      startPcdStreaming();
-    } else {
-      startMapStreaming(false);
-      startPcdStreaming();
-    }
-  }
-
 </script>
 </body>
 </html>

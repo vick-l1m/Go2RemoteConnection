@@ -73,8 +73,8 @@ private:
   static constexpr double STANDUP_SETTLE_S = 1.6;
 
   // Posing scaling (tune to taste)
-  static constexpr float MAX_ROLL  = 0.6f;
-  static constexpr float MAX_PITCH = 0.6f;
+  static constexpr float MAX_ROLL  = 1.5f;
+  static constexpr float MAX_PITCH = 0.8f;
   static constexpr float MAX_YAW   = 0.8f;
 
   // ---------------- State ----------------
@@ -282,7 +282,7 @@ private:
 
     vx = dz(vx);
     vy = dz(vy);
-    vyaw = dz(vyaw);
+    vyaw = dz(vyaw) * 2;
 
     const bool timed_out = (now - last_rx).seconds() > RX_TIMEOUT;
     if (timed_out) vx = vy = vyaw = 0.0;

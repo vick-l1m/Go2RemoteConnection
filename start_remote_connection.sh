@@ -169,26 +169,8 @@ ros2 run go2_remote_connection flatten_l1_data \
 FLATTEN_PID=$!
 pids+=("$FLATTEN_PID")
 
-echo "[run_all] Starting L1_pcd_web_packer (L1 -> /pcd/xyz32)..."
-ros2 run go2_remote_connection L1_pcd_web_packer \
-  --ros-args \
-  -p cloud_topic:=/utlidar/cloud_deskewed \
-  -p target_frame:=odom \
-  -p publish_hz:=5.0 \
-  -p voxel_size:=0.10 \
-  -p max_points:=20000 \
-  -p min_range:=0.25 \
-  -p max_range:=25.0 \
-  -p min_z:=-1.0 \
-  -p max_z:=3.0 \
-  > /tmp/L1_pcd_web_packer.log 2>&1 &
-
-PCD_PID=$!
-pids+=("$PCD_PID")
-
 sleep 0.3
 ok_or_die "flatten_l1_data" "$FLATTEN_PID"
-ok_or_die "L1_pcd_web_packer" "$PCD_PID"
 
 # ------------------------------------------------------------
 # 0b) Front camera capture node, Image -> JPEG compressed bridge

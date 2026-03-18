@@ -11,11 +11,11 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPo
 
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String as RosString
-from std_msgs.msg import Bool, Float32, UInt8MultiArray
 from nav_msgs.msg import OccupancyGrid
 from map_msgs.msg import OccupancyGridUpdate
 from fastapi import WebSocket
 from sensor_msgs.msg import CompressedImage
+from std_msgs.msg import Bool, Float32
 
 import time
 from std_msgs.msg import String
@@ -62,46 +62,6 @@ async def _broadcast_map_payload(payload: dict):
 
 def _i8_list_to_bytes(data) -> bytes:
     return bytes((d & 0xFF) for d in data)
-
-
-# ============================================================
-# 3D POINTCLOUD STORE (xyz32)
-# ============================================================
-@dataclass
-class PointCloudStore:
-    meta: Optional[Dict[str, Any]] = None     # {frame_id, fmt, stride, ...}
-    raw: Optional[bytes] = None               # packed float32 xyz (len = n*12)
-    seq: int = 0
-    clients: Set[WebSocket] = None
-    lock: asyncio.Lock = None
-
-    def __post_init__(self):
-        if self.clients is None:
-            self.clients = set()
-        if self.lock is None:
-            self.lock = asyncio.Lock()
-
-_pcd_store = PointCloudStore()
-
-async def _broadcast_pcd_payload(payload: dict):
-    dead = []
-    async with _pcd_store.lock:
-        clients = list(_pcd_store.clients)
-
-    for ws in clients:
-        try:
-            header = payload.copy()
-            gz = header.pop("gz")
-            await ws.send_text(json.dumps(header))
-            await ws.send_bytes(gz)
-        except Exception:
-            dead.append(ws)
-
-    if dead:
-        async with _pcd_store.lock:
-            for ws in dead:
-                _pcd_store.clients.discard(ws)
-
 
 # ============================================================
 # CAMERA STORE (JPEG bytes)
@@ -207,29 +167,6 @@ class WebRosBridge(Node):
         self.sub_map_upd = self.create_subscription(
             OccupancyGridUpdate, map_updates_topic, self._on_map_update, upd_qos
         )
-
-        # ---------------- PointCloud subscriptions ----------------
-        self.declare_parameter("pcd_xyz_topic", "/pcd/xyz32")
-        self.declare_parameter("pcd_meta_topic", "/pcd/meta")
-
-        pcd_xyz_topic = self.get_parameter("pcd_xyz_topic").value
-        pcd_meta_topic = self.get_parameter("pcd_meta_topic").value
-
-        pcd_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=2,
-        )
-
-        self.sub_pcd_meta = self.create_subscription(
-            RosString, pcd_meta_topic, self._on_pcd_meta, 10
-        )
-        self.sub_pcd_xyz = self.create_subscription(
-            UInt8MultiArray, pcd_xyz_topic, self._on_pcd_xyz32, pcd_qos
-        )
-
-        self._pcd_meta_cache = {"frame_id": "unknown", "fmt": "xyz32", "stride": 12}
         
         # ---------------- Front camera subscription ----------------
         self.declare_parameter("front_cam_topic", "/web/front_cam/compressed")
@@ -371,55 +308,6 @@ class WebRosBridge(Node):
 
         self._loop.call_soon_threadsafe(_schedule)
 
-    # ---------------- PointCloud callbacks ----------------
-    def _on_pcd_meta(self, msg: RosString):
-        try:
-            meta = json.loads(msg.data)
-            if not isinstance(meta, dict):
-                raise ValueError("meta not dict")
-        except Exception:
-            meta = {"frame_id": str(msg.data), "fmt": "xyz32", "stride": 12}
-
-        self._pcd_meta_cache = meta
-        _pcd_store.meta = meta
-
-    def _on_pcd_xyz32(self, msg: UInt8MultiArray):
-        raw = bytes(msg.data)
-        n = len(raw) // 12
-        if n <= 0:
-            return
-    
-        meta = dict(getattr(self, "_pcd_meta_cache", {"frame_id": "unknown"}))
-        meta.setdefault("fmt", "xyz32")
-        meta.setdefault("stride", 12)
-    
-        if self._loop is None:
-            _pcd_store.meta = meta
-            _pcd_store.raw = raw
-            _pcd_store.seq += 1
-            return
-    
-        def _schedule():
-            async def _set_and_broadcast():
-                async with _pcd_store.lock:
-                    _pcd_store.meta = meta
-                    _pcd_store.raw = raw
-                    _pcd_store.seq += 1
-                    seq = _pcd_store.seq
-    
-                payload = {
-                    "t": "pcd",
-                    "seq": seq,
-                    "meta": meta,
-                    "n": n,
-                    "gz": gzip.compress(raw, compresslevel=6),
-                }
-                await _broadcast_pcd_payload(payload)
-    
-            asyncio.create_task(_set_and_broadcast())
-    
-        self._loop.call_soon_threadsafe(_schedule)
-
     # ---------------- Front camera callback ----------------
     def _on_front_cam(self, msg: CompressedImage):
         store = get_cam_store()
@@ -544,9 +432,6 @@ def get_bridge() -> WebRosBridge:
 
 def get_map_store() -> MapStore:
     return _map_store
-
-def get_pcd_store() -> PointCloudStore:
-    return _pcd_store
 
 def get_yolo_cam_store() -> CameraStore:
     return _yolo_cam_store

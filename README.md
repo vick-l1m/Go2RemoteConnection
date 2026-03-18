@@ -39,12 +39,6 @@ cd ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection/src/cv/model
 python3 model_download.py
 
 # Setup the workspace
-cd ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection
-
-pip install -r requirements.txt
-
-source /opt/ros/humble/setup.sh
-source ~/unitree_ros2/install/setup.sh
 cd ~/go2_ws/Go2RemoteConnection
 colcon build
 source install/setup.bash
