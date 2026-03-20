@@ -238,30 +238,30 @@ pids+=("$front_cam_node_PID")
 sleep 2.0
 ok_or_die "front_camera_ros_bridge" "$front_cam_node_PID"
 
-# # ------------------------------------------------------------
-# # 0c) YOLO node (for detections + debug visualization)
-# # ------------------------------------------------------------
+# ------------------------------------------------------------
+# 0c) YOLO node (for detections + debug visualization)
+# ------------------------------------------------------------
 
-# echo "[run_all] Starting YOLO node (/yolo/detections + /yolo_depth/image_raw)..."
-# python3 "$PKG_DIR/src/cv/ROS_yolo.py" \
-#   > /tmp/ROS_yolo.log 2>&1 &
+echo "[run_all] Starting YOLO node (/yolo/detections + /yolo_depth/image_raw)..."
+python3 "$PKG_DIR/src/cv/ROS_yolo.py" \
+  > /tmp/ROS_yolo.log 2>&1 &
 
-# yolo_PID=$!
-# pids+=("$yolo_PID")
-# sleep 2.0
-# ok_or_die "ROS_yolo" "$yolo_PID"
+yolo_PID=$!
+pids+=("$yolo_PID")
+sleep 2.0
+ok_or_die "ROS_yolo" "$yolo_PID"
 
-# echo "[run_all] Starting yolo_to_compressed_bridge (/cv/yolo_depth/image_raw -> /web/yolo_cam/compressed)..."
-# python3 "$PKG_DIR/src/cv/image_to_compressed_bridge.py" --ros-args \
-#   -p in_topic:=/yolo_depth/image_raw \
-#   -p out_topic:=/web/yolo_cam/compressed \
-#   -p jpeg_quality:=80 \
-#   > /tmp/yolo_to_compressed_bridge.log 2>&1 &
+echo "[run_all] Starting yolo_to_compressed_bridge (/cv/yolo_depth/image_raw -> /web/yolo_cam/compressed)..."
+python3 "$PKG_DIR/src/cv/image_to_compressed_bridge.py" --ros-args \
+  -p in_topic:=/yolo_depth/image_raw \
+  -p out_topic:=/web/yolo_cam/compressed \
+  -p jpeg_quality:=80 \
+  > /tmp/yolo_to_compressed_bridge.log 2>&1 &
 
-# yolo_cam_bridge_PID=$!
-# pids+=("$yolo_cam_bridge_PID")
-# sleep 0.3
-# ok_or_die "yolo_to_compressed_bridge" "$yolo_cam_bridge_PID"
+yolo_cam_bridge_PID=$!
+pids+=("$yolo_cam_bridge_PID")
+sleep 0.3
+ok_or_die "yolo_to_compressed_bridge" "$yolo_cam_bridge_PID"
 
 # ----------------------------
 # 1) Start FastAPI backend
