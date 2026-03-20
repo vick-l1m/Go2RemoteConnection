@@ -28,6 +28,14 @@ from app.ros_bridge import get_cam_store
 from app.ros_bridge import get_yolo_store
 from app.ros_bridge import get_yolo_cam_store
 
+import os
+import signal
+import subprocess
+from fastapi import APIRouter
+
+router = APIRouter()
+
+YOLO_PROC = None
 
 # Conditional import: use terminal_ec2 for EC2 deployment, terminal for robot
 if os.getenv("DEPLOYMENT_ENV") == "ec2":
@@ -490,3 +498,115 @@ async def ws_cam_yolo(websocket: WebSocket):
     finally:
         async with store.lock:
             store.clients.discard(websocket)
+
+def yolo_script_path():
+    home = os.path.expanduser("~")
+    return os.path.join(
+        home,
+        "go2_ws",
+        "Go2RemoteConnection",
+        "src",
+        "go2_remote_connection",
+        "src",
+        "cv",
+        "ROS_yolo.py",
+    )
+
+
+def venv_python_path():
+    home = os.path.expanduser("~")
+    return os.path.join(home, "venvs", "unitree_sdk2_python", "bin", "python3")
+
+
+def yolo_script_path():
+    home = os.path.expanduser("~")
+    return os.path.join(
+        home,
+        "go2_ws",
+        "Go2RemoteConnection",
+        "src",
+        "go2_remote_connection",
+        "src",
+        "cv",
+        "ROS_yolo.py",
+    )
+
+@app.post("/yolo/start")
+def start_yolo():
+    global YOLO_PROC, YOLO_LOGF
+
+    if YOLO_PROC is not None and YOLO_PROC.poll() is None:
+        return {"ok": True, "message": "YOLO already running", "pid": YOLO_PROC.pid}
+
+    # clear stale handle
+    YOLO_PROC = None
+
+    env = os.environ.copy()
+    home = os.path.expanduser("~")
+    unitree_sdk_src = os.path.join(home, "unitree_sdk2_python")
+    venv_site = os.path.join(
+        home, "venvs", "unitree_sdk2_python", "lib", "python3.10", "site-packages"
+    )
+    existing_pp = env.get("PYTHONPATH", "")
+    env["PYTHONNOUSERSITE"] = "1"
+    env["PYTHONPATH"] = f"{unitree_sdk_src}:{venv_site}:{existing_pp}"
+
+    log_path = "/tmp/ROS_yolo.log"
+    YOLO_LOGF = open(log_path, "ab", buffering=0)
+
+    YOLO_PROC = subprocess.Popen(
+        [venv_python_path(), yolo_script_path()],
+        stdout=YOLO_LOGF,
+        stderr=subprocess.STDOUT,
+        env=env,
+        preexec_fn=os.setsid,
+    )
+
+    return {"ok": True, "message": "YOLO started", "pid": YOLO_PROC.pid}
+
+
+@app.post("/yolo/stop")
+def stop_yolo():
+    global YOLO_PROC, YOLO_LOGF
+
+    stopped = False
+
+    if YOLO_PROC is not None and YOLO_PROC.poll() is None:
+        try:
+            os.killpg(os.getpgid(YOLO_PROC.pid), signal.SIGTERM)
+            stopped = True
+        except Exception:
+            try:
+                YOLO_PROC.terminate()
+                stopped = True
+            except Exception:
+                pass
+
+    YOLO_PROC = None
+
+    if YOLO_LOGF is not None:
+        try:
+            YOLO_LOGF.close()
+        except Exception:
+            pass
+        YOLO_LOGF = None
+
+    # Optional: also kill any stray ROS_yolo.py started outside this endpoint
+    try:
+        subprocess.run(
+            ["pkill", "-f", yolo_script_path()],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
+    return {"ok": True, "message": "YOLO stopped", "stopped": stopped}
+
+
+@app.get("/yolo/status")
+def yolo_status():
+    running = YOLO_PROC is not None and YOLO_PROC.poll() is None
+    pid = YOLO_PROC.pid if running else None
+    return {"ok": True, "running": running, "pid": pid}

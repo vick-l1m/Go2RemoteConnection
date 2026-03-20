@@ -214,6 +214,9 @@ FRONT_CAMERA_CAPTURE_EXE="$PKG_INSTALL_DIR/front_camera_capture.py"
 FRONT_CAMERA_BRIDGE_EXE="$PKG_INSTALL_DIR/front_camera_ros_bridge.py"
 IMAGE_TO_COMPRESSED_BRIDGE_EXE="$PKG_INSTALL_DIR/image_to_compressed_bridge.py"
 
+export GO2_CAM_JPEG_QUALITY=40
+export GO2_CAM_SCALE=0.5
+
 echo "[run_all] Using UNITREE_IFACE=$UNITREE_IFACE"
 echo "[run_all] Using VENV_PYTHON=$VENV_PYTHON"
 
@@ -235,9 +238,9 @@ pids+=("$front_cam_node_PID")
 sleep 2.0
 ok_or_die "front_camera_ros_bridge" "$front_cam_node_PID"
 
-# ------------------------------------------------------------
-# 0c) YOLO node (for detections + debug visualization)
-# ------------------------------------------------------------
+# # ------------------------------------------------------------
+# # 0c) YOLO node (for detections + debug visualization)
+# # ------------------------------------------------------------
 
 # echo "[run_all] Starting YOLO node (/yolo/detections + /yolo_depth/image_raw)..."
 # python3 "$PKG_DIR/src/cv/ROS_yolo.py" \

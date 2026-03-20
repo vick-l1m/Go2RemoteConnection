@@ -133,12 +133,8 @@
         <div class="row" style="margin-top:10px; padding:0 12px 12px;">
           <button onclick="startStream()">Start Stream</button>
           <button onclick="stopStream()">Stop Stream</button>
-      
-          <label class="pill" style="display:inline-flex; align-items:center; gap:8px;">
-            <input id="useYoloVideo" type="checkbox" onchange="switchVideoSource()" />
-            Show YOLO boxes
-          </label>
-      
+          <button id="toggleYoloPanelBtn" onclick="toggleYoloPanel()">Show YOLO Panel</button>
+
           <span class="pill">Frames: <span id="frameCount">0</span></span>
           <span class="pill">Last: <span id="frameBytes">0</span> bytes</span>
         </div>
@@ -149,18 +145,24 @@
       </div>
 
       <!-- CAMERA PANEL: YOLO -->
-      <div class="camPanel">
+      <div id="yoloPanel" class="camPanel" style="display:none;">
         <div class="camHeader">
           <div class="camTitle">YOLO detections</div>
           <div class="camHint small" id="yoloHint">Idle</div>
         </div>
       
         <div style="padding:10px 12px 12px;">
-          <div class="row">
-            <button onclick="startYolo()">Start YOLO</button>
-            <button onclick="stopYolo()">Stop YOLO</button>
-            <span class="pill">Msgs: <span id="yoloCount">0</span></span>
-          </div>
+        <div class="row">
+          <button onclick="startYolo()">Start YOLO</button>
+          <button onclick="stopYolo()">Stop YOLO</button>
+
+          <label class="pill" style="display:inline-flex; align-items:center; gap:8px;">
+            <input id="useYoloVideo" type="checkbox" onchange="switchVideoSource()" />
+            Show YOLO boxes on video
+          </label>
+
+          <span class="pill">Msgs: <span id="yoloCount">0</span></span>
+        </div>
       
           <div id="yoloList"
                style="margin-top:10px; border:1px solid var(--soft-border); border-radius:12px; padding:10px; max-height:260px; overflow:auto; background:#fff;">
@@ -576,7 +578,16 @@
     return wsUrl;
   }
   
-  function stopYolo() {
+  async function stopYolo() {
+    try {
+      if (Go2Shared.ensureLoggedIn()) {
+        const r = await Go2Shared.httpPost("/yolo/stop");
+        console.log("YOLO stop:", r.status, r.text);
+      }
+    } catch (e) {
+      console.warn("YOLO stop failed:", e);
+    }
+
     if (YOLO_WS) {
       YOLO_WS.onmessage = null;
       YOLO_WS.onopen = null;
@@ -585,30 +596,60 @@
       try { YOLO_WS.close(1000, "stop"); } catch {}
     }
     YOLO_WS = null;
-  
-    if (yoloKeepalive) { clearInterval(yoloKeepalive); yoloKeepalive = null; }
-  
+
+    if (yoloKeepalive) {
+      clearInterval(yoloKeepalive);
+      yoloKeepalive = null;
+    }
+
+    const cb = document.getElementById("useYoloVideo");
+    if (cb) cb.checked = false;
+
+    if (CAM_WS) {
+      startStream();
+    }
+
+    document.getElementById("yoloCount").textContent = "0";
+    document.getElementById("yoloRaw").textContent = "(none)";
+    const yoloList = document.getElementById("yoloList");
+    if (yoloList) {
+      yoloList.innerHTML = `<div class="small" style="color:#777;">No detections yet.</div>`;
+    }
+
     setYoloHint(stopLatched ? "STOP latched" : "Idle");
   }
 
-  function startYolo() {
+  async function startYolo() {
+    if (!yoloPanelVisible) {
+      const panel = document.getElementById("yoloPanel");
+      const btn = document.getElementById("toggleYoloPanelBtn");
+      yoloPanelVisible = true;
+      if (panel) panel.style.display = "block";
+      if (btn) btn.textContent = "Hide YOLO Panel";
+    }
+
     if (!Go2Shared.ensureLoggedIn()) return;
     if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
       setYoloHint("STOP latched");
       return;
     }
-  
+
+    const startResp = await Go2Shared.httpPost("/yolo/start");
+    if (!startResp.ok) {
+      setYoloHint(`Start failed (HTTP ${startResp.status})`);
+      return;
+    }
+
     yoloMsgs = 0;
     document.getElementById("yoloCount").textContent = "0";
     setYoloHint("Connecting...");
-    stopYolo();
-  
+    stopYoloWsOnly();
+
     let wsUrl;
     try { wsUrl = yoloWsUrl(); }
     catch (e) { setYoloHint(String(e)); return; }
-  
+
     YOLO_WS = new WebSocket(wsUrl);
-  
     YOLO_WS.onopen = () => {
       setYoloHint("Live ✅");
       yoloKeepalive = setInterval(() => {
@@ -617,29 +658,41 @@
         }
       }, 10000);
     };
-  
+
     YOLO_WS.onmessage = (ev) => {
-      if (YOLO_WS == null) return;  
+      if (YOLO_WS == null) return;
       if (typeof ev.data !== "string") return;
-  
+
       yoloMsgs++;
       document.getElementById("yoloCount").textContent = String(yoloMsgs);
       document.getElementById("yoloRaw").textContent = ev.data;
-  
-      // Render a friendly list (depends on your JSON structure)
+
       try {
         const obj = JSON.parse(ev.data);
         renderYoloList(obj);
       } catch {}
     };
-  
+
     YOLO_WS.onclose = () => {
       if (yoloKeepalive) { clearInterval(yoloKeepalive); yoloKeepalive = null; }
       YOLO_WS = null;
       setYoloHint(stopLatched ? "STOP latched" : "Disconnected");
     };
-  
+
     YOLO_WS.onerror = () => setYoloHint("WS error");
+  }
+
+  function stopYoloWsOnly() {
+    if (YOLO_WS) {
+      YOLO_WS.onmessage = null;
+      YOLO_WS.onopen = null;
+      YOLO_WS.onclose = null;
+      YOLO_WS.onerror = null;
+      try { YOLO_WS.close(1000, "stop"); } catch {}
+    }
+    YOLO_WS = null;
+
+    if (yoloKeepalive) { clearInterval(yoloKeepalive); yoloKeepalive = null; }
   }
   
   function renderYoloList(obj) {
@@ -734,12 +787,31 @@
   }
   
   function switchVideoSource() {
-    // If streaming, restart stream on toggle
-    if (CAM_WS && CAM_WS.readyState === WebSocket.OPEN) {
+    const cb = document.getElementById("useYoloVideo");
+    const usingYolo = !!(cb && cb.checked);
+
+    setCamHint(usingYolo ? "Switching to YOLO video..." : "Switching to raw video...");
+
+    if (CAM_WS) {
       startStream();
     }
   }
 
+  let yoloPanelVisible = false;
+
+async function toggleYoloPanel() {
+  const panel = document.getElementById("yoloPanel");
+  const btn = document.getElementById("toggleYoloPanelBtn");
+  if (!panel || !btn) return;
+
+  yoloPanelVisible = !yoloPanelVisible;
+  panel.style.display = yoloPanelVisible ? "block" : "none";
+  btn.textContent = yoloPanelVisible ? "Hide YOLO Panel" : "Show YOLO Panel";
+
+  if (!yoloPanelVisible) {
+    await stopYolo();
+  }
+}
 </script>
 </body>
 </html>
