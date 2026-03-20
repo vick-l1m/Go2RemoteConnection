@@ -105,36 +105,36 @@ ament_target_dependencies(flatten_l1_data
 )
 
 # ------------------------------------------------------------
-# Executable: L1_pcd_web_packer (3D point cloud streamer)
-# ------------------------------------------------------------
-add_executable(L1_pcd_web_packer
-  src/L1_pcd_web_packer.cpp
-)
-
-ament_target_dependencies(L1_pcd_web_packer
-  rclcpp
-  sensor_msgs
-  std_msgs
-  tf2
-  tf2_ros
-  tf2_sensor_msgs
-)
-
-# ------------------------------------------------------------
 # Install rules
 # ------------------------------------------------------------
 install(DIRECTORY include/
   DESTINATION include/
 )
 
+# yolo model
+install(DIRECTORY
+  src/cv/model/
+  DESTINATION share/${PROJECT_NAME}/model
+)
+
+# Cpp packages
 install(TARGETS
   web_bridge
   web_teleop_bridge_sim
   move_forward_meters_node
   flatten_l1_data
-  L1_pcd_web_packer
   DESTINATION lib/${PROJECT_NAME}
 )
+
+# Python packages
+install(PROGRAMS
+  src/cv/front_camera_capture.py
+  src/cv/front_camera_ros_bridge.py
+  src/cv/image_to_compressed_bridge.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+# ------------------------------------------------------------
 
 # ------------------------------------------------------------
 # Finalize package

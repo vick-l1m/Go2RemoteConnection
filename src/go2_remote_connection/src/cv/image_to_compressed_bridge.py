@@ -19,7 +19,7 @@ class ImageToCompressedBridge(Node):
 
         # ✅ INPUT QoS: must match /front_camera/image_raw publisher (RELIABLE)
         in_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
             depth=10,

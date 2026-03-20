@@ -175,19 +175,68 @@ ok_or_die "flatten_l1_data" "$FLATTEN_PID"
 # ------------------------------------------------------------
 # 0b) Front camera capture node, Image -> JPEG compressed bridge
 # ------------------------------------------------------------
-chmod +x "$PKG_DIR/src/cv/front_camera_node.py" "$PKG_DIR/src/cv/image_to_compressed_bridge.py"
+WS_DIR="$HOME/go2_ws/Go2RemoteConnection"
+PKG_NAME="go2_remote_connection"
+PKG_INSTALL_DIR="$WS_DIR/install/$PKG_NAME/lib/$PKG_NAME"
 
-echo "[run_all] Starting front camera node (/cv/front_camera/image_raw)..."
-python3 "$PKG_DIR/src/cv/front_camera_node.py" \
+VENV_PYTHON="$HOME/venvs/unitree_sdk2_python/bin/python3"
+UNITREE_SDK_SRC="$HOME/unitree_sdk2_python"
+VENV_SITE="$HOME/venvs/unitree_sdk2_python/lib/python3.10/site-packages"
+EXISTING_PP="${PYTHONPATH:-}"
+COMBINED_PP="$UNITREE_SDK_SRC:$VENV_SITE:$EXISTING_PP"
+
+export RMW_IMPLEMENTATION="rmw_cyclonedds_cpp"
+export ROS_DOMAIN_ID="0"
+export PYTHONNOUSERSITE="1"
+export PYTHONPATH="$COMBINED_PP"
+
+HOSTNAME_LOWER="$(hostname | tr '[:upper:]' '[:lower:]')"
+
+detect_laptop_interface() {
+  local target_ip="${1:-192.168.123.161}"
+  local out iface
+  out="$(ip route get "$target_ip" 2>/dev/null)" || return 1
+  iface="$(awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}' <<< "$out")"
+  [ -n "$iface" ] && [ "$iface" != "lo" ] && echo "$iface"
+}
+
+if [[ "$HOSTNAME_LOWER" == *unitree* || "$HOSTNAME_LOWER" == *jetson* || "$HOSTNAME_LOWER" == go2* ]]; then
+  DEFAULT_UNITREE_IFACE="enP8p1s0"
+else
+  DEFAULT_UNITREE_IFACE="$(detect_laptop_interface 192.168.123.161)"
+  DEFAULT_UNITREE_IFACE="${DEFAULT_UNITREE_IFACE:-enp0s31f6}"
+fi
+
+export UNITREE_IFACE="${UNITREE_IFACE:-$DEFAULT_UNITREE_IFACE}"
+export CYCLONEDDS_URI="<CycloneDDS><Domain><General><Interfaces><NetworkInterface name=\"${UNITREE_IFACE}\" priority=\"default\" multicast=\"default\" /></Interfaces></General></Domain></CycloneDDS>"
+
+FRONT_CAMERA_CAPTURE_EXE="$PKG_INSTALL_DIR/front_camera_capture.py"
+FRONT_CAMERA_BRIDGE_EXE="$PKG_INSTALL_DIR/front_camera_ros_bridge.py"
+IMAGE_TO_COMPRESSED_BRIDGE_EXE="$PKG_INSTALL_DIR/image_to_compressed_bridge.py"
+
+echo "[run_all] Using UNITREE_IFACE=$UNITREE_IFACE"
+echo "[run_all] Using VENV_PYTHON=$VENV_PYTHON"
+
+echo "[run_all] Starting front_camera_capture ..."
+"$VENV_PYTHON" "$FRONT_CAMERA_CAPTURE_EXE" \
+  > /tmp/front_camera_capture.log 2>&1 &
+
+front_cam_capture_PID=$!
+pids+=("$front_cam_capture_PID")
+sleep 2.0
+ok_or_die "front_camera_capture" "$front_cam_capture_PID"
+
+echo "[run_all] Starting front_camera_ros_bridge (/front_camera/image_raw)..."
+"$VENV_PYTHON" "$FRONT_CAMERA_BRIDGE_EXE" --ros-args -r __node:=front_camera_node \
   > /tmp/front_camera_node.log 2>&1 &
 
 front_cam_node_PID=$!
 pids+=("$front_cam_node_PID")
 sleep 2.0
-ok_or_die "front_camera_node" "$front_cam_node_PID"
+ok_or_die "front_camera_ros_bridge" "$front_cam_node_PID"
 
-echo "[run_all] Starting image_to_compressed_bridge (/cv/front_camera/image_raw -> /web/front_cam/compressed)..."
-python3 "$PKG_DIR/src/cv/image_to_compressed_bridge.py" --ros-args \
+echo "[run_all] Starting image_to_compressed_bridge (/front_camera/image_raw -> /web/front_cam/compressed)..."
+"$VENV_PYTHON" "$IMAGE_TO_COMPRESSED_BRIDGE_EXE" --ros-args \
   -p jpeg_quality:=80 \
   > /tmp/image_to_compressed_bridge.log 2>&1 &
 
