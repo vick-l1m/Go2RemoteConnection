@@ -1,4 +1,4 @@
-/* shared.css - starter (common look & feel for all Go2 pages) */
+/* shared.css - common look & feel for all Go2 pages */
 
 :root {
   --bg: #fafafa;
@@ -26,6 +26,7 @@
 * { box-sizing: border-box; }
 body { font-family: var(--font); margin: 0; padding: var(--pad); background: var(--bg); }
 h1 { margin: 0 0 10px; font-size: 20px; }
+
 .pageNav{
   display:flex;
   gap:10px;
@@ -46,6 +47,7 @@ h1 { margin: 0 0 10px; font-size: 20px; }
   border-color:#7aa7ff;
   background:#eaf2ff;
 }
+
 input {
   padding: 10px;
   border-radius: var(--radius-sm);
@@ -54,6 +56,7 @@ input {
   min-width: 220px;
   font-size: 16px;
 }
+
 button {
   padding: 12px 12px;
   border-radius: var(--radius-sm);
@@ -121,19 +124,54 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 }
 
 /* Joysticks */
+.joyRow {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .joyBox {
+  min-width: 0;
   border: 1px solid var(--soft-border);
   border-radius: var(--radius);
-  padding: 10px;
-  background: var(--soft-2);
-}
-.joyTitle { font-size: 14px; color:#333; margin: 0 0 8px; }
-canvas {
-  width: 100%;
-  height: 280px;
-  border-radius: 14px;
+  padding: 10px 12px;
   background: #fff;
-  border: 1px solid var(--soft-border);
+}
+
+.joyTitle {
+  font-size: 13px;
+  color:#333;
+  margin: 0 0 8px;
+}
+
+.joyCanvas {
+  width: 100%;
+  height: 260px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  touch-action: none;
+  display: block;
+}
+
+@media (max-width: 560px) {
+  .joyRow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .joyCanvas {
+    height: 200px;
+  }
+
+  .joyTitle {
+    font-size: 12px;
+  }
+}
+
+/* Generic canvas: keep this minimal so map/camera canvases can style themselves */
+canvas {
   touch-action: none;
 }
 
@@ -166,7 +204,7 @@ canvas {
   user-select: none;
 }
 
-/* Terminals (for joystick page) */
+/* Terminals */
 .termGrid {
   margin-top: 12px;
   display: grid;
@@ -191,59 +229,7 @@ canvas {
 .termTitle { color:#fff; font-size:14px; font-weight:600; }
 .termHint { color:#bbb; }
 .termBox {
-  width: 100%;
   height: 320px;
-  overflow: auto;
-  touch-action: pan-y;
+  min-height: 220px;
+  padding: 8px;
 }
-html[data-auth-enabled="0"] .loginOverlay {
-  display: none !important;
-}
-.pageNav{
-  display:flex;
-  gap:10px;
-  flex-wrap:wrap;
-  margin: 10px 0 12px;
-}
-.navBtn{
-  display:inline-block;
-  padding:10px 12px;
-  border-radius:12px;
-  border:1px solid #ddd;
-  background:#f7f7f7;
-  text-decoration:none;
-  color:inherit;
-  font-size:14px;
-}
-.navBtn.active{
-  border-color:#7aa7ff;
-  background:#eaf2ff;
-}
-.modalOverlay{
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0,0,0,0.45);
-  padding: 14px;
-  z-index: 9999;
-}
-.modalCard{
-  width: min(520px, 100%);
-  background: #fff;
-  border: 1px solid #ddd;
-  border-radius: 16px;
-  padding: 14px;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.18);
-}
-#pcdCanvas {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  width: 100%;
-  height: 100%;
-  display: block;
-  background: #fff;
-  touch-action: none;
-}
-

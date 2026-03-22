@@ -24,7 +24,7 @@ fi
 
 get_best_ip() {
   # Try to get the source IP used to reach the internet (works on most Linux)
-  ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}'
+  ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true
 }
 
 # ----------------------------
@@ -238,31 +238,6 @@ pids+=("$front_cam_node_PID")
 sleep 2.0
 ok_or_die "front_camera_ros_bridge" "$front_cam_node_PID"
 
-# ------------------------------------------------------------
-# 0c) YOLO node (for detections + debug visualization)
-# ------------------------------------------------------------
-
-echo "[run_all] Starting YOLO node (/yolo/detections + /yolo_depth/image_raw)..."
-python3 "$PKG_DIR/src/cv/ROS_yolo.py" \
-  > /tmp/ROS_yolo.log 2>&1 &
-
-yolo_PID=$!
-pids+=("$yolo_PID")
-sleep 2.0
-ok_or_die "ROS_yolo" "$yolo_PID"
-
-echo "[run_all] Starting yolo_to_compressed_bridge (/cv/yolo_depth/image_raw -> /web/yolo_cam/compressed)..."
-python3 "$PKG_DIR/src/cv/image_to_compressed_bridge.py" --ros-args \
-  -p in_topic:=/yolo_depth/image_raw \
-  -p out_topic:=/web/yolo_cam/compressed \
-  -p jpeg_quality:=80 \
-  > /tmp/yolo_to_compressed_bridge.log 2>&1 &
-
-yolo_cam_bridge_PID=$!
-pids+=("$yolo_cam_bridge_PID")
-sleep 0.3
-ok_or_die "yolo_to_compressed_bridge" "$yolo_cam_bridge_PID"
-
 # ----------------------------
 # 1) Start FastAPI backend
 # ----------------------------
@@ -320,12 +295,14 @@ if [ "$MODE" = "terminal" ]; then
   echo "[run_all] Terminal mode: skipping motion nodes ✅"
 else
   echo "[run_all] Starting web_bridge (for ALL web UIs)"
-  ros2 run go2_remote_connection web_bridge &
-  pids+=("$!")
+  ros2 run go2_remote_connection web_bridge > /tmp/web_bridge.log 2>&1 &
+  WEB_BRIDGE_PID=$!
+  pids+=("$WEB_BRIDGE_PID")
 
   # optional helper if you still use it from API
-  ros2 run go2_remote_connection move_forward_meters_node &
-  pids+=("$!")
+  ros2 run go2_remote_connection move_forward_meters_node > /tmp/move_forward_meters.log 2>&1 &
+  MOVE_PID=$!
+  pids+=("$MOVE_PID")
 fi
 
 # Give them a moment to crash if they will
@@ -338,7 +315,7 @@ ok_or_die "UI server" "$UI_PID"
 echo ""
 echo "[run_all] ✅ All started."
 
-HOST_IP="$(get_best_ip)"
+HOST_IP="$(get_best_ip || true)"
 if [ -z "$HOST_IP" ]; then
   HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 fi
@@ -357,6 +334,15 @@ echo "[run_all] API: http://$HOST_IP:$API_PORT"
 echo "[run_all] Press Ctrl+C to stop everything."
 echo ""
 
-wait
-echo "[run_all] A process exited; shutting down..."
-exit 0
+set +e
+while true; do
+  for pid in "${pids[@]}"; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid"
+      rc=$?
+      echo "[run_all] Child PID $pid exited with code $rc"
+      exit "$rc"
+    fi
+  done
+  sleep 1
+done
