@@ -1,3 +1,5 @@
+# Lives in /etc/systemd/system/go2-remote-connection.service
+
 [Unit]
 Description=Go2 Remote Connection startup service
 After=network-online.target

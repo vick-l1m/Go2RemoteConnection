@@ -1,0 +1,167 @@
+<!--
+go2_joystick.html
+
+This file provides the main Go2 joystick teleoperation interface.
+It includes:
+- shared login/auth overlay
+- shared navigation and health/safety controls
+- stand/sit actions
+- dual joystick teleoperation
+- status output for commands and safety state
+
+Version 2.0
+Author: Victor Lim
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go2 Joystick Teleop</title>
+
+  <link rel="stylesheet" href="/app/static/shared.css" />
+  <script src="/app/static/shared.js"></script>
+
+  <script>
+    let latest = { lx: 0, ly: 0, rx: 0, ry: 0 };
+    let teleopTimer = null;
+    let safetyLatched = false;
+
+    window.addEventListener("DOMContentLoaded", async () => {
+      await Go2Shared.init({ defaultApi: "", showAuthButtons: true });
+      setTimeout(refreshSafetyStatus, 200);
+      initJoysticks();
+    });
+
+    async function loginAndStart() {
+      await Go2Shared.login();
+    }
+
+    async function postAction(action) {
+      const r = await Go2Shared.httpPost(`/actions/${action}`);
+      Go2Shared.setStatus(
+        r.ok ? `Action sent: ${action}` : `Action failed: ${action}`,
+        r.ok,
+        `URL: ${r.url}\n${r.text}`
+      );
+    }
+
+    async function toggleSafety() {
+      const path = safetyLatched ? "/safety/resume" : "/safety/stop";
+      const r = await Go2Shared.httpPost(path, null, { bypassCommsGate: true });
+
+      Go2Shared.setStatus(
+        r.ok ? (safetyLatched ? "RESUME sent ✅" : "STOP sent ✅") : "Safety command failed",
+        r.ok,
+        `URL: ${r.url}\n${r.text}`
+      );
+
+      await refreshSafetyStatus();
+    }
+
+    async function refreshSafetyStatus() {
+      const r = await Go2Shared.httpGet("/safety/status", { bypassCommsGate: true });
+      if (!r.ok) return;
+
+      try {
+        const data = JSON.parse(r.text);
+        safetyLatched = !!data.stop_latched;
+        Go2Shared.state.COMMS_ENABLED = !safetyLatched;
+
+        const btn = document.getElementById("safetyToggleBtn");
+        if (btn) {
+          btn.textContent = safetyLatched ? "RESUME" : "STOP";
+          btn.classList.toggle("danger", !safetyLatched);
+          btn.classList.toggle("activeMode", safetyLatched);
+        }
+      } catch (_) {}
+    }
+
+    function initJoysticks() {
+      Go2Shared.createJoystick("joyLeft", (x, y, active) => {
+        latest.lx = active ? x : 0;
+        latest.ly = active ? y : 0;
+      });
+
+      Go2Shared.createJoystick("joyRight", (x, y, active) => {
+        latest.rx = active ? x : 0;
+        latest.ry = active ? y : 0;
+      });
+
+      if (teleopTimer) clearInterval(teleopTimer);
+      teleopTimer = setInterval(sendTeleop, 120);
+    }
+
+    async function sendTeleop() {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      if (!Go2Shared.state.COMMS_ENABLED) return;
+
+      const cmd = {
+        linear_x: -latest.ly * 0.6,
+        linear_y: latest.lx * 0.6,
+        angular_z: latest.rx * 1.2,
+      };
+
+      const r = await Go2Shared.httpPost("/teleop", cmd);
+      if (!r.ok && r.status !== 0) {
+        Go2Shared.setStatus(`Teleop failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+      }
+    }
+  </script>
+</head>
+
+<body>
+  <div id="loginOverlay" class="loginOverlay">
+    <div class="loginCard">
+      <h2>Connect to Go2</h2>
+      <div class="loginForm">
+        <input id="loginBaseUrl" placeholder="http://robot-ip:8000 or https://robot.domain" />
+        <input id="loginToken" placeholder="Password" type="password" />
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#333;">
+          <input id="showPw" type="checkbox" onclick="Go2Shared.togglePasswordVisibility()" />
+          Show password
+        </label>
+        <button id="unlockBtn" onclick="loginAndStart()">Unlock</button>
+        <div id="loginMsg" class="loginMsg"></div>
+        <div class="loginTip">Tip: This password is unique per robot.</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="appRoot">
+    <div class="card">
+      <h1>Unitree Go2 – Joystick Teleop</h1>
+
+      <div class="row">
+        <input id="baseUrl" placeholder="http://<go2-ip>:8000" />
+        <button onclick="Go2Shared.checkHealth()">Health</button>
+        <button onclick="postAction('stand')">Stand</button>
+        <button onclick="postAction('sit')">Sit</button>
+        <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
+        <button onclick="Go2Shared.logout()">Logout</button>
+      </div>
+
+      <div class="joyRow">
+        <div class="joyBox">
+          <div class="joyTitle">Move (X/Y)</div>
+          <canvas id="joyLeft" class="joyCanvas"></canvas>
+        </div>
+        <div class="joyBox">
+          <div class="joyTitle">Turn</div>
+          <canvas id="joyRight" class="joyCanvas"></canvas>
+        </div>
+      </div>
+
+      <div class="status">
+        <div id="msg" class="small">Ready.</div>
+        <div id="detail" class="mono"></div>
+      </div>
+
+      <div class="small" style="margin-top:10px;">
+        STOP latches the system: teleop and actions remain blocked until RESUME.
+      </div>
+    </div>
+  </div>
+</body>
+</html>

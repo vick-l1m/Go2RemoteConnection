@@ -1,522 +1,533 @@
-/* shared.js
- * Shared helpers for Go2 web UIs:
- * - Auth/login overlay (optional, can be injected or use existing DOM)
- * - Login/logout buttons (toggleable)
- * - baseUrl/auth headers + localStorage
- * - httpGet/httpPost + health helper
- * - UI lock/unlock + status helper
- * - Terminal WebSocket helpers (xterm.js pages can use this)
- *
- * Usage:
- *   Go2Shared.init({
- *     defaultApi: "https://p2dingo-control-backend.p2agentx.com",
- *     showAuthButtons: true, // renders Login/Logout buttons into #authButtons if present
- *   });
- */
+/*
+shared.js
 
-(function () {
-  const Go2Shared = {};
+This file provides shared frontend utilities for all Go2 web pages.
+It includes:
+- login/logout handling
+- API base URL and token management
+- shared status display
+- health checks
+- GET/POST helpers
+- shared route-based nav bar injection
+- active nav highlighting
+- terminal WebSocket helper
+- shared joystick helper
 
-  // ----------------------------
-  // Config / State
-  // ----------------------------
-  Go2Shared.state = {
-    COMMS_ENABLED: true,
+Version 2.0
+Author: Victor Lim
+*/
+
+window.Go2Shared = {
+  state: {
+    API_BASE: "",
     AUTH_TOKEN: "",
-    ROBOT_BASE_URL: "",
-  };
+    AUTH_ENABLED: true,
+    COMMS_ENABLED: true,
+    SHOW_AUTH_BUTTONS: true,
+  },
 
-  Go2Shared.cfg = {
-    defaultApi: "",
-    showAuthButtons: false,
-    // localStorage keys
-    LS_URL_KEY: "go2_baseUrl",
-    LS_TOKEN_KEY: "go2_token",
-    authEnabled: true,
-  };
+  async init(opts = {}) {
+    const defaultApi = opts.defaultApi ?? window.location.origin;
+    const showAuthButtons = opts.showAuthButtons ?? true;
 
-  Go2Shared.fetchConfig = async function fetchConfig() {
+    this.state.SHOW_AUTH_BUTTONS = !!showAuthButtons;
+    this.state.API_BASE = localStorage.getItem("go2_api_base") || defaultApi || "";
+    this.state.AUTH_TOKEN = localStorage.getItem("go2_auth_token") || "";
+
+    const baseInput = document.getElementById("baseUrl");
+    if (baseInput) baseInput.value = this.normalizeBase(this.state.API_BASE);
+
+    const loginBase = document.getElementById("loginBaseUrl");
+    if (loginBase) loginBase.value = this.normalizeBase(this.state.API_BASE);
+
+    const loginToken = document.getElementById("loginToken");
+    if (loginToken) loginToken.value = this.state.AUTH_TOKEN;
+
+    this.injectNavBar();
+    this.highlightActivePage();
+
+    await this.fetchConfigMaybe();
+    this.updateAuthUi();
+  },
+
+  normalizeBase(base) {
+    base = (base || "").trim().replace(/\/+$/, "");
+
+    if (!base) {
+      return window.location.origin;
+    }
+
+    if (!/^https?:\/\//i.test(base)) {
+      base = "http://" + base;
+    }
+
     try {
-      const r = await fetch(Go2Shared.baseUrl() + "/config", { cache: "no-store" });
-      if (!r.ok) return null;
-  
-      const cfg = await r.json();
-  
-      if (cfg && typeof cfg.auth_enabled === "boolean") {
-        Go2Shared.cfg.authEnabled = cfg.auth_enabled;
+      const u = new URL(base);
+
+      // If user entered only host/IP with no port, default to 8000
+      if (!u.port) {
+        u.port = "8000";
       }
-  
-      return cfg;
-    } catch {
-      return null;
+
+      return u.origin;
+    } catch (_) {
+      return base;
     }
-  };
+  },
 
-  // ----------------------------
-  // DOM helpers (safe)
-  // ----------------------------
-  function $(id) { return document.getElementById(id); }
-  function setText(id, text) { const el = $(id); if (el) el.textContent = text; }
-  function setHtml(id, html) { const el = $(id); if (el) el.innerHTML = html; }
+  apiBase() {
+    const baseInput = document.getElementById("baseUrl");
+    const base = this.normalizeBase(baseInput ? baseInput.value : this.state.API_BASE);
+    this.state.API_BASE = base;
+    if (base) localStorage.setItem("go2_api_base", base);
+    return base;
+  },
 
-  // ----------------------------
-  // URL + auth
-  // ----------------------------
-  Go2Shared.baseUrl = function baseUrl() {
-    const s = Go2Shared.state;
-    const input = $("baseUrl");
-    return (s.ROBOT_BASE_URL || (input ? input.value : "") || "")
-      .trim()
-      .replace(/\/+$/, "");
-  };
+  apiWsBase() {
+    const base = this.apiBase();
+    if (!base) return "";
+    if (base.startsWith("https://")) return "wss://" + base.slice("https://".length);
+    if (base.startsWith("http://")) return "ws://" + base.slice("http://".length);
+    return base;
+  },
 
-  Go2Shared.authHeaders = function authHeaders() {
-    if (!Go2Shared.cfg.authEnabled) return {};
-    const t = Go2Shared.state.AUTH_TOKEN;
-    return t ? { Authorization: `Bearer ${t}` } : {};
-  };
-  
-  Go2Shared.apiWsBase = function apiWsBase() {
-    const api = Go2Shared.baseUrl();               // e.g. http://192.168.x.x:8000 or https://...
-    const u = new URL(api);
-    const wsProto = u.protocol === "https:" ? "wss" : "ws";
-    return `${wsProto}://${u.host}`;
-  };
-
-  Go2Shared.computeDefaultApi = function computeDefaultApi() {
-    // If UI is opened as http://192.168.x.x:8081/... then hostname is 192.168.x.x
-    const host = window.location.hostname; // no port
-    const proto = window.location.protocol; // "http:" or "https:"
-    const apiPort = 8000;
-    return `${proto}//${host}:${apiPort}`;
-  };
-
-
-  // ----------------------------
-  // UI lock/unlock
-  // ----------------------------
-  Go2Shared.lockUI = function lockUI() {
-    const overlay = $("loginOverlay");
-    if (overlay) overlay.style.display = "flex";
-
-    const root = $("appRoot");
-    if (root) {
-      root.style.filter = "blur(6px)";
-      root.style.pointerEvents = "none";
-      root.style.userSelect = "none";
+  authHeaders() {
+    const headers = { "Content-Type": "application/json" };
+    if (this.state.AUTH_ENABLED && this.state.AUTH_TOKEN) {
+      headers["Authorization"] = `Bearer ${this.state.AUTH_TOKEN}`;
     }
-  };
+    return headers;
+  },
 
-  Go2Shared.unlockUI = function unlockUI() {
-    const overlay = $("loginOverlay");
-    if (overlay) overlay.style.display = "none";
+  setStatus(message, ok = true, detail = "") {
+    const msgEl = document.getElementById("msg");
+    const detailEl = document.getElementById("detail");
 
-    const root = $("appRoot");
-    if (root) {
-      root.style.filter = "none";
-      root.style.pointerEvents = "auto";
-      root.style.userSelect = "auto";
-    }
-  };
-
-  // ----------------------------
-  // localStorage
-  // ----------------------------
-  Go2Shared.saveAuth = function saveAuth() {
-    const { LS_URL_KEY, LS_TOKEN_KEY } = Go2Shared.cfg;
-    localStorage.setItem(LS_URL_KEY, Go2Shared.state.ROBOT_BASE_URL);
-    localStorage.setItem(LS_TOKEN_KEY, Go2Shared.state.AUTH_TOKEN);
-  };
-
-  Go2Shared.loadAuth = function loadAuth() {
-    const { LS_URL_KEY, LS_TOKEN_KEY } = Go2Shared.cfg;
-    return {
-      u: localStorage.getItem(LS_URL_KEY) || "",
-      t: localStorage.getItem(LS_TOKEN_KEY) || "",
-    };
-  };
-
-  Go2Shared.clearAuth = function clearAuth() {
-    const { LS_URL_KEY, LS_TOKEN_KEY } = Go2Shared.cfg;
-    localStorage.removeItem(LS_URL_KEY);
-    localStorage.removeItem(LS_TOKEN_KEY);
-  };
-
-  Go2Shared.ensureLoggedIn = function ensureLoggedIn() {
-    const s = Go2Shared.state;
-    
-    if (!s.ROBOT_BASE_URL) {
-      const msg = $("loginMsg");
-      if (msg) msg.textContent = "Please enter robot URL.";
-      Go2Shared.lockUI();
-      return false;
-    }
-
-    if (Go2Shared.cfg.authEnabled && !s.AUTH_TOKEN) {
-      const msg = $("loginMsg");
-      if (msg) msg.textContent = "Please log in.";
-      Go2Shared.lockUI();
-      return false;
-    }
-    return true;
-  };
-
-  // ----------------------------
-  // Status helper (shared “msg/detail/apiHost” pattern)
-  // ----------------------------
-  Go2Shared.setStatus = function setStatus(text, ok = true, detail = "") {
-    const msg = $("msg");
-    const detailEl = $("detail");
-    if (msg) {
-      msg.textContent = text;
-      msg.style.color = ok ? "#0a7a0a" : "#b00020";
-    }
+    if (msgEl) msgEl.textContent = message || "";
     if (detailEl) detailEl.textContent = detail || "";
 
-    const apiHost = $("apiHost");
-    if (apiHost) apiHost.textContent = Go2Shared.baseUrl();
-  };
-
-  // ----------------------------
-  // Comms gate (used by STOP latch logic)
-  // ----------------------------
-  Go2Shared.isAlwaysAllowed = function isAlwaysAllowed(path) {
-    return path === "/health" || path.startsWith("/safety/");
-  };
-
-  Go2Shared.commsAllowed = function commsAllowed(path, opts = {}) {
-    if (opts.bypassCommsGate) return true;
-    if (Go2Shared.isAlwaysAllowed(path)) return true;
-    return Go2Shared.state.COMMS_ENABLED;
-  };
-
-  // ----------------------------
-  // HTTP helpers
-  // ----------------------------
-  Go2Shared.httpGet = async function httpGet(path, opts = {}) {
-    const url = Go2Shared.baseUrl() + path;
-  
-    if (!Go2Shared.commsAllowed(path, opts)) {
-      return { ok: false, status: 0, text: "Comms disabled", url };
+    if (msgEl) {
+      msgEl.style.color = ok ? "#1f5f2c" : "#b00020";
     }
-  
-    const r = await fetch(url, { headers: Go2Shared.authHeaders() });
-    const t = await r.text();
-  
-    // Only force relogin if auth is enabled
-    if (Go2Shared.cfg.authEnabled && (r.status === 401 || r.status === 403)) {
-      Go2Shared.state.AUTH_TOKEN = "";
-      Go2Shared.clearAuth();
-      Go2Shared.lockUI();
-      const msg = $("loginMsg");
-      if (msg) msg.textContent = "Invalid token. Please log in again.";
+  },
+
+  injectNavBar() {
+    const root = document.getElementById("pageNavMount") || document.querySelector(".card");
+    if (!root) return;
+    if (document.querySelector(".pageNav")) return;
+
+    const nav = document.createElement("div");
+    nav.className = "pageNav";
+    nav.innerHTML = `
+      <a class="navBtn" href="/">Home</a>
+      <a class="navBtn" href="/joystick">Joysticks</a>
+      <a class="navBtn" href="/movement">Movement</a>
+      <a class="navBtn" href="/map">Map</a>
+      <a class="navBtn" href="/terminal">Terminal</a>
+      <a class="navBtn" href="/other">Other</a>
+      <a class="navBtn" href="/camera">Camera</a>
+    `;
+
+    if (root.id === "pageNavMount") {
+      root.appendChild(nav);
+    } else {
+      const h1 = root.querySelector("h1");
+      if (h1 && h1.nextSibling) root.insertBefore(nav, h1.nextSibling);
+      else root.appendChild(nav);
     }
-  
-    return { ok: r.ok, status: r.status, text: t, url };
-  };
+  },
 
-  Go2Shared.httpPost = async function httpPost(path, json = null, opts = {}) {
-    const url = Go2Shared.baseUrl() + path;
-
-    if (!Go2Shared.commsAllowed(path, opts)) {
-      return { ok: false, status: 0, text: "Comms disabled", url };
-    }
-
-    const headers = { ...Go2Shared.authHeaders() };
-    if (json !== null) headers["Content-Type"] = "application/json";
-
-    const r = await fetch(url, {
-      method: "POST",
-      headers,
-      body: json !== null ? JSON.stringify(json) : null,
+  highlightActivePage() {
+    const current = location.pathname.replace(/\/+$/, "") || "/";
+    document.querySelectorAll(".pageNav .navBtn").forEach((a) => {
+      const href = (a.getAttribute("href") || "").replace(/\/+$/, "") || "/";
+      a.classList.toggle("active", href === current);
     });
-    const t = await r.text();
+  },
 
-    if (r.status === 401 || r.status === 403) {
-      Go2Shared.state.AUTH_TOKEN = "";
-      Go2Shared.state.ROBOT_BASE_URL = "";
-      Go2Shared.clearAuth();
-      Go2Shared.lockUI();
-      const msg = $("loginMsg");
-      if (msg) msg.textContent = "Invalid token. Please log in again.";
+  updateAuthUi() {
+    const overlay = document.getElementById("loginOverlay");
+    const appRoot = document.getElementById("appRoot");
+
+    if (!this.state.AUTH_ENABLED) {
+      if (overlay) overlay.style.display = "none";
+      if (appRoot) appRoot.classList.remove("appLocked");
+      return;
     }
 
-    return { ok: r.ok, status: r.status, text: t, url };
-  };
+    const loggedIn = !!this.state.AUTH_TOKEN;
 
-  Go2Shared.checkHealth = async function checkHealth() {
-    Go2Shared.setStatus("Checking /health...");
-    const r = await Go2Shared.httpGet("/health");
-    Go2Shared.setStatus(
-      r.ok ? "Health OK ✅" : `Health failed (HTTP ${r.status})`,
+    if (overlay) overlay.style.display = loggedIn ? "none" : "flex";
+    if (appRoot) {
+      if (loggedIn) appRoot.classList.remove("appLocked");
+      else appRoot.classList.add("appLocked");
+    }
+  },
+
+  ensureLoggedIn() {
+    if (!this.state.AUTH_ENABLED) return true;
+    if (this.state.AUTH_TOKEN) return true;
+
+    this.setStatus("Login required", false);
+    const overlay = document.getElementById("loginOverlay");
+    if (overlay) overlay.style.display = "flex";
+    return false;
+  },
+
+  async fetchConfigMaybe() {
+    const base = this.apiBase();
+    if (!base) return;
+
+    try {
+      const r = await fetch(`${base}/config`, { method: "GET" });
+      if (!r.ok) return;
+      const data = await r.json();
+      if (typeof data.auth_enabled === "boolean") {
+        this.state.AUTH_ENABLED = data.auth_enabled;
+      }
+    } catch (_) {}
+  },
+
+  async login() {
+    const baseInput = document.getElementById("loginBaseUrl");
+    const tokenInput = document.getElementById("loginToken");
+    const msg = document.getElementById("loginMsg");
+
+    const base = this.normalizeBase(baseInput ? baseInput.value : "");
+    const token = (tokenInput ? tokenInput.value : "").trim();
+
+    this.state.API_BASE = base;
+    this.state.AUTH_TOKEN = token;
+
+    if (base) localStorage.setItem("go2_api_base", base);
+    else localStorage.removeItem("go2_api_base");
+
+    if (token) localStorage.setItem("go2_auth_token", token);
+    else localStorage.removeItem("go2_auth_token");
+
+    const mainBase = document.getElementById("baseUrl");
+    if (mainBase) mainBase.value = base;
+
+    await this.fetchConfigMaybe();
+
+    if (!base) {
+      if (msg) msg.textContent = "Enter a base URL.";
+      this.updateAuthUi();
+      return false;
+    }
+
+    if (this.state.AUTH_ENABLED && !token) {
+      if (msg) msg.textContent = "Enter the robot password.";
+      this.updateAuthUi();
+      return false;
+    }
+
+    const r = await this.httpGet("/health", { bypassCommsGate: true, suppressStatus: true });
+    if (!r.ok) {
+      if (msg) msg.textContent = `Connection failed (${r.status || "network"})`;
+      this.setStatus("Login failed", false, `URL: ${r.url}\n${r.text}`);
+      this.updateAuthUi();
+      return false;
+    }
+
+    if (msg) msg.textContent = "";
+    this.setStatus("Connected ✅", true);
+    this.updateAuthUi();
+    return true;
+  },
+
+  logout() {
+    this.state.AUTH_TOKEN = "";
+    localStorage.removeItem("go2_auth_token");
+    this.updateAuthUi();
+    this.setStatus("Logged out", true);
+
+    const tokenInput = document.getElementById("loginToken");
+    if (tokenInput) tokenInput.value = "";
+  },
+
+  togglePasswordVisibility() {
+    const input = document.getElementById("loginToken");
+    if (!input) return;
+    input.type = input.type === "password" ? "text" : "password";
+  },
+
+  async checkHealth() {
+    const r = await this.httpGet("/health", { bypassCommsGate: true });
+    this.setStatus(
+      r.ok ? "Health OK ✅" : `Health failed (${r.status || "network"})`,
       r.ok,
       `URL: ${r.url}\n${r.text}`
     );
     return r;
-  };
+  },
 
-  // ----------------------------
-  // Login / Logout
-  // ----------------------------
-  Go2Shared.login = async function login() {
-    const msg = $("loginMsg");
-    if (msg) msg.textContent = "";
+  async httpGet(path, opts = {}) {
+    const { bypassCommsGate = false, suppressStatus = false } = opts;
 
-    const urlEl = $("loginBaseUrl");
-    const tokenEl = $("loginToken");
-
-    const url = urlEl ? urlEl.value.trim().replace(/\/+$/, "") : "";
-    const token = tokenEl ? tokenEl.value.trim() : "";
-
-    if (!url) {
-      if (msg) msg.textContent = "Please enter robot URL.";
-      Go2Shared.lockUI();
-      return;
-    }
-    if (Go2Shared.cfg.authEnabled && !token) {
-      if (msg) msg.textContent = "Please enter robot URL and password.";
-      Go2Shared.lockUI();
-      return;
+    if (!bypassCommsGate && !this.state.COMMS_ENABLED) {
+      return { ok: false, status: 0, text: "Comms disabled by safety latch", url: path };
     }
 
-    // set state
-    Go2Shared.state.ROBOT_BASE_URL = url;
-    Go2Shared.state.AUTH_TOKEN = token;
+    const base = this.apiBase();
+    const url = `${base}${path}`;
 
-    // reflect to main input
-    const baseInput = $("baseUrl");
-    if (baseInput) baseInput.value = url;
-    setText("apiHost", url);
-
-    const r = await Go2Shared.httpGet("/health").catch((e) => ({
-      ok: false, status: 0, text: String(e), url: Go2Shared.baseUrl() + "/health"
-    }));
-
-    if (!r.ok) {
-      if (msg) {
-        msg.textContent =
-          (r.status === 401 || r.status === 403) ? "Incorrect token entered."
-          : `Login failed (HTTP ${r.status})`;
-      }
-      Go2Shared.state.AUTH_TOKEN = "";
-      Go2Shared.state.ROBOT_BASE_URL = "";
-      Go2Shared.clearAuth();
-      Go2Shared.lockUI();
-      return;
-    }
-
-    Go2Shared.saveAuth();
-    Go2Shared.unlockUI();
-    Go2Shared.setStatus("Unlocked ✅", true);
-  };
-
-  Go2Shared.logout = function logout() {
-    Go2Shared.state.AUTH_TOKEN = "";
-    Go2Shared.state.ROBOT_BASE_URL = "";
-    Go2Shared.clearAuth();
-
-    const tokenEl = $("loginToken");
-    if (tokenEl) tokenEl.value = "";
-
-    const cb = $("showPw");
-    if (cb) cb.checked = false;
-    if (tokenEl) tokenEl.type = "password";
-
-    Go2Shared.lockUI();
-    Go2Shared.setStatus("Logged out.", true);
-  };
-
-  Go2Shared.togglePasswordVisibility = function togglePasswordVisibility() {
-    const pw = $("loginToken");
-    const cb = $("showPw");
-    if (!pw || !cb) return;
-    pw.type = cb.checked ? "text" : "password";
-  };
-
-  Go2Shared.wireEnterToUnlock = function wireEnterToUnlock() {
-    const urlEl = $("loginBaseUrl");
-    const passEl = $("loginToken");
-    const btn = $("unlockBtn");
-
-    const handler = (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        if (btn) btn.click();
-        else Go2Shared.login();
-      }
-    };
-
-    if (urlEl) urlEl.addEventListener("keydown", handler);
-    if (passEl) passEl.addEventListener("keydown", handler);
-  };
-
-  // ----------------------------
-  // Optional: render Login/Logout buttons into #authButtons
-  // (toggleable via cfg.showAuthButtons)
-  // ----------------------------
-  Go2Shared.renderAuthButtons = function renderAuthButtons() {
-    if (!Go2Shared.cfg.showAuthButtons) return;
-
-    const host = $("authButtons");
-    if (!host) return;
-
-    host.innerHTML = `
-      <button id="loginBtnInline">Login</button>
-      <button id="logoutBtnInline">Logout</button>
-    `;
-
-    $("loginBtnInline")?.addEventListener("click", () => Go2Shared.lockUI());
-    $("logoutBtnInline")?.addEventListener("click", () => Go2Shared.logout());
-  };
-
-  // ----------------------------
-  // Auto-init (load remembered auth, set default URL, lock/unlock)
-  // ----------------------------
-  Go2Shared.init = async function init({ defaultApi = "", showAuthButtons = false } = {}) {
-    if (!defaultApi) defaultApi = Go2Shared.computeDefaultApi();
-  
-    Go2Shared.cfg.defaultApi = defaultApi;
-    Go2Shared.cfg.showAuthButtons = !!showAuthButtons;
-  
-    setText("uiHost", location.origin);
-    
-    Go2Shared.injectNavBar();
-    Go2Shared.highlightActivePage();
-    
-    // Fill inputs (no hardcoded value in HTML needed)
-    const loginUrl = $("loginBaseUrl");
-    const baseInput = $("baseUrl");
-    if (loginUrl) loginUrl.value = defaultApi;
-    if (baseInput) baseInput.value = defaultApi;
-    setText("apiHost", defaultApi);
-  
-    Go2Shared.renderAuthButtons();
-    Go2Shared.wireEnterToUnlock();
-  
-    // Make sure baseUrl() works for /config fetch
-    Go2Shared.state.ROBOT_BASE_URL = defaultApi;
-  
-    const cfg = await Go2Shared.fetchConfig();
-    if (cfg && typeof cfg.auth_enabled === "boolean") {
-      Go2Shared.cfg.authEnabled = cfg.auth_enabled;
-    }
-  
-    // ✅ Set dataset for CSS rules
-    document.documentElement.dataset.authEnabled = Go2Shared.cfg.authEnabled ? "1" : "0";
-
-    // ✅ If auth disabled, never show overlay
-    if (!Go2Shared.cfg.authEnabled) {
-      Go2Shared.state.AUTH_TOKEN = "";
-      Go2Shared.unlockUI();                 // hide overlay + unlock
-      Go2Shared.injectNavBar();             // still show nav
-      Go2Shared.highlightActivePage();
-      return;
-    }
-  
-    // Auth enabled: try remembered login
-    const { u, t } = Go2Shared.loadAuth();
-    if (u && t) {
-      Go2Shared.state.ROBOT_BASE_URL = u;
-      Go2Shared.state.AUTH_TOKEN = t;
-      if (loginUrl) loginUrl.value = u;
-      const loginToken = $("loginToken");
-      if (loginToken) loginToken.value = t;
-      if (baseInput) baseInput.value = u;
-      setText("apiHost", u);
-  
-      const r = await Go2Shared.httpGet("/health").catch(() => ({ ok: false }));
-      if (r.ok) {
-        Go2Shared.unlockUI();
-        Go2Shared.setStatus("Unlocked ✅ (remembered)", true);
-        return;
-      }
-    }
-
-    // No remembered login or it failed => lock
-    Go2Shared.lockUI();
-  };
-
-  // ----------------------------
-  // Terminal WS helpers (xterm page can build on this)
-  // ----------------------------
-  Go2Shared.connectTerminalWs = function connectTerminalWs(st, n, onOpenCb) {
-    if (!st || !st.term) return;
-
-    // If auth enabled, require token; if disabled, connect without it
-    let wsUrl = `${Go2Shared.apiWsBase()}/ws/terminal`;
-
-    if (Go2Shared.cfg.authEnabled) {
-      if (!Go2Shared.state.AUTH_TOKEN) {
-        st.term.write("\r\n[Login required]\r\n");
-        return;
-      }
-      wsUrl += `?token=${encodeURIComponent(Go2Shared.state.AUTH_TOKEN)}`;
-    }
-
-    // already connected/connecting?
-    if (st.ws && (st.ws.readyState === WebSocket.OPEN || st.ws.readyState === WebSocket.CONNECTING)) return;
-
-    st.ws = new WebSocket(wsUrl);
-
-    st.ws.onopen = () => {
-      st.term.write(`\r\n[Connected to Go2 terminal ${n}]\r\n`, () => {
-        onOpenCb && onOpenCb();
-        st.term.focus();
+    try {
+      const r = await fetch(url, {
+        method: "GET",
+        headers: this.authHeaders(),
       });
-    };
 
-    st.ws.onmessage = (e) => {
-      st.term.write(e.data);
-    };
+      const text = await r.text();
 
-    st.ws.onclose = () => {
-      st.term && st.term.write("\r\n[Terminal disconnected]\r\n");
-      st.ws = null;
-    };
+      if (!suppressStatus && !r.ok) {
+        this.setStatus(`GET failed (${r.status})`, false, `URL: ${url}\n${text}`);
+      }
 
-    st.ws.onerror = () => {
-      st.term && st.term.write("\r\n[Terminal error]\r\n");
-    };
-  };
+      return { ok: r.ok, status: r.status, text, url };
+    } catch (err) {
+      if (!suppressStatus) {
+        this.setStatus("GET network error", false, `URL: ${url}\n${String(err)}`);
+      }
+      return { ok: false, status: 0, text: String(err), url };
+    }
+  },
 
-  // ----------------------------
-  // Navigation bar + active page highlight
-  // ----------------------------
-  Go2Shared.highlightActivePage = function highlightActivePage() {
-    const path = location.pathname.split("/").pop() || "";
-    document.querySelectorAll(".pageNav .navBtn").forEach(a => {
-      const href = (a.getAttribute("href") || "").split("/").pop();
-      a.classList.toggle("active", href === path);
+  async httpPost(path, body = null, opts = {}) {
+    const { bypassCommsGate = false, suppressStatus = false } = opts;
+
+    if (!bypassCommsGate && !this.state.COMMS_ENABLED) {
+      return { ok: false, status: 0, text: "Comms disabled by safety latch", url: path };
+    }
+
+    const base = this.apiBase();
+    const url = `${base}${path}`;
+
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: this.authHeaders(),
+        body: body == null ? null : JSON.stringify(body),
+      });
+
+      const text = await r.text();
+
+      if (!suppressStatus && !r.ok) {
+        this.setStatus(`POST failed (${r.status})`, false, `URL: ${url}\n${text}`);
+      }
+
+      return { ok: r.ok, status: r.status, text, url };
+    } catch (err) {
+      if (!suppressStatus) {
+        this.setStatus("POST network error", false, `URL: ${url}\n${String(err)}`);
+      }
+      return { ok: false, status: 0, text: String(err), url };
+    }
+  },
+
+  connectTerminalWs({ containerId, statusId, TerminalCtor, FitAddonCtor }) {
+    const container = document.getElementById(containerId);
+    const statusEl = document.getElementById(statusId);
+
+    if (!container) {
+      this.setStatus(`Missing terminal container: ${containerId}`, false);
+      return null;
+    }
+
+    const term = new TerminalCtor({
+      cursorBlink: true,
+      convertEol: true,
+      scrollback: 2000,
+      fontSize: 13,
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      theme: {
+        background: "#0f0f0f",
+      },
     });
-  };
 
-  Go2Shared.injectNavBar = function injectNavBar() {
-    const card = document.querySelector("#appRoot .card");
-    if (!card) return;
-  
-    if (card.querySelector(".pageNav")) return;
-  
-    const nav = document.createElement("div");
-    nav.className = "pageNav";
-    nav.innerHTML = `
-      <a class="navBtn" href="/app/go2_joystick.html">Joysticks</a>
-      <a class="navBtn" href="/app/go2_movement_controller.html">Movement</a>
-      <a class="navBtn" href="/app/go2_map_viewer.html">Map</a>
-      <a class="navBtn" href="/app/go2_terminal_only.html">Terminal</a>
-      <a class="navBtn" href="/app/go2_other.html">Other</a>
-      <a class="navBtn" href="/app/go2_front_camera.html">Camera</a>
-`   ;
-  
-    const h1 = card.querySelector("h1");
-    if (h1 && h1.nextSibling) card.insertBefore(nav, h1.nextSibling);
-    else card.prepend(nav);
-  
-    Go2Shared.highlightActivePage();
-  };
+    const fitAddon = new FitAddonCtor();
+    term.loadAddon(fitAddon);
+    term.open(container);
+    fitAddon.fit();
 
-  // Expose
-  window.Go2Shared = Go2Shared;
-})();
+    const token = encodeURIComponent(this.state.AUTH_TOKEN || "");
+    const ws = new WebSocket(`${this.apiWsBase()}/ws/terminal?token=${token}`);
 
+    ws.onopen = () => {
+      if (statusEl) statusEl.textContent = "Connected";
+      term.writeln("\r\n[connected]\r\n");
+      fitAddon.fit();
+      try {
+        ws.send(JSON.stringify({
+          cols: term.cols,
+          rows: term.rows,
+          kind: "resize",
+        }));
+      } catch (_) {}
+    };
 
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === "string") {
+        term.write(ev.data);
+      }
+    };
 
+    ws.onclose = (ev) => {
+      if (statusEl) statusEl.textContent = `Closed (${ev.code})`;
+      term.writeln(`\r\n[closed ${ev.code}]\r\n`);
+    };
+
+    ws.onerror = () => {
+      if (statusEl) statusEl.textContent = "Error";
+      term.writeln("\r\n[websocket error]\r\n");
+    };
+
+    term.onData((data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(data);
+      }
+    });
+
+    function sendResize() {
+      try {
+        fitAddon.fit();
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            cols: term.cols,
+            rows: term.rows,
+            kind: "resize",
+          }));
+        }
+      } catch (_) {}
+    }
+
+    const resizeHandler = () => sendResize();
+    window.addEventListener("resize", resizeHandler);
+    setTimeout(sendResize, 100);
+
+    return {
+      term,
+      fitAddon,
+      ws,
+      close() {
+        window.removeEventListener("resize", resizeHandler);
+        try { ws.close(); } catch (_) {}
+        try { term.dispose(); } catch (_) {}
+      },
+    };
+  },
+
+  createJoystick(canvasId, onMove) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) {
+      this.setStatus(`Missing joystick canvas: ${canvasId}`, false);
+      return null;
+    }
+
+    const ctx = canvas.getContext("2d");
+
+    let active = false;
+    let cx = 0;
+    let cy = 0;
+    let knobX = 0;
+    let knobY = 0;
+    let radius = 0;
+
+    function resize() {
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+
+      canvas.width = rect.width * window.devicePixelRatio;
+      canvas.height = rect.height * window.devicePixelRatio;
+      ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+
+      cx = rect.width / 2;
+      cy = rect.height / 2;
+      radius = Math.min(rect.width, rect.height) * 0.32;
+
+      if (!active) {
+        knobX = cx;
+        knobY = cy;
+      }
+
+      draw();
+    }
+
+    function draw() {
+      const rect = canvas.getBoundingClientRect();
+      ctx.clearRect(0, 0, rect.width, rect.height);
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = "#bbb";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(knobX, knobY, radius * 0.32, 0, Math.PI * 2);
+      ctx.fillStyle = "#d9e8ff";
+      ctx.strokeStyle = "#7aa7ff";
+      ctx.lineWidth = 2;
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    function updateFromEvent(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+
+      const dx = x - cx;
+      const dy = y - cy;
+      const dist = Math.hypot(dx, dy);
+
+      let nx = dx;
+      let ny = dy;
+
+      if (dist > radius) {
+        nx = (dx / dist) * radius;
+        ny = (dy / dist) * radius;
+      }
+
+      knobX = cx + nx;
+      knobY = cy + ny;
+      draw();
+
+      onMove(nx / radius, ny / radius, true);
+    }
+
+    function reset() {
+      active = false;
+      knobX = cx;
+      knobY = cy;
+      draw();
+      onMove(0, 0, false);
+    }
+
+    canvas.addEventListener("pointerdown", (e) => {
+      active = true;
+      canvas.setPointerCapture(e.pointerId);
+      updateFromEvent(e.clientX, e.clientY);
+    });
+
+    canvas.addEventListener("pointermove", (e) => {
+      if (!active) return;
+      updateFromEvent(e.clientX, e.clientY);
+    });
+
+    canvas.addEventListener("pointerup", reset);
+    canvas.addEventListener("pointercancel", reset);
+
+    window.addEventListener("resize", resize);
+    resize();
+
+    return {
+      canvas,
+      resize,
+      reset,
+      destroy() {
+        window.removeEventListener("resize", resize);
+      },
+    };
+  },
+};

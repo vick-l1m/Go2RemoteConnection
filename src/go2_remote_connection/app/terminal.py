@@ -1,25 +1,33 @@
+"""
+terminal.py
+
+Terminal backend implementation for the Go2 web UI.
+This module manages PTY-backed shell sessions and exposes a websocket handler
+used by the terminal route.
+
+Version 2.0
+Author: Victor Lim
+"""
+
 import os
 import pty
-import asyncio
 import json
 import fcntl
+import signal
 import struct
 import termios
-import hmac
+import asyncio
+
 from fastapi import WebSocket, WebSocketDisconnect
 
-# Auth toggle (same convention as main.py)
-AUTH_ENABLED = os.getenv("GO2_AUTH_ENABLED", "1") not in ("0", "false", "False")
+from app.services.websocket_auth import authenticate_websocket
 
-# Token is only required/used if AUTH_ENABLED is True
-GO2_API_TOKEN = (os.getenv("GO2_API_TOKEN") or "").strip()
 
 class TerminalSession:
     def __init__(self):
         self.pid, self.fd = pty.fork()
 
         if self.pid == 0:
-            # Child process
             os.environ["TERM"] = "xterm-256color"
             os.environ["COLORTERM"] = "truecolor"
             os.environ["LANG"] = os.environ.get("LANG", "C.UTF-8")
@@ -29,7 +37,6 @@ class TerminalSession:
                 "bash",
                 "-lc",
                 r"""
-                # Source ROS / overlays
                 if [ -f /opt/ros/foxy/setup.bash ]; then
                   source /opt/ros/foxy/setup.bash
                 elif [ -f /opt/ros/humble/setup.bash ]; then
@@ -46,10 +53,7 @@ class TerminalSession:
                   source ~/go2_ws/Go2RemoteConnection/install/setup.bash
                 fi
 
-                # Nice-to-have: force color for ls if not already configured
                 alias ls='ls --color=auto' 2>/dev/null || true
-
-                # Start in go2_ws
                 cd ~/go2_ws 2>/dev/null || cd ~
 
                 exec bash -i
@@ -61,7 +65,7 @@ class TerminalSession:
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, winsz)
 
     async def read_loop(self, websocket: WebSocket):
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             while True:
                 data = await loop.run_in_executor(None, os.read, self.fd, 4096)
@@ -74,26 +78,14 @@ class TerminalSession:
     async def write(self, data: str):
         os.write(self.fd, data.encode())
 
+
 async def terminal_ws(websocket: WebSocket):
-    # Authenticate BEFORE accept (only if enabled)
-    token = (websocket.query_params.get("token") or "").strip()
-
-    if AUTH_ENABLED:
-        if not GO2_API_TOKEN:
-            # server misconfigured for auth-enabled mode
-            await websocket.close(code=1011)
-            return
-
-        if not hmac.compare_digest(token, GO2_API_TOKEN):
-            # policy violation / auth failed
-            await websocket.close(code=1008)
-            return
+    if not await authenticate_websocket(websocket):
+        return
 
     await websocket.accept()
 
     term = TerminalSession()
-
-    # Set a sane default size immediately (helps clear + prompt wrapping)
     term.resize(rows=30, cols=120)
 
     reader = asyncio.create_task(term.read_loop(websocket))
@@ -102,10 +94,18 @@ async def terminal_ws(websocket: WebSocket):
         while True:
             msg = await websocket.receive_text()
 
-            # Handle resize JSON control message
             if msg and msg[:1] == "{":
                 try:
                     obj = json.loads(msg)
+
+                    if obj.get("kind") == "resize":
+                        cols = int(obj.get("cols", 120))
+                        rows = int(obj.get("rows", 30))
+                        cols = max(20, min(cols, 400))
+                        rows = max(5, min(rows, 200))
+                        term.resize(rows=rows, cols=cols)
+                        continue
+
                     if "resize" in obj:
                         cols = int(obj["resize"].get("cols", 120))
                         rows = int(obj["resize"].get("rows", 30))
@@ -121,6 +121,16 @@ async def terminal_ws(websocket: WebSocket):
     except WebSocketDisconnect:
         reader.cancel()
     finally:
+        try:
+            reader.cancel()
+        except Exception:
+            pass
+
+        try:
+            os.kill(term.pid, signal.SIGHUP)
+        except Exception:
+            pass
+
         try:
             os.close(term.fd)
         except Exception:

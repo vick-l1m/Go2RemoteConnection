@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# This is the same script as start_remote_connection.sh but we host on a different
+# port on the Go2. This will be used in the file that lives on the Go2:
+#    /etc/systemd/system/go2-remote-connection.service
+
 set -eo pipefail
 # NOTE: we intentionally do NOT enable 'set -u' until after sourcing ROS
 
@@ -16,7 +21,7 @@ else
 fi
 
 API_HOST="0.0.0.0"
-API_PORT="8000"
+API_PORT="8100"
 
 # Only override HOME under systemd (when HOME may be empty)
 if [ -z "${HOME:-}" ] || [ "$HOME" = "/" ]; then
@@ -144,9 +149,7 @@ export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 # ----------------------------
 # Turn on/off Authentication
 # ----------------------------
-export GO2_AUTH_ENABLED=0
-export GO2_API_TOKEN=""
-echo "[run_all] 🔓 Auth disabled (GO2_AUTH_ENABLED=0)"
+export GO2_AUTH_ENABLED="${GO2_AUTH_ENABLED:-0}"
 
 # ----------------------------
 # Load Go2 API token (ONLY if auth is enabled)
@@ -351,24 +354,7 @@ echo "[run_all] API:  http://$HOST_IP:$API_PORT"
 echo "[run_all] Press Ctrl+C to stop everything."
 echo ""
 
-
 set +e
-echo "See all logs with:
-sed -n '1,200p' /tmp/go2_fastapi.log
-sed -n '1,200p' /tmp/web_bridge.log
-sed -n '1,200p' /tmp/move_forward_meters.log
-sed -n '1,200p' /tmp/flatten_l1_data.log
-sed -n '1,200p' /tmp/front_camera_capture.log
-sed -n '1,200p' /tmp/front_camera_node.log
-"
-echo "Or follow them live with:
-tail -f /tmp/go2_fastapi.log
-tail -f /tmp/web_bridge.log
-tail -f /tmp/move_forward_meters.log
-tail -f /tmp/flatten_l1_data.log
-tail -f /tmp/front_camera_capture.log
-tail -f /tmp/front_camera_node.log
-"
 
 while true; do
   for pid in "${pids[@]}"; do
@@ -385,3 +371,6 @@ while true; do
   done
   sleep 1
 done
+
+echo "[run_all] A process exited; shutting down..."
+exit 0

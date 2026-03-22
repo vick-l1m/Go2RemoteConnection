@@ -1,0 +1,104 @@
+<!--
+index.html
+
+This file provides the landing page for the Go2 web app.
+It includes:
+- links to all major interfaces
+- shared styling
+- route-based navigation targets
+
+Version 2.0
+Author: Victor Lim
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go2 Control Hub</title>
+
+  <link rel="stylesheet" href="/app/static/shared.css" />
+  <script src="/app/static/shared.js"></script>
+
+  <style>
+    .homeGrid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .homeCard {
+      display: block;
+      border: 1px solid var(--soft-border);
+      border-radius: var(--radius);
+      padding: 14px;
+      background: #fff;
+      text-decoration: none;
+      color: inherit;
+    }
+    .homeCard h2 {
+      margin: 0 0 8px;
+      font-size: 17px;
+    }
+    .homeCard p {
+      margin: 0;
+      font-size: 14px;
+      color: #555;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <h1>Unitree Go2 – Control Hub</h1>
+    <div class="small">Choose a page to control or monitor the robot.</div>
+
+    <div id="pageNavMount"></div>
+
+    <div class="homeGrid">
+      <a class="homeCard" href="/joystick">
+        <h2>Joysticks</h2>
+        <p>Drive the robot using dual virtual joysticks.</p>
+      </a>
+
+      <a class="homeCard" href="/movement">
+        <h2>Movement</h2>
+        <p>Send move-forward, sport, action, and teleop commands.</p>
+      </a>
+
+      <a class="homeCard" href="/map">
+        <h2>Map Viewer</h2>
+        <p>View the 2D occupancy map while teleoperating.</p>
+      </a>
+
+      <a class="homeCard" href="/camera">
+        <h2>Front Camera</h2>
+        <p>View the front camera stream and teleoperate.</p>
+      </a>
+
+      <a class="homeCard" href="/terminal">
+        <h2>Terminal</h2>
+        <p>Open a terminal session in the browser.</p>
+      </a>
+
+      <a class="homeCard" href="/other">
+        <h2>Other</h2>
+        <p>Access extra actions and YOLO process controls.</p>
+      </a>
+    </div>
+
+    <div class="status">
+      <div id="msg" class="small">Ready.</div>
+      <div id="detail" class="mono"></div>
+    </div>
+  </div>
+
+  <script>
+    window.addEventListener("DOMContentLoaded", async () => {
+      await Go2Shared.init({ defaultApi: "", showAuthButtons: false });
+      Go2Shared.setStatus("Select a page to begin.", true);
+    });
+  </script>
+</body>
+</html>

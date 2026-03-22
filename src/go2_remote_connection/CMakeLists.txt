@@ -130,7 +130,6 @@ install(TARGETS
 install(PROGRAMS
   src/cv/front_camera_capture.py
   src/cv/front_camera_ros_bridge.py
-  src/cv/image_to_compressed_bridge.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

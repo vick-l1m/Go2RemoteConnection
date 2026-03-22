@@ -1,0 +1,184 @@
+<!--
+go2_other.html
+
+This file provides miscellaneous Go2 controls.
+It includes:
+- shared login/auth overlay
+- shared navigation and health/safety controls
+- extended action buttons
+- YOLO process controls and status
+- general status output
+
+Version 2.0
+Author: Victor Lim
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Go2 Other Controls</title>
+
+  <link rel="stylesheet" href="/app/static/shared.css" />
+  <script src="/app/static/shared.js"></script>
+
+  <script>
+    let safetyLatched = false;
+
+    window.addEventListener("DOMContentLoaded", async () => {
+      await Go2Shared.init({ defaultApi: "", showAuthButtons: true });
+      setTimeout(refreshSafetyStatus, 200);
+      refreshYoloStatus();
+    });
+
+    async function loginAndStart() {
+      await Go2Shared.login();
+      await refreshYoloStatus();
+    }
+
+    async function refreshSafetyStatus() {
+      const r = await Go2Shared.httpGet("/safety/status", { bypassCommsGate: true });
+      if (!r.ok) return;
+
+      try {
+        const data = JSON.parse(r.text);
+        safetyLatched = !!data.stop_latched;
+        Go2Shared.state.COMMS_ENABLED = !safetyLatched;
+
+        const btn = document.getElementById("safetyToggleBtn");
+        if (btn) {
+          btn.textContent = safetyLatched ? "RESUME" : "STOP";
+          btn.classList.toggle("danger", !safetyLatched);
+          btn.classList.toggle("activeMode", safetyLatched);
+        }
+      } catch (_) {}
+    }
+
+    async function toggleSafety() {
+      const path = safetyLatched ? "/safety/resume" : "/safety/stop";
+      const r = await Go2Shared.httpPost(path, null, { bypassCommsGate: true });
+
+      Go2Shared.setStatus(
+        r.ok ? (safetyLatched ? "RESUME sent ✅" : "STOP sent ✅") : "Safety command failed",
+        r.ok,
+        `URL: ${r.url}\n${r.text}`
+      );
+
+      await refreshSafetyStatus();
+    }
+
+    async function postAction(action) {
+      const r = await Go2Shared.httpPost(`/actions/${action}`);
+      Go2Shared.setStatus(
+        r.ok ? `Action sent: ${action}` : `Action failed: ${action}`,
+        r.ok,
+        `URL: ${r.url}\n${r.text}`
+      );
+    }
+
+    async function startYolo() {
+      const r = await Go2Shared.httpPost("/yolo/start");
+      Go2Shared.setStatus(
+        r.ok ? "YOLO start requested" : "YOLO start failed",
+        r.ok,
+        `URL: ${r.url}\n${r.text}`
+      );
+      await refreshYoloStatus();
+    }
+
+    async function stopYolo() {
+      const r = await Go2Shared.httpPost("/yolo/stop");
+      Go2Shared.setStatus(
+        r.ok ? "YOLO stop requested" : "YOLO stop failed",
+        r.ok,
+        `URL: ${r.url}\n${r.text}`
+      );
+      await refreshYoloStatus();
+    }
+
+    async function refreshYoloStatus() {
+      const r = await Go2Shared.httpGet("/yolo/status", { bypassCommsGate: true });
+      const el = document.getElementById("yoloStatus");
+
+      if (!r.ok) {
+        el.textContent = "YOLO status unavailable";
+        return;
+      }
+
+      try {
+        const data = JSON.parse(r.text);
+        el.textContent = data.running
+          ? `Running${data.pid ? ` (PID ${data.pid})` : ""}`
+          : "Stopped";
+      } catch (_) {
+        el.textContent = "Invalid YOLO status response";
+      }
+    }
+  </script>
+</head>
+
+<body>
+  <div id="loginOverlay" class="loginOverlay">
+    <div class="loginCard">
+      <h2>Connect to Go2</h2>
+      <div class="loginForm">
+        <input id="loginBaseUrl" placeholder="http://robot-ip:8000 or https://robot.domain" />
+        <input id="loginToken" placeholder="Password" type="password" />
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#333;">
+          <input id="showPw" type="checkbox" onclick="Go2Shared.togglePasswordVisibility()" />
+          Show password
+        </label>
+        <button id="unlockBtn" onclick="loginAndStart()">Unlock</button>
+        <div id="loginMsg" class="loginMsg"></div>
+        <div class="loginTip">Tip: This password is unique per robot.</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="appRoot">
+    <div class="card">
+      <h1>Unitree Go2 – Other Controls</h1>
+
+      <div class="row">
+        <input id="baseUrl" placeholder="http://<go2-ip>:8000" />
+        <button onclick="Go2Shared.checkHealth()">Health</button>
+        <button onclick="postAction('stand')">Stand</button>
+        <button onclick="postAction('sit')">Sit</button>
+        <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
+        <button onclick="Go2Shared.logout()">Logout</button>
+      </div>
+
+      <div class="panel">
+        <h2>Extended Actions</h2>
+        <div class="btnGrid">
+          <button onclick="postAction('hello')">Hello</button>
+          <button onclick="postAction('stretch')">Stretch</button>
+          <button onclick="postAction('content')">Content</button>
+          <button onclick="postAction('heart')">Heart</button>
+          <button onclick="postAction('scrape')">Scrape</button>
+          <button onclick="postAction('recover')">Recover</button>
+          <button onclick="postAction('sit_toggle')">Sit Toggle</button>
+          <button onclick="postAction('stop')">Stop Action</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>YOLO Controls</h2>
+        <div class="row">
+          <button onclick="startYolo()">Start YOLO</button>
+          <button onclick="stopYolo()">Stop YOLO</button>
+          <button onclick="refreshYoloStatus()">Refresh Status</button>
+          <span class="pill" id="yoloStatus">Unknown</span>
+        </div>
+        <div class="small hint">Uses /yolo/start, /yolo/stop, and /yolo/status</div>
+      </div>
+
+      <div class="status">
+        <div id="msg" class="small">Ready.</div>
+        <div id="detail" class="mono"></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

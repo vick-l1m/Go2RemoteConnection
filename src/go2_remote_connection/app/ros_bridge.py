@@ -1,25 +1,34 @@
-import threading
+"""
+ros_bridge.py
+
+This module provides the ROS 2 <-> web bridge for the Go2 Remote Actions app.
+It owns:
+- shared websocket data stores for map, camera, YOLO detections, and YOLO camera
+- the ROS 2 node that publishes commands from the web UI
+- ROS 2 subscriptions that push data into the websocket stores
+- lifecycle helpers for starting and accessing the bridge
+
+Version 2.0
+Author: Victor Lim
+"""
+
 import asyncio
 import gzip
 import json
+import threading
 from dataclasses import dataclass, field
-from typing import Optional, Set, Dict, Any
+from typing import Any, Dict, Optional, Set
 
 import rclpy
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
-
-from geometry_msgs.msg import Twist
-from std_msgs.msg import String as RosString
-from nav_msgs.msg import OccupancyGrid
-from map_msgs.msg import OccupancyGridUpdate
 from fastapi import WebSocket
+from geometry_msgs.msg import Twist
+from map_msgs.msg import OccupancyGridUpdate
+from nav_msgs.msg import OccupancyGrid
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Bool, Float32
-
-import time
-from std_msgs.msg import String
-
+from std_msgs.msg import String as RosString
 
 
 # ============================================================
@@ -27,8 +36,8 @@ from std_msgs.msg import String
 # ============================================================
 @dataclass
 class MapStore:
-    meta: Optional[Dict[str, Any]] = None     # {frame_id,resolution,width,height,origin_x,origin_y}
-    full_raw: Optional[bytes] = None          # int8 raw bytes (len = width*height)
+    meta: Optional[Dict[str, Any]] = None
+    full_raw: Optional[bytes] = None
     seq: int = 0
     clients: Set[WebSocket] = None
     lock: asyncio.Lock = None
@@ -39,10 +48,13 @@ class MapStore:
         if self.lock is None:
             self.lock = asyncio.Lock()
 
+
 _map_store = MapStore()
+
 
 async def _broadcast_map_payload(payload: dict):
     dead = []
+
     async with _map_store.lock:
         clients = list(_map_store.clients)
 
@@ -60,16 +72,22 @@ async def _broadcast_map_payload(payload: dict):
             for ws in dead:
                 _map_store.clients.discard(ws)
 
+
 def _i8_list_to_bytes(data) -> bytes:
     return bytes((d & 0xFF) for d in data)
+
+
+def get_map_store() -> MapStore:
+    return _map_store
+
 
 # ============================================================
 # CAMERA STORE (JPEG bytes)
 # ============================================================
 @dataclass
 class CameraStore:
-    meta: Optional[Dict[str, Any]] = None   # {frame_id, format}
-    jpg: Optional[bytes] = None            # raw JPEG bytes
+    meta: Optional[Dict[str, Any]] = None
+    jpg: Optional[bytes] = None
     seq: int = 0
     clients: Set[WebSocket] = None
     lock: asyncio.Lock = None
@@ -80,41 +98,27 @@ class CameraStore:
         if self.lock is None:
             self.lock = asyncio.Lock()
 
+
 _cam_store = CameraStore()
 
-async def _broadcast_cam_payload(payload: dict):
-    dead = []
-    async with _cam_store.lock:
-        clients = list(_cam_store.clients)
-
-    for ws in clients:
-        try:
-            header = payload.copy()
-            jpg = header.pop("jpg")
-            await ws.send_text(json.dumps(header))
-            await ws.send_bytes(jpg)
-        except Exception:
-            dead.append(ws)
-
-    if dead:
-        async with _cam_store.lock:
-            for ws in dead:
-                _cam_store.clients.discard(ws)
 
 def get_cam_store() -> CameraStore:
     return _cam_store
 
+
 # ============================================================
-# YOLO Store (JPEG bytes)
+# YOLO DETECTIONS STORE (JSON text)
 # ============================================================
 @dataclass
 class YoloStore:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     clients: Set[WebSocket] = field(default_factory=set)
     seq: int = 0
-    last_json: Optional[str] = None  # JSON string
+    last_json: Optional[str] = None
+
 
 _yolo_store: Optional[YoloStore] = None
+
 
 def get_yolo_store() -> YoloStore:
     global _yolo_store
@@ -122,10 +126,16 @@ def get_yolo_store() -> YoloStore:
         _yolo_store = YoloStore()
     return _yolo_store
 
+
+# ============================================================
+# YOLO CAMERA STORE (JPEG bytes)
+# ============================================================
 _yolo_cam_store = CameraStore()
+
 
 def get_yolo_cam_store() -> CameraStore:
     return _yolo_cam_store
+
 
 # ============================================================
 # ROS <-> WEB BRIDGE NODE
@@ -138,13 +148,13 @@ class WebRosBridge(Node):
         self.pub_twist = self.create_publisher(Twist, "/web_teleop", 10)
         self.pub_action = self.create_publisher(RosString, "/web_action", 10)
         self.pub_enabled = self.create_publisher(Bool, "/web_teleop_enabled", 1)
-        self.move_forward_pub = self.create_publisher(Float32, "/move_forward_meters", 10)
+        self.pub_move_forward = self.create_publisher(Float32, "/move_forward_meters", 10)
         self.pub_sport_cmd = self.create_publisher(RosString, "/web_sport_cmd", 10)
 
         # ---------------- Map subscriptions ----------------
         map_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,  # full map latched
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
         )
@@ -167,7 +177,7 @@ class WebRosBridge(Node):
         self.sub_map_upd = self.create_subscription(
             OccupancyGridUpdate, map_updates_topic, self._on_map_update, upd_qos
         )
-        
+
         # ---------------- Front camera subscription ----------------
         self.declare_parameter("front_cam_topic", "/web/front_cam/compressed")
         cam_topic = self.get_parameter("front_cam_topic").value
@@ -183,71 +193,85 @@ class WebRosBridge(Node):
             CompressedImage, cam_topic, self._on_front_cam, cam_qos
         )
 
-        # AsyncIO loop provided by FastAPI
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-
-        # ---------------- YOLO subscription ----------------
+        # ---------------- YOLO subscriptions ----------------
         self.sub_yolo = self.create_subscription(
-            String,
+            RosString,
             "/yolo/detections",
             self._on_yolo_detections,
-            10
+            10,
         )
 
         self.declare_parameter("yolo_cam_topic", "/web/yolo_cam/compressed")
-        yolo_cam_topic = self.get_parameter("yolo_cam_topic").get_parameter_value().string_value        
+        yolo_cam_topic = self.get_parameter("yolo_cam_topic").value
+
         self.sub_yolo_cam = self.create_subscription(
             CompressedImage, yolo_cam_topic, self._on_yolo_cam, cam_qos
         )
 
+        # AsyncIO loop provided by FastAPI
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
     def set_asyncio_loop(self, loop: asyncio.AbstractEventLoop):
         self._loop = loop
 
-    # ---------------- Teleop / Action ----------------
+    # ---------------- Publish helpers ----------------
     def _ok_to_publish(self) -> bool:
         try:
             return rclpy.ok()
         except Exception:
             return False
 
-    def publish_teleop(self, vx: float, vy: float, vyaw: float):
+    def publish_teleop(self, linear_x: float, linear_y: float, angular_z: float):
         if not self._ok_to_publish():
             return
+
         msg = Twist()
-        msg.linear.x = float(vx)
-        msg.linear.y = float(vy)
-        msg.angular.z = float(vyaw)
-        try:
-            self.pub_twist.publish(msg)
-        except Exception:
-            return
+        msg.linear.x = float(linear_x)
+        msg.linear.y = float(linear_y)
+        msg.angular.z = float(angular_z)
+        self.pub_twist.publish(msg)
 
     def publish_action(self, action: str):
         if not self._ok_to_publish():
             return
-        m = RosString()
-        m.data = action
-        self.pub_action.publish(m)
 
-    def publish_move_forward(self, meters: float):
-        if not self._ok_to_publish():
-            return
-        msg = Float32()
-        msg.data = float(meters)
-        self.move_forward_pub.publish(msg)
+        msg = RosString()
+        msg.data = str(action)
+        self.pub_action.publish(msg)
 
     def publish_enabled(self, enabled: bool):
         if not self._ok_to_publish():
             return
-        b = Bool()
-        b.data = bool(enabled)
-        self.pub_enabled.publish(b)
+
+        msg = Bool()
+        msg.data = bool(enabled)
+        self.pub_enabled.publish(msg)
+
+    def publish_move_forward(self, meters: float):
+        if not self._ok_to_publish():
+            return
+
+        msg = Float32()
+        msg.data = float(meters)
+        self.pub_move_forward.publish(msg)
+
+    def publish_sport_cmd(self, payload):
+        if not self._ok_to_publish():
+            return
+
+        msg = RosString()
+        if isinstance(payload, str):
+            msg.data = payload
+        else:
+            msg.data = json.dumps(payload)
+        self.pub_sport_cmd.publish(msg)
 
     # ---------------- Map callbacks ----------------
     def _on_map_full(self, msg: OccupancyGrid):
         raw = _i8_list_to_bytes(msg.data)
+
         meta = {
-            "frame_id": str(msg.header.frame_id),
+            "frame_id": msg.header.frame_id,
             "resolution": float(msg.info.resolution),
             "width": int(msg.info.width),
             "height": int(msg.info.height),
@@ -255,38 +279,31 @@ class WebRosBridge(Node):
             "origin_y": float(msg.info.origin.position.y),
         }
 
-        if self._loop is None:
-            _map_store.meta = meta
-            _map_store.full_raw = raw
-            _map_store.seq += 1
-            return
+        async def update_and_broadcast():
+            async with _map_store.lock:
+                _map_store.meta = meta
+                _map_store.full_raw = raw
+                _map_store.seq += 1
+                seq = _map_store.seq
 
-        def _schedule():
-            async def _set_and_broadcast():
-                async with _map_store.lock:
-                    _map_store.meta = meta
-                    _map_store.full_raw = raw
-                    _map_store.seq += 1
-                    seq = _map_store.seq
-
-                await _broadcast_map_payload({
+            await _broadcast_map_payload(
+                {
                     "t": "f",
                     "seq": seq,
                     "meta": meta,
                     "gz": gzip.compress(raw, compresslevel=6),
-                })
+                }
+            )
 
-            asyncio.create_task(_set_and_broadcast())
-
-        self._loop.call_soon_threadsafe(_schedule)
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(update_and_broadcast(), self._loop)
 
     def _on_map_update(self, msg: OccupancyGridUpdate):
-        if _map_store.meta is None or _map_store.full_raw is None:
-            return
-
         raw = _i8_list_to_bytes(msg.data)
-        x, y = int(msg.x), int(msg.y)
-        w, h = int(msg.width), int(msg.height)
+        x = int(msg.x)
+        y = int(msg.y)
+        w = int(msg.width)
+        h = int(msg.height)
 
         if self._loop is None:
             return
@@ -297,12 +314,17 @@ class WebRosBridge(Node):
                     _map_store.seq += 1
                     seq = _map_store.seq
 
-                await _broadcast_map_payload({
-                    "t": "u",
-                    "seq": seq,
-                    "x": x, "y": y, "w": w, "h": h,
-                    "gz": gzip.compress(raw, compresslevel=6),
-                })
+                await _broadcast_map_payload(
+                    {
+                        "t": "u",
+                        "seq": seq,
+                        "x": x,
+                        "y": y,
+                        "w": w,
+                        "h": h,
+                        "gz": gzip.compress(raw, compresslevel=6),
+                    }
+                )
 
             asyncio.create_task(_broadcast_only())
 
@@ -311,108 +333,123 @@ class WebRosBridge(Node):
     # ---------------- Front camera callback ----------------
     def _on_front_cam(self, msg: CompressedImage):
         store = get_cam_store()
-    
-        jpg = bytes(msg.data)   # JPEG payload
+
+        jpg = bytes(msg.data)
         meta = {
-            "stamp": {"sec": int(msg.header.stamp.sec), "nanosec": int(msg.header.stamp.nanosec)},
+            "stamp": {
+                "sec": int(msg.header.stamp.sec),
+                "nanosec": int(msg.header.stamp.nanosec),
+            },
             "frame_id": msg.header.frame_id,
             "format": msg.format,
         }
-    
+
         async def fanout(clients):
             header = {"t": "cam", "seq": store.seq, "meta": store.meta, "n": len(store.jpg)}
             dead = []
+
             for ws in list(clients):
                 try:
                     await ws.send_text(json.dumps(header))
                     await ws.send_bytes(store.jpg)
                 except Exception:
                     dead.append(ws)
-            for ws in dead:
-                clients.discard(ws)
-    
-        async def update_and_send():
-            async with store.lock:
-                store.seq += 1
-                store.jpg = jpg
-                store.meta = meta
-                clients = set(store.clients)  # snapshot under lock
-    
-            # send outside lock
-            await fanout(clients)
-    
-        # schedule into FastAPI event loop
-        if self._loop:
-            asyncio.run_coroutine_threadsafe(update_and_send(), self._loop)
 
-    # ---------------- YOLO detections callback ----------------
-    def _on_yolo_detections(self, msg: String):
-        store = get_yolo_store()
-        data = msg.data  # JSON string
-    
-        async def fanout():
-            # update cache + snapshot clients under lock
-            async with store.lock:
-                store.seq += 1
-                store.last_json = data
-                clients = list(store.clients)
-    
-            dead = []
-            for ws in clients:
-                try:
-                    await ws.send_text(data)
-                except Exception:
-                    dead.append(ws)
-    
             if dead:
                 async with store.lock:
                     for ws in dead:
                         store.clients.discard(ws)
-    
-        if self._loop:
-            asyncio.run_coroutine_threadsafe(fanout(), self._loop)
 
-    def _on_yolo_cam(self, msg: CompressedImage):
-        store = get_yolo_cam_store()
-    
-        jpg = bytes(msg.data)
-        meta = {
-            "stamp": {"sec": int(msg.header.stamp.sec), "nanosec": int(msg.header.stamp.nanosec)},
-            "frame_id": msg.header.frame_id,
-            "format": msg.format,
-        }
-    
-        async def fanout(clients):
-            header = {"t": "cam", "seq": store.seq, "meta": store.meta, "n": len(store.jpg)}
-            dead = []
-            for ws in list(clients):
-                try:
-                    await ws.send_text(json.dumps(header))
-                    await ws.send_bytes(store.jpg)
-                except Exception:
-                    dead.append(ws)
-            for ws in dead:
-                clients.discard(ws)
-    
         async def update_and_send():
             async with store.lock:
                 store.seq += 1
                 store.jpg = jpg
                 store.meta = meta
                 clients = set(store.clients)
-    
+
             await fanout(clients)
-    
+
         if self._loop:
             asyncio.run_coroutine_threadsafe(update_and_send(), self._loop)
+
+    # ---------------- YOLO detections callback ----------------
+    def _on_yolo_detections(self, msg: RosString):
+        store = get_yolo_store()
+        data = msg.data
+
+        async def fanout():
+            async with store.lock:
+                store.seq += 1
+                store.last_json = data
+                clients = list(store.clients)
+
+            dead = []
+            for ws in clients:
+                try:
+                    await ws.send_text(data)
+                except Exception:
+                    dead.append(ws)
+
+            if dead:
+                async with store.lock:
+                    for ws in dead:
+                        store.clients.discard(ws)
+
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(fanout(), self._loop)
+
+    # ---------------- YOLO camera callback ----------------
+    def _on_yolo_cam(self, msg: CompressedImage):
+        store = get_yolo_cam_store()
+
+        jpg = bytes(msg.data)
+        meta = {
+            "stamp": {
+                "sec": int(msg.header.stamp.sec),
+                "nanosec": int(msg.header.stamp.nanosec),
+            },
+            "frame_id": msg.header.frame_id,
+            "format": msg.format,
+        }
+
+        async def fanout(clients):
+            header = {"t": "cam", "seq": store.seq, "meta": store.meta, "n": len(store.jpg)}
+            dead = []
+
+            for ws in list(clients):
+                try:
+                    await ws.send_text(json.dumps(header))
+                    await ws.send_bytes(store.jpg)
+                except Exception:
+                    dead.append(ws)
+
+            if dead:
+                async with store.lock:
+                    for ws in dead:
+                        store.clients.discard(ws)
+
+        async def update_and_send():
+            async with store.lock:
+                store.seq += 1
+                store.jpg = jpg
+                store.meta = meta
+                clients = set(store.clients)
+
+            await fanout(clients)
+
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(update_and_send(), self._loop)
+
 
 # ============================================================
 # LIFECYCLE HELPERS
 # ============================================================
-_bridge = None
+_bridge: Optional[WebRosBridge] = None
+
 
 def start_ros_bridge():
     global _bridge
+
     if _bridge is not None:
         return _bridge
 
@@ -425,13 +462,8 @@ def start_ros_bridge():
     _bridge.publish_enabled(True)
     return _bridge
 
+
 def get_bridge() -> WebRosBridge:
     if _bridge is None:
         raise RuntimeError("ROS bridge not started")
     return _bridge
-
-def get_map_store() -> MapStore:
-    return _map_store
-
-def get_yolo_cam_store() -> CameraStore:
-    return _yolo_cam_store
