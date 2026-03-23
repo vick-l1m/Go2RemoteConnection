@@ -1,13 +1,12 @@
 <!--
 go2_other.html
 
-This file provides miscellaneous Go2 controls.
+This file provides the Go2 other controls interface.
 It includes:
 - shared login/auth overlay
-- shared navigation and health/safety controls
-- extended action buttons
-- YOLO process controls and status
-- general status output
+- stand / sit actions
+- safety stop/resume
+- move X meters panel only
 
 Version 2.0
 Author: Victor Lim
@@ -18,104 +17,10 @@ Author: Victor Lim
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Go2 Other Controls</title>
+  <title>Go2 – Other Controls</title>
 
   <link rel="stylesheet" href="/app/static/shared.css" />
   <script src="/app/static/shared.js"></script>
-
-  <script>
-    let safetyLatched = false;
-
-    window.addEventListener("DOMContentLoaded", async () => {
-      await Go2Shared.init({ defaultApi: "", showAuthButtons: true });
-      setTimeout(refreshSafetyStatus, 200);
-      refreshYoloStatus();
-    });
-
-    async function loginAndStart() {
-      await Go2Shared.login();
-      await refreshYoloStatus();
-    }
-
-    async function refreshSafetyStatus() {
-      const r = await Go2Shared.httpGet("/safety/status", { bypassCommsGate: true });
-      if (!r.ok) return;
-
-      try {
-        const data = JSON.parse(r.text);
-        safetyLatched = !!data.stop_latched;
-        Go2Shared.state.COMMS_ENABLED = !safetyLatched;
-
-        const btn = document.getElementById("safetyToggleBtn");
-        if (btn) {
-          btn.textContent = safetyLatched ? "RESUME" : "STOP";
-          btn.classList.toggle("danger", !safetyLatched);
-          btn.classList.toggle("activeMode", safetyLatched);
-        }
-      } catch (_) {}
-    }
-
-    async function toggleSafety() {
-      const path = safetyLatched ? "/safety/resume" : "/safety/stop";
-      const r = await Go2Shared.httpPost(path, null, { bypassCommsGate: true });
-
-      Go2Shared.setStatus(
-        r.ok ? (safetyLatched ? "RESUME sent ✅" : "STOP sent ✅") : "Safety command failed",
-        r.ok,
-        `URL: ${r.url}\n${r.text}`
-      );
-
-      await refreshSafetyStatus();
-    }
-
-    async function postAction(action) {
-      const r = await Go2Shared.httpPost(`/actions/${action}`);
-      Go2Shared.setStatus(
-        r.ok ? `Action sent: ${action}` : `Action failed: ${action}`,
-        r.ok,
-        `URL: ${r.url}\n${r.text}`
-      );
-    }
-
-    async function startYolo() {
-      const r = await Go2Shared.httpPost("/yolo/start");
-      Go2Shared.setStatus(
-        r.ok ? "YOLO start requested" : "YOLO start failed",
-        r.ok,
-        `URL: ${r.url}\n${r.text}`
-      );
-      await refreshYoloStatus();
-    }
-
-    async function stopYolo() {
-      const r = await Go2Shared.httpPost("/yolo/stop");
-      Go2Shared.setStatus(
-        r.ok ? "YOLO stop requested" : "YOLO stop failed",
-        r.ok,
-        `URL: ${r.url}\n${r.text}`
-      );
-      await refreshYoloStatus();
-    }
-
-    async function refreshYoloStatus() {
-      const r = await Go2Shared.httpGet("/yolo/status", { bypassCommsGate: true });
-      const el = document.getElementById("yoloStatus");
-
-      if (!r.ok) {
-        el.textContent = "YOLO status unavailable";
-        return;
-      }
-
-      try {
-        const data = JSON.parse(r.text);
-        el.textContent = data.running
-          ? `Running${data.pid ? ` (PID ${data.pid})` : ""}`
-          : "Stopped";
-      } catch (_) {
-        el.textContent = "Invalid YOLO status response";
-      }
-    }
-  </script>
 </head>
 
 <body>
@@ -125,11 +30,13 @@ Author: Victor Lim
       <div class="loginForm">
         <input id="loginBaseUrl" placeholder="http://robot-ip:8000 or https://robot.domain" />
         <input id="loginToken" placeholder="Password" type="password" />
+
         <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#333;">
           <input id="showPw" type="checkbox" onclick="Go2Shared.togglePasswordVisibility()" />
           Show password
         </label>
-        <button id="unlockBtn" onclick="loginAndStart()">Unlock</button>
+
+        <button id="unlockBtn" onclick="Go2Shared.login()">Unlock</button>
         <div id="loginMsg" class="loginMsg"></div>
         <div class="loginTip">Tip: This password is unique per robot.</div>
       </div>
@@ -143,42 +50,159 @@ Author: Victor Lim
       <div class="row">
         <input id="baseUrl" placeholder="http://<go2-ip>:8000" />
         <button onclick="Go2Shared.checkHealth()">Health</button>
+
         <button onclick="postAction('stand')">Stand</button>
         <button onclick="postAction('sit')">Sit</button>
+
         <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
+        <button onclick="toggleMoveBox()">Move X meters</button>
+
         <button onclick="Go2Shared.logout()">Logout</button>
       </div>
 
-      <div class="panel">
-        <h2>Extended Actions</h2>
-        <div class="btnGrid">
-          <button onclick="postAction('hello')">Hello</button>
-          <button onclick="postAction('stretch')">Stretch</button>
-          <button onclick="postAction('content')">Content</button>
-          <button onclick="postAction('heart')">Heart</button>
-          <button onclick="postAction('scrape')">Scrape</button>
-          <button onclick="postAction('recover')">Recover</button>
-          <button onclick="postAction('sit_toggle')">Sit Toggle</button>
-          <button onclick="postAction('stop')">Stop Action</button>
+      <div id="moveBox" class="panel" style="display:none;">
+        <div class="small" style="margin-bottom:8px;">
+          Enter a distance (0–5 m) and press <b>Enter</b>.
         </div>
-      </div>
-
-      <div class="panel">
-        <h2>YOLO Controls</h2>
-        <div class="row">
-          <button onclick="startYolo()">Start YOLO</button>
-          <button onclick="stopYolo()">Stop YOLO</button>
-          <button onclick="refreshYoloStatus()">Refresh Status</button>
-          <span class="pill" id="yoloStatus">Unknown</span>
+        <input id="moveMeters" type="number" min="0" max="5" step="0.1" placeholder="e.g. 1.5" />
+        <div class="small hint">
+          Tip: Calls <span class="mono">POST /move_forward</span>.
         </div>
-        <div class="small hint">Uses /yolo/start, /yolo/stop, and /yolo/status</div>
       </div>
 
       <div class="status">
         <div id="msg" class="small">Ready.</div>
         <div id="detail" class="mono"></div>
       </div>
+
+      <div class="small hint">
+        UI host: <span id="uiHost" class="mono"></span><br />
+        API base: <span id="apiHost" class="mono"></span>
+      </div>
     </div>
   </div>
+
+  <script>
+    let stopLatched = false;
+    let safetyBusy = false;
+
+    window.addEventListener("DOMContentLoaded", async () => {
+      await Go2Shared.init({ defaultApi: "", showAuthButtons: true });
+      document.getElementById("uiHost").textContent = window.location.origin;
+      document.getElementById("apiHost").textContent = Go2Shared.apiBase();
+
+      setTimeout(refreshSafetyStatus, 200);
+
+      const moveInput = document.getElementById("moveMeters");
+      moveInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          submitMove();
+        }
+      });
+    });
+
+    function setSafetyButton(latched) {
+      stopLatched = !!latched;
+      const btn = document.getElementById("safetyToggleBtn");
+      if (!btn) return;
+
+      btn.textContent = stopLatched ? "RESUME" : "STOP";
+      btn.classList.toggle("danger", !stopLatched);
+      btn.disabled = safetyBusy;
+    }
+
+    async function refreshSafetyStatus() {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      const r = await Go2Shared.httpGet("/safety/status", { bypassCommsGate: true });
+      if (r.ok) {
+        try {
+          const data = JSON.parse(r.text);
+          setSafetyButton(!!data.stop_latched);
+          Go2Shared.state.COMMS_ENABLED = !stopLatched;
+        } catch {}
+      }
+    }
+
+    async function toggleSafety() {
+      if (!Go2Shared.ensureLoggedIn() || safetyBusy) return;
+      safetyBusy = true;
+      setSafetyButton(stopLatched);
+
+      try {
+        if (!stopLatched) {
+          const r = await Go2Shared.httpPost("/safety/stop", null, { bypassCommsGate: true });
+          if (!r.ok) {
+            Go2Shared.setStatus(`STOP failed (HTTP ${r.status})`, false, r.text);
+            return;
+          }
+          Go2Shared.state.COMMS_ENABLED = false;
+          Go2Shared.setStatus("STOP latched 🔒", true);
+        } else {
+          const r = await Go2Shared.httpPost("/safety/resume", null, { bypassCommsGate: true });
+          if (!r.ok) {
+            Go2Shared.setStatus(`RESUME failed (HTTP ${r.status})`, false, r.text);
+            return;
+          }
+          Go2Shared.state.COMMS_ENABLED = true;
+          Go2Shared.setStatus("RESUME ✅", true);
+        }
+      } finally {
+        safetyBusy = false;
+        await refreshSafetyStatus();
+      }
+    }
+
+    async function postAction(action) {
+      if (!Go2Shared.ensureLoggedIn()) return;
+
+      if (!Go2Shared.state.COMMS_ENABLED) {
+        Go2Shared.setStatus("STOP latched 🔒", false, "Press RESUME before sending commands.");
+        return;
+      }
+
+      const r = await Go2Shared.httpPost(`/actions/${action}`);
+      Go2Shared.setStatus(
+        r.ok ? `${action} started ✅` : `${action} failed (HTTP ${r.status})`,
+        r.ok,
+        r.text
+      );
+    }
+
+    function toggleMoveBox() {
+      const box = document.getElementById("moveBox");
+      const open = box.style.display !== "none";
+      box.style.display = open ? "none" : "block";
+      if (!open) {
+        const input = document.getElementById("moveMeters");
+        input.value = "";
+        input.focus();
+      }
+    }
+
+    async function submitMove() {
+      if (!Go2Shared.ensureLoggedIn()) return;
+
+      const meters = parseFloat(document.getElementById("moveMeters").value);
+      if (!Number.isFinite(meters) || meters <= 0 || meters > 5) {
+        Go2Shared.setStatus("Invalid distance", false, "Enter a number > 0 and ≤ 5.");
+        return;
+      }
+
+      if (!Go2Shared.state.COMMS_ENABLED) {
+        Go2Shared.setStatus("STOP latched 🔒", false, "Press RESUME before sending move.");
+        return;
+      }
+
+      const r = await Go2Shared.httpPost("/move_forward", { meters });
+      Go2Shared.setStatus(
+        r.ok ? `Move sent ✅ (${meters.toFixed(2)} m)` : `Move failed (HTTP ${r.status})`,
+        r.ok,
+        r.text
+      );
+
+      if (r.ok) document.getElementById("moveBox").style.display = "none";
+    }
+  </script>
 </body>
 </html>

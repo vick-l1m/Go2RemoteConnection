@@ -1,11 +1,9 @@
 """
-
 camera_routes.py
 This module defines the API endpoints for camera streams in the Go2 Remote Actions application.
 
-Version: 2.0
+Version: 2.1
 Author: Victor Lim
-
 """
 
 from fastapi import APIRouter, WebSocket
@@ -13,6 +11,7 @@ import json
 
 from app.core.state import state
 from app.services.websocket_auth import authenticate_websocket
+from app.services.yolo_service import yolo_status
 from app.ros_bridge import get_cam_store, get_yolo_cam_store
 
 router = APIRouter()
@@ -51,7 +50,7 @@ async def ws_cam_front(websocket: WebSocket):
             await websocket.send_bytes(initial_jpg)
 
         while True:
-            _ = await websocket.receive_text()  # keepalive ping from client
+            _ = await websocket.receive_text()
             if state.stop_latched:
                 await websocket.close(code=1013)
                 return
@@ -67,6 +66,10 @@ async def ws_cam_front(websocket: WebSocket):
 @router.websocket("/ws/cam_yolo")
 async def ws_cam_yolo(websocket: WebSocket):
     if not await authenticate_websocket(websocket):
+        return
+
+    if not yolo_status()["running"]:
+        await websocket.close(code=1013)
         return
 
     await websocket.accept()
@@ -97,8 +100,12 @@ async def ws_cam_yolo(websocket: WebSocket):
             await websocket.send_bytes(initial_jpg)
 
         while True:
-            _ = await websocket.receive_text()  # keepalive ping from client
+            _ = await websocket.receive_text()
             if state.stop_latched:
+                await websocket.close(code=1013)
+                return
+
+            if not yolo_status()["running"]:
                 await websocket.close(code=1013)
                 return
 

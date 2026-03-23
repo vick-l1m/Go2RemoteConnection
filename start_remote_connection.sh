@@ -264,6 +264,7 @@ ok_or_die "front_camera_ros_bridge" "$front_cam_node_PID" "/tmp/front_camera_nod
 # 1) Start FastAPI backend
 # ----------------------------
 echo "[run_all] Starting FastAPI (uvicorn) on :$API_PORT ..."
+
 cd "$PKG_DIR"
 python3 -m uvicorn app.main:app --host "$API_HOST" --port "$API_PORT" \
   > /tmp/go2_fastapi.log 2>&1 &
@@ -332,7 +333,6 @@ fi
 HOST_IP="${HOST_IP:-127.0.0.1}"
 
 echo "[run_all] Home: http://$HOST_IP:$API_PORT/"
-
 case "$MODE" in
   terminal)
     echo "[run_all] UI:   http://$HOST_IP:$API_PORT/terminal"
@@ -345,30 +345,19 @@ case "$MODE" in
     ;;
 esac
 
-echo "[run_all] Map:  http://$HOST_IP:$API_PORT/map"
-echo "[run_all] Cam:  http://$HOST_IP:$API_PORT/camera"
 echo "[run_all] API:  http://$HOST_IP:$API_PORT"
 echo "[run_all] Press Ctrl+C to stop everything."
 echo ""
 
+echo "See logs with:"
+echo "  sed -n '1,200p' /tmp/go2_fastapi.log"
+echo "  sed -n '1,200p' /tmp/flatten_l1_data.log"
+echo "  sed -n '1,200p' /tmp/front_camera_capture.log"
+echo "  sed -n '1,200p' /tmp/front_camera_node.log"
+echo "  sed -n '1,200p' /tmp/web_bridge.log"
+echo "  sed -n '1,200p' /tmp/move_forward_meters.log"
 
 set +e
-echo "See all logs with:
-sed -n '1,200p' /tmp/go2_fastapi.log
-sed -n '1,200p' /tmp/web_bridge.log
-sed -n '1,200p' /tmp/move_forward_meters.log
-sed -n '1,200p' /tmp/flatten_l1_data.log
-sed -n '1,200p' /tmp/front_camera_capture.log
-sed -n '1,200p' /tmp/front_camera_node.log
-"
-echo "Or follow them live with:
-tail -f /tmp/go2_fastapi.log
-tail -f /tmp/web_bridge.log
-tail -f /tmp/move_forward_meters.log
-tail -f /tmp/flatten_l1_data.log
-tail -f /tmp/front_camera_capture.log
-tail -f /tmp/front_camera_node.log
-"
 
 while true; do
   for pid in "${pids[@]}"; do

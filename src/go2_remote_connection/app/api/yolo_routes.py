@@ -1,11 +1,9 @@
 """
-
 yolo_routes.py
 This module defines the API endpoints for YOLO functionality in the Go2 Remote Actions application.
 
-Version: 2.0
+Version: 2.1
 Author: Victor Lim
-
 """
 
 import json
@@ -30,6 +28,11 @@ async def ws_yolo(websocket: WebSocket):
     if not await authenticate_websocket(websocket):
         return
 
+    status = get_yolo_process_status()
+    if not status["running"]:
+        await websocket.close(code=1013)
+        return
+
     await websocket.accept()
 
     if state.stop_latched:
@@ -50,8 +53,13 @@ async def ws_yolo(websocket: WebSocket):
                 await websocket.send_text(initial)
 
         while True:
-            _ = await websocket.receive_text()  # keepalive ping from client
+            _ = await websocket.receive_text()
             if state.stop_latched:
+                await websocket.close(code=1013)
+                return
+
+            status = get_yolo_process_status()
+            if not status["running"]:
                 await websocket.close(code=1013)
                 return
 

@@ -1,20 +1,22 @@
 """
-
 yolo_service.py
 This module manages the YOLO process for the Go2 Remote Actions application.
 
-Version: 2.0
+Version: 2.1
 Author: Victor Lim
-
 """
 
 import os
 import signal
 import subprocess
+import time
 from typing import Optional
+
+from app.ros_bridge import get_yolo_store, get_yolo_cam_store
 
 YOLO_PROC: Optional[subprocess.Popen] = None
 YOLO_LOGF = None
+
 
 def yolo_script_path() -> str:
     home = os.path.expanduser("~")
@@ -29,9 +31,23 @@ def yolo_script_path() -> str:
         "ROS_yolo.py",
     )
 
+
 def venv_python_path() -> str:
     home = os.path.expanduser("~")
     return os.path.join(home, "venvs", "unitree_sdk2_python", "bin", "python3")
+
+
+def _clear_yolo_state():
+    yolo_store = get_yolo_store()
+    yolo_cam_store = get_yolo_cam_store()
+
+    yolo_store.last_json = None
+    yolo_store.seq = 0
+
+    yolo_cam_store.meta = None
+    yolo_cam_store.jpg = None
+    yolo_cam_store.seq = 0
+
 
 def start_yolo_process():
     global YOLO_PROC, YOLO_LOGF
@@ -40,6 +56,7 @@ def start_yolo_process():
         return {"ok": True, "message": "YOLO already running", "pid": YOLO_PROC.pid}
 
     YOLO_PROC = None
+    _clear_yolo_state()
 
     env = os.environ.copy()
     home = os.path.expanduser("~")
@@ -62,6 +79,7 @@ def start_yolo_process():
 
     return {"ok": True, "message": "YOLO started", "pid": YOLO_PROC.pid}
 
+
 def stop_yolo_process():
     global YOLO_PROC, YOLO_LOGF
 
@@ -69,8 +87,17 @@ def stop_yolo_process():
 
     if YOLO_PROC is not None and YOLO_PROC.poll() is None:
         try:
-            os.killpg(os.getpgid(YOLO_PROC.pid), signal.SIGTERM)
+            pgid = os.getpgid(YOLO_PROC.pid)
+            os.killpg(pgid, signal.SIGTERM)
             stopped = True
+
+            for _ in range(10):
+                if YOLO_PROC.poll() is not None:
+                    break
+                time.sleep(0.1)
+
+            if YOLO_PROC.poll() is None:
+                os.killpg(pgid, signal.SIGKILL)
         except Exception:
             try:
                 YOLO_PROC.terminate()
@@ -97,7 +124,10 @@ def stop_yolo_process():
     except Exception:
         pass
 
+    _clear_yolo_state()
+
     return {"ok": True, "message": "YOLO stopped", "stopped": stopped}
+
 
 def yolo_status():
     running = YOLO_PROC is not None and YOLO_PROC.poll() is None

@@ -1,15 +1,18 @@
 <!--
 go2_front_camera.html
 
-This file provides the Go2 front camera web interface.
+This file provides the Go2 front camera interface.
 It includes:
 - shared login/auth overlay
-- shared navigation and health/safety controls
-- stand/sit/stop-resume controls
-- dual joystick teleoperation
-- live front camera stream over WebSocket
+- front camera stream with start/stop controls below the stream
+- Show YOLO panel toggle beside the stream buttons
+- collapsible YOLO panel shown below when enabled
+- YOLO panel with start/stop YOLO stream buttons
+- automatic fallback to front camera when YOLO stops
+- joystick teleop
+- safety stop/resume controls
 
-Version 2.0
+Version 2.1
 Author: Victor Lim
 -->
 
@@ -31,7 +34,6 @@ Author: Victor Lim
       overflow: hidden;
       background: #fff;
     }
-
     .camHeader {
       display: flex;
       justify-content: space-between;
@@ -40,24 +42,14 @@ Author: Victor Lim
       background: var(--soft-2);
       border-bottom: 1px solid var(--soft-border);
     }
-
-    .camTitle {
-      font-size: 14px;
-      font-weight: 600;
-    }
-
-    .camHint {
-      color: #777;
-      font-size: 13px;
-    }
-
+    .camTitle { font-size: 14px; font-weight: 600; }
+    .camHint { color: #777; }
     .camViewport {
       width: 100%;
       aspect-ratio: 16 / 9;
       background: #000;
       overflow: hidden;
     }
-
     #camImg {
       width: 100%;
       height: 100%;
@@ -65,7 +57,6 @@ Author: Victor Lim
       object-fit: contain;
       background: #000;
     }
-
     @media (min-width: 1200px) {
       .camViewport {
         max-width: 920px;
@@ -73,162 +64,6 @@ Author: Victor Lim
       }
     }
   </style>
-
-  <script>
-    let camWs = null;
-    let latest = { lx: 0, ly: 0, rx: 0, ry: 0 };
-    let teleopTimer = null;
-    let safetyLatched = false;
-
-    window.addEventListener("DOMContentLoaded", async () => {
-      await Go2Shared.init({ defaultApi: "", showAuthButtons: true });
-      setTimeout(refreshSafetyStatus, 200);
-      initJoysticks();
-    });
-
-    async function loginAndStart() {
-      await Go2Shared.login();
-      if (Go2Shared.ensureLoggedIn()) startStream();
-    }
-
-    function wsUrl(path) {
-      const token = encodeURIComponent(Go2Shared.state.AUTH_TOKEN || "");
-      return `${Go2Shared.apiWsBase()}${path}?token=${token}`;
-    }
-
-    function startStream() {
-      if (!Go2Shared.ensureLoggedIn()) return;
-
-      stopStream();
-
-      const img = document.getElementById("camImg");
-      const msg = document.getElementById("msg");
-      const detail = document.getElementById("detail");
-
-      try {
-        camWs = new WebSocket(wsUrl("/ws/cam_front"));
-        camWs.binaryType = "arraybuffer";
-
-        let waitingForFrame = false;
-
-        camWs.onopen = () => {
-          Go2Shared.setStatus("Front camera connected ✅", true);
-          const keepalive = () => {
-            if (camWs && camWs.readyState === WebSocket.OPEN) camWs.send("ping");
-          };
-          camWs._keepalive = setInterval(keepalive, 1000);
-        };
-
-        camWs.onmessage = (ev) => {
-          if (typeof ev.data === "string") {
-            waitingForFrame = true;
-            return;
-          }
-
-          if (waitingForFrame && ev.data instanceof ArrayBuffer) {
-            const blob = new Blob([ev.data], { type: "image/jpeg" });
-            const url = URL.createObjectURL(blob);
-            const prev = img.dataset.blobUrl;
-            img.src = url;
-            img.dataset.blobUrl = url;
-            if (prev) URL.revokeObjectURL(prev);
-            waitingForFrame = false;
-          }
-        };
-
-        camWs.onclose = (ev) => {
-          if (camWs && camWs._keepalive) clearInterval(camWs._keepalive);
-          Go2Shared.setStatus(`Front camera closed (${ev.code})`, false);
-          detail.textContent = `WebSocket closed with code ${ev.code}`;
-        };
-
-        camWs.onerror = () => {
-          Go2Shared.setStatus("Front camera WebSocket error", false);
-        };
-      } catch (err) {
-        msg.textContent = "Failed to start camera stream";
-        detail.textContent = String(err);
-      }
-    }
-
-    function stopStream() {
-      if (camWs) {
-        try {
-          if (camWs._keepalive) clearInterval(camWs._keepalive);
-          camWs.close();
-        } catch (_) {}
-        camWs = null;
-      }
-    }
-
-    async function postAction(action) {
-      const r = await Go2Shared.httpPost(`/actions/${action}`);
-      Go2Shared.setStatus(
-        r.ok ? `Action sent: ${action}` : `Action failed: ${action}`,
-        r.ok,
-        `URL: ${r.url}\n${r.text}`
-      );
-    }
-
-    async function toggleSafety() {
-      const path = safetyLatched ? "/safety/resume" : "/safety/stop";
-      const r = await Go2Shared.httpPost(path, null, { bypassCommsGate: true });
-
-      Go2Shared.setStatus(
-        r.ok ? (safetyLatched ? "RESUME sent ✅" : "STOP sent ✅") : "Safety command failed",
-        r.ok,
-        `URL: ${r.url}\n${r.text}`
-      );
-
-      await refreshSafetyStatus();
-    }
-
-    async function refreshSafetyStatus() {
-      const r = await Go2Shared.httpGet("/safety/status", { bypassCommsGate: true });
-      if (!r.ok) return;
-
-      try {
-        const data = JSON.parse(r.text);
-        safetyLatched = !!data.stop_latched;
-        Go2Shared.state.COMMS_ENABLED = !safetyLatched;
-
-        const btn = document.getElementById("safetyToggleBtn");
-        if (btn) {
-          btn.textContent = safetyLatched ? "RESUME" : "STOP";
-          btn.classList.toggle("danger", !safetyLatched);
-          btn.classList.toggle("activeMode", safetyLatched);
-        }
-      } catch (_) {}
-    }
-
-    function initJoysticks() {
-      Go2Shared.createJoystick("joyLeft", (x, y, active) => {
-        latest.lx = active ? x : 0;
-        latest.ly = active ? y : 0;
-      });
-
-      Go2Shared.createJoystick("joyRight", (x, y, active) => {
-        latest.rx = active ? x : 0;
-        latest.ry = active ? y : 0;
-      });
-
-      if (teleopTimer) clearInterval(teleopTimer);
-      teleopTimer = setInterval(sendTeleop, 120);
-  }
-
-    async function sendTeleop() {
-      if (!Go2Shared.ensureLoggedIn()) return;
-      if (!Go2Shared.state.COMMS_ENABLED) return;
-
-      const cmd = {
-        linear_x: -latest.ly * 0.6,
-        linear_y: latest.lx * 0.6,
-        angular_z: latest.rx * 1.2,
-      };
-
-      await Go2Shared.httpPost("/teleop", cmd);
-    }
-  </script>
 </head>
 
 <body>
@@ -236,7 +71,8 @@ Author: Victor Lim
     <div class="loginCard">
       <h2>Connect to Go2</h2>
       <div class="loginForm">
-        <input id="loginBaseUrl" placeholder="http://robot-ip:8000 or https://robot.domain" />        <input id="loginToken" placeholder="Password" type="password" />
+        <input id="loginBaseUrl" placeholder="http://robot-ip:8000 or https://robot.domain" />
+        <input id="loginToken" placeholder="Password" type="password" />
         <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#333;">
           <input id="showPw" type="checkbox" onclick="Go2Shared.togglePasswordVisibility()" />
           Show password
@@ -253,32 +89,74 @@ Author: Victor Lim
       <h1>Unitree Go2 – Front Camera</h1>
 
       <div class="row">
+        <input id="baseUrl" placeholder="http://<go2-ip>:8000" />
         <button onclick="Go2Shared.checkHealth()">Health</button>
         <button onclick="postAction('stand')">Stand</button>
         <button onclick="postAction('sit')">Sit</button>
         <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
-        <button onclick="startStream()">Start camera</button>
-        <button onclick="stopStream()">Stop camera</button>
         <button onclick="Go2Shared.logout()">Logout</button>
+      </div>
+
+      <div class="small hint">
+        UI host: <span id="uiHost" class="mono"></span><br />
+        API base: <span id="apiHost" class="mono"></span>
       </div>
 
       <div class="camPanel">
         <div class="camHeader">
-          <div class="camTitle">Front Camera Stream</div>
-          <div class="camHint">WebSocket: /ws/cam_front</div>
+          <div class="camTitle">Front camera stream</div>
+          <div class="camHint small" id="camHint">Idle</div>
         </div>
+
         <div class="camViewport">
-          <img id="camImg" alt="Front camera stream" />
+          <img id="camImg" alt="Front camera" />
+        </div>
+
+        <div class="row" style="margin-top:10px; padding:0 12px 12px;">
+          <button onclick="startFrontCameraMode()">Start Stream</button>
+          <button onclick="stopAllVideoStreams()">Stop Stream</button>
+
+          <label class="pill" style="display:inline-flex; align-items:center; gap:8px;">
+            <input id="showYoloPanel" type="checkbox" onchange="toggleYoloPanel()" />
+            Show YOLO panel
+          </label>
+
+          <span class="pill">Frames: <span id="frameCount">0</span></span>
+          <span class="pill">Last: <span id="frameBytes">0</span> bytes</span>
+          <span class="pill">Mode: <span id="videoMode">front</span></span>
+        </div>
+
+        <div class="small" style="padding:0 12px 12px;">
+          Normal stream: <span class="mono">/ws/cam_front</span>
+        </div>
+      </div>
+
+      <div id="yoloPanel" class="camPanel" style="display:none;">
+        <div class="camHeader">
+          <div class="camTitle">YOLO stream</div>
+          <div class="camHint small" id="yoloHint">Idle</div>
+        </div>
+
+        <div style="padding:10px 12px 12px;">
+          <div class="row">
+            <button onclick="startYoloMode()">Start YOLO Stream</button>
+            <button onclick="stopYoloMode()">Stop YOLO Stream</button>
+          </div>
+
+          <div class="small" style="margin-top:10px;">
+            YOLO stream: <span class="mono">/ws/cam_yolo</span><br />
+            YOLO control API: <span class="mono">POST /yolo/start</span>, <span class="mono">POST /yolo/stop</span>
+          </div>
         </div>
       </div>
 
       <div class="joyRow">
         <div class="joyBox">
-          <div class="joyTitle">Move (X/Y)</div>
+          <div class="joyTitle">Left joystick: X=strafe, Y=fwd/back</div>
           <canvas id="joyLeft" class="joyCanvas"></canvas>
         </div>
         <div class="joyBox">
-          <div class="joyTitle">Turn</div>
+          <div class="joyTitle">Right joystick: X=turn (yaw)</div>
           <canvas id="joyRight" class="joyCanvas"></canvas>
         </div>
       </div>
@@ -287,7 +165,385 @@ Author: Victor Lim
         <div id="msg" class="small">Ready.</div>
         <div id="detail" class="mono"></div>
       </div>
+
+      <div class="small" style="margin-top:10px;">
+        STOP pauses camera streaming and blocks commands until RESUME.
+      </div>
     </div>
   </div>
+
+  <script>
+    let stopLatched = false;
+    let safetyBusy = false;
+
+    let latest = { lx: 0, ly: 0, rx: 0 };
+    const MAX_LIN = 0.6;
+    const MAX_ANG = 1.2;
+    const SEND_HZ = 20;
+    const SEND_PERIOD_MS = Math.floor(1000 / SEND_HZ);
+
+    let ACTIVE_VIDEO_MODE = "front"; // "front" | "yolo" | "off"
+
+    let CAM_WS = null;
+    let camKeepalive = null;
+
+    let YOLO_VIDEO_WS = null;
+    let yoloVideoKeepalive = null;
+
+    let lastBlobUrl = "";
+    let frames = 0;
+
+    window.addEventListener("DOMContentLoaded", async () => {
+      await Go2Shared.init({ defaultApi: "", showAuthButtons: true });
+      document.getElementById("uiHost").textContent = window.location.origin;
+      document.getElementById("apiHost").textContent = Go2Shared.apiBase();
+
+      setTimeout(async () => {
+        await refreshSafetyStatus();
+        if (!stopLatched && Go2Shared.ensureLoggedIn()) {
+          startFrontCameraMode();
+        }
+      }, 200);
+
+      Go2Shared.createJoystick("joyLeft", (x, y, active) => {
+        latest.lx = active ? x : 0;
+        latest.ly = active ? y : 0;
+      });
+
+      Go2Shared.createJoystick("joyRight", (x, y, active) => {
+        latest.rx = active ? x : 0;
+      });
+
+      window.setInterval(() => {
+        if (!Go2Shared.ensureLoggedIn() || !Go2Shared.state.COMMS_ENABLED || stopLatched) return;
+        const eps = 0.01;
+        if (Math.abs(latest.lx) < eps && Math.abs(latest.ly) < eps && Math.abs(latest.rx) < eps) return;
+        sendTeleop(latest.lx, latest.ly, latest.rx);
+      }, SEND_PERIOD_MS);
+    });
+
+    async function loginAndStart() {
+      const ok = await Go2Shared.login();
+      await refreshSafetyStatus();
+      if (ok && !stopLatched) {
+        startFrontCameraMode();
+      }
+    }
+
+    function setSafetyButton(latched) {
+      stopLatched = !!latched;
+      const btn = document.getElementById("safetyToggleBtn");
+      if (!btn) return;
+      btn.textContent = stopLatched ? "RESUME" : "STOP";
+      btn.classList.toggle("danger", !stopLatched);
+      btn.disabled = safetyBusy;
+    }
+
+    async function refreshSafetyStatus() {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      const r = await Go2Shared.httpGet("/safety/status", { bypassCommsGate: true });
+      if (r.ok) {
+        try {
+          const data = JSON.parse(r.text);
+          setSafetyButton(!!data.stop_latched);
+          Go2Shared.state.COMMS_ENABLED = !stopLatched;
+        } catch {}
+      }
+      return r;
+    }
+
+    async function toggleSafety() {
+      if (!Go2Shared.ensureLoggedIn() || safetyBusy) return;
+      safetyBusy = true;
+      setSafetyButton(stopLatched);
+
+      try {
+        if (!stopLatched) {
+          const r = await Go2Shared.httpPost("/safety/stop", null, { bypassCommsGate: true });
+          if (!r.ok) {
+            Go2Shared.setStatus(`STOP failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+            return;
+          }
+          Go2Shared.state.COMMS_ENABLED = false;
+          setSafetyButton(true);
+          stopAllVideoStreams();
+          setCamHint("STOP latched: camera paused");
+          setYoloHint("STOP latched");
+          Go2Shared.setStatus("STOP latched 🔒", true, `URL: ${r.url}\n${r.text}`);
+        } else {
+          const r = await Go2Shared.httpPost("/safety/resume", null, { bypassCommsGate: true });
+          if (!r.ok) {
+            Go2Shared.setStatus(`RESUME failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+            return;
+          }
+          Go2Shared.state.COMMS_ENABLED = true;
+          setSafetyButton(false);
+          Go2Shared.setStatus("RESUME ✅", true, `URL: ${r.url}\n${r.text}`);
+          await refreshSafetyStatus();
+          startFrontCameraMode();
+        }
+      } finally {
+        safetyBusy = false;
+        setSafetyButton(stopLatched);
+      }
+    }
+
+    async function postAction(action) {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
+        Go2Shared.setStatus("STOP latched 🔒", false, "No actions until RESUME.");
+        return;
+      }
+
+      const r = await Go2Shared.httpPost(`/actions/${action}`);
+      Go2Shared.setStatus(
+        r.ok ? `${action} started ✅` : `${action} failed (HTTP ${r.status})`,
+        r.ok,
+        `URL: ${r.url}\n${r.text}`
+      );
+    }
+
+    function toggleYoloPanel() {
+      const show = document.getElementById("showYoloPanel")?.checked;
+      document.getElementById("yoloPanel").style.display = show ? "block" : "none";
+      // Intentionally UI-only. Do not start/stop YOLO here.
+    }
+
+    function setCamHint(t) {
+      const el = document.getElementById("camHint");
+      if (el) el.textContent = t;
+    }
+
+    function setYoloHint(t) {
+      const el = document.getElementById("yoloHint");
+      if (el) el.textContent = t;
+    }
+
+    function setVideoModeLabel(mode) {
+      ACTIVE_VIDEO_MODE = mode;
+      const el = document.getElementById("videoMode");
+      if (el) el.textContent = mode;
+    }
+
+    function authWsSuffix() {
+      const token = encodeURIComponent(Go2Shared.state.AUTH_TOKEN || "");
+      return (Go2Shared.state.AUTH_ENABLED && token) ? `?token=${token}` : "";
+    }
+
+    function resetFrameCounters() {
+      frames = 0;
+      document.getElementById("frameCount").textContent = "0";
+      document.getElementById("frameBytes").textContent = "0";
+    }
+
+    function applyFrameBytes(u8) {
+      const bytes = u8.length;
+      frames++;
+      document.getElementById("frameCount").textContent = String(frames);
+      document.getElementById("frameBytes").textContent = String(bytes);
+
+      const blob = new Blob([u8], { type: "image/jpeg" });
+      const url = URL.createObjectURL(blob);
+      if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+      lastBlobUrl = url;
+      document.getElementById("camImg").src = url;
+    }
+
+    function stopFrontStreamOnly() {
+      try { if (CAM_WS) CAM_WS.close(); } catch {}
+      CAM_WS = null;
+      if (camKeepalive) {
+        clearInterval(camKeepalive);
+        camKeepalive = null;
+      }
+    }
+
+    function stopYoloVideoOnly() {
+      try { if (YOLO_VIDEO_WS) YOLO_VIDEO_WS.close(); } catch {}
+      YOLO_VIDEO_WS = null;
+      if (yoloVideoKeepalive) {
+        clearInterval(yoloVideoKeepalive);
+        yoloVideoKeepalive = null;
+      }
+    }
+
+    function stopAllVideoStreams() {
+      stopFrontStreamOnly();
+      stopYoloVideoOnly();
+
+      if (lastBlobUrl) {
+        URL.revokeObjectURL(lastBlobUrl);
+        lastBlobUrl = "";
+      }
+
+      setVideoModeLabel("off");
+      setCamHint(stopLatched ? "STOP latched: camera paused" : "Idle");
+      setYoloHint(stopLatched ? "STOP latched" : "Idle");
+    }
+
+    function startFrontCameraMode() {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
+        setCamHint("STOP latched: camera paused");
+        return;
+      }
+
+      stopYoloVideoOnly();
+      stopFrontStreamOnly();
+      resetFrameCounters();
+
+      setVideoModeLabel("front");
+      setCamHint("Connecting front stream...");
+      setYoloHint("Idle");
+
+      const wsUrl = `${Go2Shared.apiWsBase()}/ws/cam_front${authWsSuffix()}`;
+      CAM_WS = new WebSocket(wsUrl);
+      CAM_WS.binaryType = "arraybuffer";
+
+      CAM_WS.onopen = () => {
+        setCamHint("Front stream live ✅");
+        camKeepalive = setInterval(() => {
+          if (CAM_WS && CAM_WS.readyState === WebSocket.OPEN) {
+            try { CAM_WS.send("ping"); } catch {}
+          }
+        }, 10000);
+      };
+
+      CAM_WS.onmessage = async (ev) => {
+        if (ACTIVE_VIDEO_MODE !== "front") return;
+        if (!Go2Shared.state.COMMS_ENABLED || stopLatched) return;
+        if (typeof ev.data === "string") return;
+
+        let u8;
+        if (ev.data instanceof ArrayBuffer) u8 = new Uint8Array(ev.data);
+        else if (ev.data instanceof Blob) u8 = new Uint8Array(await ev.data.arrayBuffer());
+        else return;
+
+        applyFrameBytes(u8);
+      };
+
+      CAM_WS.onclose = () => {
+        if (camKeepalive) {
+          clearInterval(camKeepalive);
+          camKeepalive = null;
+        }
+        CAM_WS = null;
+        if (ACTIVE_VIDEO_MODE === "front") {
+          setCamHint(stopLatched ? "STOP latched: camera paused" : "Front stream disconnected");
+        }
+      };
+
+      CAM_WS.onerror = () => {
+        if (ACTIVE_VIDEO_MODE === "front") {
+          setCamHint("Front stream WS error");
+        }
+      };
+    }
+
+    async function startYoloMode() {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
+        setYoloHint("STOP latched");
+        return;
+      }
+
+      setYoloHint("Starting YOLO process...");
+
+      const startResp = await Go2Shared.httpPost("/yolo/start");
+      if (!startResp.ok) {
+        setYoloHint(`Start failed (${startResp.status})`);
+        Go2Shared.setStatus("YOLO start failed", false, `URL: ${startResp.url}\n${startResp.text}`);
+        return;
+      }
+
+      stopFrontStreamOnly();
+      stopYoloVideoOnly();
+      resetFrameCounters();
+
+      setVideoModeLabel("yolo");
+      setCamHint("YOLO stream active");
+      setYoloHint("Connecting YOLO stream...");
+
+      const wsUrl = `${Go2Shared.apiWsBase()}/ws/cam_yolo${authWsSuffix()}`;
+      YOLO_VIDEO_WS = new WebSocket(wsUrl);
+      YOLO_VIDEO_WS.binaryType = "arraybuffer";
+
+      YOLO_VIDEO_WS.onopen = () => {
+        setYoloHint("YOLO stream live ✅");
+        yoloVideoKeepalive = setInterval(() => {
+          if (YOLO_VIDEO_WS && YOLO_VIDEO_WS.readyState === WebSocket.OPEN) {
+            try { YOLO_VIDEO_WS.send("ping"); } catch {}
+          }
+        }, 10000);
+      };
+
+      YOLO_VIDEO_WS.onmessage = async (ev) => {
+        if (ACTIVE_VIDEO_MODE !== "yolo") return;
+        if (!Go2Shared.state.COMMS_ENABLED || stopLatched) return;
+        if (typeof ev.data === "string") return;
+
+        let u8;
+        if (ev.data instanceof ArrayBuffer) u8 = new Uint8Array(ev.data);
+        else if (ev.data instanceof Blob) u8 = new Uint8Array(await ev.data.arrayBuffer());
+        else return;
+
+        applyFrameBytes(u8);
+      };
+
+      YOLO_VIDEO_WS.onclose = async () => {
+        if (yoloVideoKeepalive) {
+          clearInterval(yoloVideoKeepalive);
+          yoloVideoKeepalive = null;
+        }
+        YOLO_VIDEO_WS = null;
+
+        if (ACTIVE_VIDEO_MODE === "yolo" && !stopLatched) {
+          setYoloHint("YOLO stream disconnected");
+          // Fallback automatically
+          startFrontCameraMode();
+        }
+      };
+
+      YOLO_VIDEO_WS.onerror = () => {
+        if (ACTIVE_VIDEO_MODE === "yolo") {
+          setYoloHint("YOLO stream WS error");
+        }
+      };
+    }
+
+    async function stopYoloMode() {
+      stopYoloVideoOnly();
+
+      const r = await Go2Shared.httpPost("/yolo/stop", null, { bypassCommsGate: true });
+      if (!r.ok) {
+        setYoloHint(`Stop failed (${r.status})`);
+        Go2Shared.setStatus("YOLO stop failed", false, `URL: ${r.url}\n${r.text}`);
+      } else {
+        setYoloHint("YOLO stopped");
+      }
+
+      if (!stopLatched && Go2Shared.state.COMMS_ENABLED) {
+        startFrontCameraMode();
+      } else {
+        setVideoModeLabel("off");
+      }
+    }
+
+    function mapToCmd(lx, ly, rx) {
+      return {
+        linear_x: (-ly) * MAX_LIN,
+        linear_y: (lx) * MAX_LIN,
+        angular_z: (rx) * MAX_ANG
+      };
+    }
+
+    async function sendTeleop(lx, ly, rx) {
+      if (!Go2Shared.ensureLoggedIn() || !Go2Shared.state.COMMS_ENABLED || stopLatched) return;
+      const r = await Go2Shared.httpPost("/teleop", mapToCmd(lx, ly, rx));
+      if (!r.ok) {
+        Go2Shared.setStatus(`Teleop failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+      }
+    }
+  </script>
 </body>
 </html>

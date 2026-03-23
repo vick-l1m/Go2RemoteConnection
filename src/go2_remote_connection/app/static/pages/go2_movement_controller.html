@@ -4,12 +4,11 @@ go2_movement_controller.html
 This file provides the Go2 movement controller interface.
 It includes:
 - shared login/auth overlay
-- shared navigation and health/safety controls
-- stand/sit actions
-- move forward command
-- sport command buttons
-- dual joystick teleoperation
-- status output for actions and safety state
+- movement / posing / actions modes
+- joystick teleop
+- exclusive movement toggles
+- danger confirmation modal for risky actions
+- safety stop/resume controls
 
 Version 2.0
 Author: Victor Lim
@@ -25,118 +24,24 @@ Author: Victor Lim
   <link rel="stylesheet" href="/app/static/shared.css" />
   <script src="/app/static/shared.js"></script>
 
-  <script>
-    let latest = { lx: 0, ly: 0, rx: 0, ry: 0 };
-    let teleopTimer = null;
-    let safetyLatched = false;
-
-    window.addEventListener("DOMContentLoaded", async () => {
-      await Go2Shared.init({ defaultApi: "", showAuthButtons: true });
-      setTimeout(refreshSafetyStatus, 200);
-      initJoysticks();
-    });
-
-    async function loginAndStart() {
-      await Go2Shared.login();
+  <style>
+    .modalOverlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 10000;
     }
-
-    async function refreshSafetyStatus() {
-      const r = await Go2Shared.httpGet("/safety/status", { bypassCommsGate: true });
-      if (!r.ok) return;
-
-      try {
-        const data = JSON.parse(r.text);
-        safetyLatched = !!data.stop_latched;
-        Go2Shared.state.COMMS_ENABLED = !safetyLatched;
-
-        const btn = document.getElementById("safetyToggleBtn");
-        if (btn) {
-          btn.textContent = safetyLatched ? "RESUME" : "STOP";
-          btn.classList.toggle("danger", !safetyLatched);
-          btn.classList.toggle("activeMode", safetyLatched);
-        }
-      } catch (_) {}
+    .modalCard {
+      width: min(420px, 92vw);
+      background: #fff;
+      border-radius: var(--radius);
+      padding: 16px;
+      border: 1px solid var(--border);
     }
-
-    async function toggleSafety() {
-      const path = safetyLatched ? "/safety/resume" : "/safety/stop";
-      const r = await Go2Shared.httpPost(path, null, { bypassCommsGate: true });
-
-      Go2Shared.setStatus(
-        r.ok ? (safetyLatched ? "RESUME sent ✅" : "STOP sent ✅") : "Safety command failed",
-        r.ok,
-        `URL: ${r.url}\n${r.text}`
-      );
-
-      await refreshSafetyStatus();
-    }
-
-    async function postAction(action) {
-      const r = await Go2Shared.httpPost(`/actions/${action}`);
-      Go2Shared.setStatus(
-        r.ok ? `Action sent: ${action}` : `Action failed: ${action}`,
-        r.ok,
-        `URL: ${r.url}\n${r.text}`
-      );
-    }
-
-    async function postSport(cmd) {
-      const r = await Go2Shared.httpPost(`/sport/${cmd}`);
-      Go2Shared.setStatus(
-        r.ok ? `Sport command sent: ${cmd}` : `Sport command failed: ${cmd}`,
-        r.ok,
-        `URL: ${r.url}\n${r.text}`
-      );
-    }
-
-    async function sendMoveForward() {
-      const metersInput = document.getElementById("moveMeters");
-      const meters = Number(metersInput.value || "0");
-
-      if (!(meters > 0)) {
-        Go2Shared.setStatus("Enter a distance greater than 0", false);
-        return;
-      }
-
-      const r = await Go2Shared.httpPost("/move_forward", { meters });
-      Go2Shared.setStatus(
-        r.ok ? `Move forward command sent: ${meters} m` : "Move forward failed",
-        r.ok,
-        `URL: ${r.url}\n${r.text}`
-      );
-    }
-
-    function initJoysticks() {
-      Go2Shared.createJoystick("joyLeft", (x, y, active) => {
-        latest.lx = active ? x : 0;
-        latest.ly = active ? y : 0;
-      });
-
-      Go2Shared.createJoystick("joyRight", (x, y, active) => {
-        latest.rx = active ? x : 0;
-        latest.ry = active ? y : 0;
-      });
-
-      if (teleopTimer) clearInterval(teleopTimer);
-      teleopTimer = setInterval(sendTeleop, 120);
-    }
-
-    async function sendTeleop() {
-      if (!Go2Shared.ensureLoggedIn()) return;
-      if (!Go2Shared.state.COMMS_ENABLED) return;
-
-      const cmd = {
-        linear_x: -latest.ly * 0.6,
-        linear_y: latest.lx * 0.6,
-        angular_z: latest.rx * 1.2,
-      };
-
-      const r = await Go2Shared.httpPost("/teleop", cmd);
-      if (!r.ok && r.status !== 0) {
-        Go2Shared.setStatus(`Teleop failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
-      }
-    }
-  </script>
+  </style>
 </head>
 
 <body>
@@ -150,7 +55,7 @@ Author: Victor Lim
           <input id="showPw" type="checkbox" onclick="Go2Shared.togglePasswordVisibility()" />
           Show password
         </label>
-        <button id="unlockBtn" onclick="loginAndStart()">Unlock</button>
+        <button id="unlockBtn" onclick="Go2Shared.login()">Unlock</button>
         <div id="loginMsg" class="loginMsg"></div>
         <div class="loginTip">Tip: This password is unique per robot.</div>
       </div>
@@ -164,52 +69,96 @@ Author: Victor Lim
       <div class="row">
         <input id="baseUrl" placeholder="http://<go2-ip>:8000" />
         <button onclick="Go2Shared.checkHealth()">Health</button>
+
         <button onclick="postAction('stand')">Stand</button>
         <button onclick="postAction('sit')">Sit</button>
+
+        <button id="modeMovement" onclick="setMode('movement')">Mode: Movement</button>
+        <button id="modePosing" onclick="setMode('posing')">Mode: Posing</button>
+        <button id="modeActions" onclick="setMode('actions')">Mode: Actions</button>
+
+        <span id="modePill" class="pill">mode: movement</span>
+
         <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
         <button onclick="Go2Shared.logout()">Logout</button>
       </div>
 
-      <div class="grid">
-        <div class="panel">
-          <h2>Move Forward</h2>
-          <div class="row">
-            <input id="moveMeters" type="number" min="0.1" max="5" step="0.1" value="0.5" />
-            <button onclick="sendMoveForward()">Send</button>
-          </div>
-          <div class="small hint">Uses POST /move_forward</div>
-        </div>
-
-        <div class="panel">
-          <h2>Basic Actions</h2>
-          <div class="btnGrid">
-            <button onclick="postAction('stand')">Stand</button>
-            <button onclick="postAction('sit')">Sit</button>
-            <button onclick="postAction('recover')">Recover</button>
-            <button onclick="postAction('stop')">Stop Action</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="panel">
-        <h2>Sport Commands</h2>
-        <div class="btnGrid">
-          <button onclick="postSport('balance_stand')">Balance Stand</button>
-          <button onclick="postSport('damp')">Damp</button>
-          <button onclick="postSport('static_walk')">Static Walk</button>
-          <button onclick="postSport('freewalk')">Free Walk</button>
-          <button onclick="postSport('stop_move')">Stop Move</button>
-        </div>
+      <div class="small hint">
+        UI host: <span id="uiHost" class="mono"></span><br />
+        API base: <span id="apiHost" class="mono"></span>
       </div>
 
       <div class="joyRow">
         <div class="joyBox">
-          <div class="joyTitle">Move (X/Y)</div>
+          <div class="joyTitle">Left joystick: X=strafe, Y=fwd/back</div>
           <canvas id="joyLeft" class="joyCanvas"></canvas>
         </div>
         <div class="joyBox">
-          <div class="joyTitle">Turn</div>
+          <div class="joyTitle">Right joystick: X=turn (yaw)</div>
           <canvas id="joyRight" class="joyCanvas"></canvas>
+        </div>
+      </div>
+
+      <div id="panelMovement" class="panel">
+        <h2>Movement mode commands</h2>
+        <div class="btnGrid">
+          <button onclick="postAction('economic_gait')">EconomicGait</button>
+          <button onclick="postAction('trot_run')">TrotRun</button>
+          <button onclick="postAction('switch_avoid')">SwitchAvoidMode</button>
+          <button onclick="postAction('cycle_speed')">SpeedLevel (cycle)</button>
+          <button onclick="postAction('freewalk')">FreeWalk</button>
+
+          <button data-action="toggle_freebound" data-label="FreeBound" onclick="setToggleExclusive('toggle_freebound')">FreeBound</button>
+          <button data-action="toggle_freeavoid" data-label="FreeAvoid" onclick="setToggleExclusive('toggle_freeavoid')">FreeAvoid</button>
+          <button data-action="toggle_crossstep" data-label="CrossStep" onclick="setToggleExclusive('toggle_crossstep')">CrossStep</button>
+          <button data-action="toggle_freejump" data-label="FreeJump" onclick="setToggleExclusive('toggle_freejump')">FreeJump</button>
+          <button data-action="toggle_walkupright" data-label="WalkUpright" onclick="setToggleExclusive('toggle_walkupright')">WalkUpright</button>
+          <button data-action="toggle_handstand" data-label="HandStand" onclick="setToggleExclusive('toggle_handstand')">HandStand</button>
+          <button data-action="toggle_classicwalk" data-label="ClassicWalk" onclick="setToggleExclusive('toggle_classicwalk')">ClassicWalk</button>
+
+          <button onclick="postAction('stop_move')">StopMove</button>
+          <button onclick="postAction('static_walk')">StaticWalk</button>
+        </div>
+      </div>
+
+      <div id="panelPosing" class="panel" style="display:none;">
+        <h2>Posing mode commands</h2>
+        <div class="btnGrid">
+          <button onclick="postAction('damp')">Damp</button>
+          <button onclick="postAction('balance_stand')">BalanceStand</button>
+        </div>
+      </div>
+
+      <div id="panelActions" class="panel" style="display:none;">
+        <h2>Actions mode commands</h2>
+        <div class="btnGrid">
+          <button onclick="postAction('sit_toggle')">Sit ↔ Stand (toggle)</button>
+          <button onclick="postAction('hello')">Hello</button>
+          <button onclick="postAction('stretch')">Stretch</button>
+          <button onclick="postAction('content')">Content</button>
+          <button onclick="postAction('heart')">Heart</button>
+          <button onclick="postAction('scrape')">Scrape</button>
+          <button onclick="postAction('front_jump')">FrontJump</button>
+
+          <button onclick="postDangerAction('front_pounce')">FrontPounce</button>
+          <button onclick="postDangerAction('front_flip')">FrontFlip</button>
+          <button onclick="postDangerAction('back_flip')">BackFlip</button>
+          <button onclick="postDangerAction('left_flip')">LeftFlip</button>
+
+          <button onclick="postAction('recovery')">RecoveryStand</button>
+        </div>
+      </div>
+
+      <div id="dangerModal" class="modalOverlay">
+        <div class="modalCard">
+          <h2 style="margin:0 0 6px;">Are you sure?</h2>
+          <div id="dangerModalText" class="small" style="margin-bottom:12px;">
+            You are about to run a risky action.
+          </div>
+          <div class="row" style="justify-content:flex-end;">
+            <button onclick="dangerModalCancel()">Cancel</button>
+            <button class="danger" onclick="dangerModalConfirm()">Confirm</button>
+          </div>
         </div>
       </div>
 
@@ -217,7 +166,286 @@ Author: Victor Lim
         <div id="msg" class="small">Ready.</div>
         <div id="detail" class="mono"></div>
       </div>
+
+      <div class="small" style="margin-top:10px;">
+        STOP latches the system: no actions until RESUME.
+      </div>
     </div>
   </div>
+
+  <script>
+    let stopLatched = false;
+    let safetyBusy = false;
+    let currentMode = "movement";
+
+    let latest = { lx: 0, ly: 0, rx: 0 };
+    const MAX_LIN = 0.6;
+    const MAX_ANG = 1.2;
+    const SEND_HZ = 20;
+    const SEND_PERIOD_MS = Math.floor(1000 / SEND_HZ);
+
+    const TOGGLES = [
+      "toggle_freebound",
+      "toggle_freeavoid",
+      "toggle_crossstep",
+      "toggle_freejump",
+      "toggle_walkupright",
+      "toggle_handstand",
+      "toggle_classicwalk"
+    ];
+    const toggleState = Object.fromEntries(TOGGLES.map(a => [a, false]));
+
+    const DANGER_ACTIONS = new Set(["front_flip", "back_flip", "left_flip", "front_pounce"]);
+
+    const dangerModal = {
+      action: null,
+      open(action) {
+        this.action = action;
+        const overlay = document.getElementById("dangerModal");
+        const text = document.getElementById("dangerModalText");
+        const label = action.replaceAll("_", " ").replace(/\b\w/g, c => c.toUpperCase());
+        text.textContent = `You are about to run: ${label}. This can be unsafe if the area isn’t clear.`;
+        overlay.style.display = "flex";
+      },
+      close() {
+        this.action = null;
+        document.getElementById("dangerModal").style.display = "none";
+      }
+    };
+
+    window.addEventListener("DOMContentLoaded", async () => {
+      await Go2Shared.init({ defaultApi: "", showAuthButtons: true });
+      document.getElementById("uiHost").textContent = window.location.origin;
+      document.getElementById("apiHost").textContent = Go2Shared.apiBase();
+
+      updateModeUI();
+      setTimeout(refreshSafetyStatus, 200);
+
+      Go2Shared.createJoystick("joyLeft", (x, y, active) => {
+        latest.lx = active ? x : 0;
+        latest.ly = active ? y : 0;
+      });
+
+      Go2Shared.createJoystick("joyRight", (x, y, active) => {
+        latest.rx = active ? x : 0;
+      });
+
+      window.setInterval(() => {
+        if (!Go2Shared.ensureLoggedIn() || !Go2Shared.state.COMMS_ENABLED) return;
+        const eps = 0.01;
+        if (Math.abs(latest.lx) < eps && Math.abs(latest.ly) < eps && Math.abs(latest.rx) < eps) return;
+        sendTeleop(latest.lx, latest.ly, latest.rx);
+      }, SEND_PERIOD_MS);
+    });
+
+    function setSafetyButton(latched) {
+      stopLatched = !!latched;
+      const btn = document.getElementById("safetyToggleBtn");
+      btn.textContent = stopLatched ? "RESUME" : "STOP";
+      btn.classList.toggle("danger", !stopLatched);
+      btn.disabled = safetyBusy;
+    }
+
+    async function refreshSafetyStatus() {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      const r = await Go2Shared.httpGet("/safety/status", { bypassCommsGate: true });
+      if (r.ok) {
+        try {
+          const data = JSON.parse(r.text);
+          setSafetyButton(!!data.stop_latched);
+          Go2Shared.state.COMMS_ENABLED = !stopLatched;
+        } catch {}
+      }
+      return r;
+    }
+
+    async function toggleSafety() {
+      if (!Go2Shared.ensureLoggedIn() || safetyBusy) return;
+      safetyBusy = true;
+      setSafetyButton(stopLatched);
+
+      try {
+        if (!stopLatched) {
+          const r = await Go2Shared.httpPost("/safety/stop", null, { bypassCommsGate: true });
+          if (!r.ok) {
+            Go2Shared.setStatus(`STOP failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+            return;
+          }
+          Go2Shared.state.COMMS_ENABLED = false;
+          Go2Shared.setStatus("STOP latched 🔒", true, `URL: ${r.url}\n${r.text}`);
+        } else {
+          const r = await Go2Shared.httpPost("/safety/resume", null, { bypassCommsGate: true });
+          if (!r.ok) {
+            Go2Shared.setStatus(`RESUME failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+            return;
+          }
+          Go2Shared.state.COMMS_ENABLED = true;
+          Go2Shared.setStatus("RESUME ✅", true, `URL: ${r.url}\n${r.text}`);
+        }
+      } finally {
+        safetyBusy = false;
+        await refreshSafetyStatus();
+      }
+    }
+
+    function updateModeUI() {
+      document.getElementById("modePill").textContent = `mode: ${currentMode}`;
+      document.getElementById("modeMovement").classList.toggle("activeMode", currentMode === "movement");
+      document.getElementById("modePosing").classList.toggle("activeMode", currentMode === "posing");
+      document.getElementById("modeActions").classList.toggle("activeMode", currentMode === "actions");
+
+      document.getElementById("panelMovement").style.display = currentMode === "movement" ? "block" : "none";
+      document.getElementById("panelPosing").style.display = currentMode === "posing" ? "block" : "none";
+      document.getElementById("panelActions").style.display = currentMode === "actions" ? "block" : "none";
+    }
+
+    async function setMode(m) {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      if (!Go2Shared.state.COMMS_ENABLED) {
+        Go2Shared.setStatus("STOP latched 🔒", false, "Press RESUME to enable commands.");
+        return;
+      }
+
+      const map = {
+        movement: "mode_movement",
+        posing: "mode_posing",
+        actions: "mode_actions"
+      };
+
+      const r = await Go2Shared.httpPost(`/actions/${map[m]}`);
+      if (!r.ok) {
+        Go2Shared.setStatus(`Mode set failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+        return;
+      }
+
+      currentMode = m;
+      updateModeUI();
+      Go2Shared.setStatus(`Mode: ${m} ✅`, true);
+    }
+
+    async function postAction(action) {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      if (!Go2Shared.state.COMMS_ENABLED) {
+        Go2Shared.setStatus("STOP latched 🔒", false, "Press RESUME to enable commands.");
+        return;
+      }
+
+      const r = await Go2Shared.httpPost(`/actions/${action}`);
+      Go2Shared.setStatus(
+        r.ok ? `${action} ✅` : `${action} failed (HTTP ${r.status})`,
+        r.ok,
+        `URL: ${r.url}\n${r.text}`
+      );
+    }
+
+    async function postDangerAction(action) {
+      if (!DANGER_ACTIONS.has(action)) return postAction(action);
+      if (!Go2Shared.ensureLoggedIn()) return;
+      if (!Go2Shared.state.COMMS_ENABLED) {
+        Go2Shared.setStatus("STOP latched 🔒", false, "Press RESUME to enable commands.");
+        return;
+      }
+      dangerModal.open(action);
+    }
+
+    function dangerModalCancel() {
+      dangerModal.close();
+    }
+
+    async function dangerModalConfirm() {
+      const action = dangerModal.action;
+      dangerModal.close();
+      if (!action) return;
+      await postAction(action);
+    }
+
+    document.addEventListener("click", (e) => {
+      const overlay = document.getElementById("dangerModal");
+      if (overlay && overlay.style.display !== "none" && e.target === overlay) {
+        dangerModal.close();
+      }
+    });
+
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") dangerModal.close();
+    });
+
+    function setToggleBtn(action, on) {
+      const btn = document.querySelector(`[data-action="${action}"]`);
+      if (!btn) return;
+      const label = btn.getAttribute("data-label");
+      btn.textContent = label + (on ? " ✅" : "");
+      btn.classList.toggle("toggleOn", !!on);
+    }
+
+    function setAllToggleButtonsEnabled(enabled) {
+      for (const a of TOGGLES) {
+        const btn = document.querySelector(`[data-action="${a}"]`);
+        if (btn) btn.disabled = !enabled;
+      }
+    }
+
+    async function setToggleExclusive(target) {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      if (!Go2Shared.state.COMMS_ENABLED) {
+        Go2Shared.setStatus("STOP latched 🔒", false, "Press RESUME to enable commands.");
+        return;
+      }
+
+      setAllToggleButtonsEnabled(false);
+      try {
+        if (toggleState[target]) {
+          const r = await Go2Shared.httpPost(`/actions/${target}`);
+          if (!r.ok) {
+            Go2Shared.setStatus(`${target} failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+            return;
+          }
+          toggleState[target] = false;
+          setToggleBtn(target, false);
+          Go2Shared.setStatus(`${target.replace("toggle_", "")} DISABLED ✅`, true);
+          return;
+        }
+
+        for (const a of TOGGLES) {
+          if (a !== target && toggleState[a]) {
+            const rOff = await Go2Shared.httpPost(`/actions/${a}`);
+            if (!rOff.ok) {
+              Go2Shared.setStatus(`Failed disabling ${a} (HTTP ${rOff.status})`, false, `URL: ${rOff.url}\n${rOff.text}`);
+              return;
+            }
+            toggleState[a] = false;
+            setToggleBtn(a, false);
+          }
+        }
+
+        const rOn = await Go2Shared.httpPost(`/actions/${target}`);
+        if (!rOn.ok) {
+          Go2Shared.setStatus(`${target} failed (HTTP ${rOn.status})`, false, `URL: ${rOn.url}\n${rOn.text}`);
+          return;
+        }
+        toggleState[target] = true;
+        setToggleBtn(target, true);
+        Go2Shared.setStatus(`${target.replace("toggle_", "")} ENABLED ✅`, true);
+      } finally {
+        setAllToggleButtonsEnabled(true);
+      }
+    }
+
+    function mapToCmd(lx, ly, rx) {
+      return {
+        linear_x: (-ly) * MAX_LIN,
+        linear_y: (lx) * MAX_LIN,
+        angular_z: (rx) * MAX_ANG
+      };
+    }
+
+    async function sendTeleop(lx, ly, rx) {
+      if (!Go2Shared.ensureLoggedIn() || !Go2Shared.state.COMMS_ENABLED) return;
+      const r = await Go2Shared.httpPost("/teleop", mapToCmd(lx, ly, rx));
+      if (!r.ok) {
+        Go2Shared.setStatus(`Teleop failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+      }
+    }
+  </script>
 </body>
 </html>

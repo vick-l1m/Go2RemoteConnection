@@ -13,7 +13,7 @@ It includes:
 - terminal WebSocket helper
 - shared joystick helper
 
-Version 2.0
+Version 2.1
 Author: Victor Lim
 */
 
@@ -31,14 +31,20 @@ window.Go2Shared = {
     const showAuthButtons = opts.showAuthButtons ?? true;
 
     this.state.SHOW_AUTH_BUTTONS = !!showAuthButtons;
-    this.state.API_BASE = localStorage.getItem("go2_api_base") || defaultApi || "";
+
+    const savedBase = localStorage.getItem("go2_api_base") || defaultApi || "";
+    this.state.API_BASE = this.normalizeBase(savedBase);
     this.state.AUTH_TOKEN = localStorage.getItem("go2_auth_token") || "";
 
+    if (this.state.API_BASE) {
+      localStorage.setItem("go2_api_base", this.state.API_BASE);
+    }
+
     const baseInput = document.getElementById("baseUrl");
-    if (baseInput) baseInput.value = this.normalizeBase(this.state.API_BASE);
+    if (baseInput) baseInput.value = this.state.API_BASE;
 
     const loginBase = document.getElementById("loginBaseUrl");
-    if (loginBase) loginBase.value = this.normalizeBase(this.state.API_BASE);
+    if (loginBase) loginBase.value = this.state.API_BASE;
 
     const loginToken = document.getElementById("loginToken");
     if (loginToken) loginToken.value = this.state.AUTH_TOKEN;
@@ -64,7 +70,7 @@ window.Go2Shared = {
     try {
       const u = new URL(base);
 
-      // If user entered only host/IP with no port, default to 8000
+      // Default to :8000 if user only typed host/IP
       if (!u.port) {
         u.port = "8000";
       }
@@ -77,17 +83,31 @@ window.Go2Shared = {
 
   apiBase() {
     const baseInput = document.getElementById("baseUrl");
-    const base = this.normalizeBase(baseInput ? baseInput.value : this.state.API_BASE);
+    const raw = baseInput ? baseInput.value : this.state.API_BASE;
+    const base = this.normalizeBase(raw);
+
     this.state.API_BASE = base;
+    if (baseInput) baseInput.value = base;
     if (base) localStorage.setItem("go2_api_base", base);
+
+    const loginBase = document.getElementById("loginBaseUrl");
+    if (loginBase && !loginBase.value.trim()) {
+      loginBase.value = base;
+    }
+
     return base;
   },
 
   apiWsBase() {
     const base = this.apiBase();
     if (!base) return "";
-    if (base.startsWith("https://")) return "wss://" + base.slice("https://".length);
-    if (base.startsWith("http://")) return "ws://" + base.slice("http://".length);
+
+    if (base.startsWith("https://")) {
+      return "wss://" + base.slice("https://".length);
+    }
+    if (base.startsWith("http://")) {
+      return "ws://" + base.slice("http://".length);
+    }
     return base;
   },
 
@@ -179,8 +199,12 @@ window.Go2Shared = {
     if (!base) return;
 
     try {
-      const r = await fetch(`${base}/config`, { method: "GET" });
+      const r = await fetch(`${base}/config`, {
+        method: "GET",
+        headers: this.authHeaders(),
+      });
       if (!r.ok) return;
+
       const data = await r.json();
       if (typeof data.auth_enabled === "boolean") {
         this.state.AUTH_ENABLED = data.auth_enabled;
@@ -208,6 +232,8 @@ window.Go2Shared = {
     const mainBase = document.getElementById("baseUrl");
     if (mainBase) mainBase.value = base;
 
+    if (baseInput) baseInput.value = base;
+
     await this.fetchConfigMaybe();
 
     if (!base) {
@@ -222,7 +248,11 @@ window.Go2Shared = {
       return false;
     }
 
-    const r = await this.httpGet("/health", { bypassCommsGate: true, suppressStatus: true });
+    const r = await this.httpGet("/health", {
+      bypassCommsGate: true,
+      suppressStatus: true,
+    });
+
     if (!r.ok) {
       if (msg) msg.textContent = `Connection failed (${r.status || "network"})`;
       this.setStatus("Login failed", false, `URL: ${r.url}\n${r.text}`);
@@ -239,11 +269,15 @@ window.Go2Shared = {
   logout() {
     this.state.AUTH_TOKEN = "";
     localStorage.removeItem("go2_auth_token");
-    this.updateAuthUi();
-    this.setStatus("Logged out", true);
 
     const tokenInput = document.getElementById("loginToken");
     if (tokenInput) tokenInput.value = "";
+
+    const msg = document.getElementById("loginMsg");
+    if (msg) msg.textContent = "";
+
+    this.updateAuthUi();
+    this.setStatus("Logged out", true);
   },
 
   togglePasswordVisibility() {
@@ -351,7 +385,8 @@ window.Go2Shared = {
     fitAddon.fit();
 
     const token = encodeURIComponent(this.state.AUTH_TOKEN || "");
-    const ws = new WebSocket(`${this.apiWsBase()}/ws/terminal?token=${token}`);
+    const tokenSuffix = (this.state.AUTH_ENABLED && token) ? `?token=${token}` : "";
+    const ws = new WebSocket(`${this.apiWsBase()}/ws/terminal${tokenSuffix}`);
 
     ws.onopen = () => {
       if (statusEl) statusEl.textContent = "Connected";
