@@ -1,0 +1,853 @@
+<!--
+P2Dingo_controller.html
+
+This is a standalone controller page for the Unitree P2Dingo robot, built on top of the
+Go2 remote connection framework. It provides teleoperation controls, action buttons, and camera streaming features.
+It contains functions:
+- Teleoperation via on-screen joysticks
+- Action commands for various robot behaviors
+- Posing and movement modes
+- Camera streaming with front camera and YOLO object detection options
+- Toggleable panels for terminal and camera views
+
+Version 1.2
+Author: Victor Lim
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>P2Dingo Controller</title>
+
+  <link rel="stylesheet" href="/app/static/shared.css" />
+  <script src="/app/static/shared.js"></script>
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+
+  <style>
+    .viewSection { margin-top: 12px; display: none; }
+    .viewSection.open { display: block; }
+    .camPanel { margin-top: 12px; border: 1px solid var(--soft-border); border-radius: var(--radius); overflow: hidden; background: #fff; }
+    .camHeader, .sectionHeader { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: var(--soft-2); border-bottom: 1px solid var(--soft-border); }
+    .camTitle, .sectionTitle { font-size: 14px; font-weight: 600; }
+    .camHint, .sectionHint { color: #777; }
+    .camViewport { width: 100%; aspect-ratio: 16 / 9; background: #000; overflow: hidden; }
+    #camImg { width: 100%; height: 100%; display: block; object-fit: contain; background: #000; }
+    @media (min-width: 1200px) { .camViewport { max-width: 920px; margin: 0 auto; } }
+    .topControls { align-items: center; flex-wrap: wrap; }
+    .toggleBtnOpen { outline: 2px solid rgba(0,0,0,0.08); }
+    .hiddenPanel { display: none; }
+    .modeBanner { margin-top: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .actionPanelNote { margin-top: 8px; color: #666; }
+    .modalOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: none; align-items: center; justify-content: center; z-index: 10000; }
+    .modalCard { width: min(420px, 92vw); background: #fff; border-radius: var(--radius); padding: 16px; border: 1px solid var(--border); }
+  </style>
+</head>
+
+<body>
+  <div id="loginOverlay" class="loginOverlay">
+    <div class="loginCard">
+      <h2>Connect to P2Dingo</h2>
+      <div class="loginForm">
+        <input id="loginBaseUrl" placeholder="https://p2dingo-control-backend.p2agentx.com" />
+        <input id="loginToken" placeholder="Password" type="password" />
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#333;">
+          <input id="showPw" type="checkbox" onclick="Go2Shared.togglePasswordVisibility()" />
+          Show password
+        </label>
+        <button id="unlockBtn" onclick="loginAndStart()">Unlock</button>
+        <div id="loginMsg" class="loginMsg"></div>
+        <div class="loginTip">Default deployment uses the current page origin.</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="appRoot">
+    <div class="card">
+      <h1>Unitree Go2 – P2Dingo Controller</h1>
+
+      <div class="row topControls">
+        <input id="baseUrl" placeholder="https://p2dingo-control-backend.p2agentx.com" />
+        <button onclick="Go2Shared.checkHealth()">Health</button>
+        <button onclick="postAction('stand')">Stand</button>
+        <button onclick="postAction('sit')">Sit</button>
+
+        <button id="btnModePosing" onclick="setMode('posing')">Posing</button>
+        <button id="btnModeActions" onclick="setMode('actions')">Actions</button>
+        <button id="btnModeMovement" onclick="setMode('movement')">Movement</button>
+
+        <button id="btnTerminalToggle" onclick="toggleTerminalPanel()">Terminal</button>
+        <button id="btnCameraToggle" onclick="toggleCameraPanel()">Camera</button>
+
+        <span id="modePill" class="pill">mode: movement</span>
+
+        <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
+        <button onclick="Go2Shared.logout()">Logout</button>
+      </div>
+
+      <div class="small hint">
+        UI host: <span id="uiHost" class="mono"></span><br />
+        API base: <span id="apiHost" class="mono"></span>
+      </div>
+
+      <div class="modeBanner">
+        <span class="pill">Standalone P2Dingo controller</span>
+        <span class="pill">Backend uses current page origin by default</span>
+      </div>
+
+      <div class="joyRow">
+        <div class="joyBox">
+          <div id="joyLeftTitle" class="joyTitle">Left joystick: X=strafe, Y=fwd/back</div>
+          <canvas id="joyLeft" class="joyCanvas"></canvas>
+        </div>
+        <div class="joyBox">
+          <div id="joyRightTitle" class="joyTitle">Right joystick: X=turn (yaw)</div>
+          <canvas id="joyRight" class="joyCanvas"></canvas>
+        </div>
+      </div>
+
+      <div id="modePanel" class="panel hiddenPanel">
+        <h2 id="modePanelTitle">Movement mode commands</h2>
+        <div id="movementPanel" class="modeSubPanel">
+          <div class="btnGrid">
+            <button onclick="postAction('economic_gait')">EconomicGait</button>
+            <button onclick="postAction('trot_run')">TrotRun</button>
+            <button onclick="postAction('switch_avoid')">SwitchAvoidMode</button>
+            <button onclick="postAction('cycle_speed')">SpeedLevel (cycle)</button>
+            <button onclick="postAction('freewalk')">FreeWalk</button>
+
+            <button data-action="toggle_freebound" data-label="FreeBound" onclick="setToggleExclusive('toggle_freebound')">FreeBound</button>
+            <button data-action="toggle_freeavoid" data-label="FreeAvoid" onclick="setToggleExclusive('toggle_freeavoid')">FreeAvoid</button>
+            <button data-action="toggle_crossstep" data-label="CrossStep" onclick="setToggleExclusive('toggle_crossstep')">CrossStep</button>
+            <button data-action="toggle_freejump" data-label="FreeJump" onclick="setToggleExclusive('toggle_freejump')">FreeJump</button>
+            <button data-action="toggle_walkupright" data-label="WalkUpright" onclick="setToggleExclusive('toggle_walkupright')">WalkUpright</button>
+            <button data-action="toggle_handstand" data-label="HandStand" onclick="setToggleExclusive('toggle_handstand')">HandStand</button>
+            <button data-action="toggle_classicwalk" data-label="ClassicWalk" onclick="setToggleExclusive('toggle_classicwalk')">ClassicWalk</button>
+
+            <button onclick="postAction('stop_move')">StopMove</button>
+            <button onclick="postAction('static_walk')">StaticWalk</button>
+          </div>
+          <div class="small actionPanelNote">Movement mode uses the normal teleop joystick mapping.</div>
+        </div>
+
+        <div id="posingPanel" class="modeSubPanel" style="display:none;">
+          <div class="btnGrid">
+            <button onclick="postAction('damp')">Damp</button>
+            <button onclick="postAction('balance_stand')">BalanceStand</button>
+          </div>
+          <div class="small actionPanelNote">Posing mode changes the robot mode while keeping the same joystick layout as your movement controller page.</div>
+        </div>
+
+        <div id="actionsPanel" class="modeSubPanel" style="display:none;">
+          <div class="btnGrid">
+            <button onclick="postAction('sit_toggle')">Sit ↔ Stand (toggle)</button>
+            <button onclick="postAction('hello')">Hello</button>
+            <button onclick="postAction('stretch')">Stretch</button>
+            <button onclick="postAction('content')">Content</button>
+            <button onclick="postAction('heart')">Heart</button>
+            <button onclick="postAction('scrape')">Scrape</button>
+            <button onclick="postAction('front_jump')">FrontJump</button>
+
+            <button onclick="postDangerAction('front_pounce')">FrontPounce</button>
+            <button onclick="postDangerAction('front_flip')">FrontFlip</button>
+            <button onclick="postDangerAction('back_flip')">BackFlip</button>
+            <button onclick="postDangerAction('left_flip')">LeftFlip</button>
+
+            <button onclick="postAction('recovery')">RecoveryStand</button>
+          </div>
+          <div class="small actionPanelNote">This panel matches the actions section from the movement controller page.</div>
+        </div>
+      </div>
+
+      <div id="terminalSection" class="viewSection">
+        <div class="termGrid">
+          <div class="termPanel">
+            <div class="termHeader">
+              <div class="termTitle">Shell</div>
+              <div class="termHint" id="termStatus">Disconnected</div>
+            </div>
+            <div id="termBoxMain" class="termBox"></div>
+            <div class="row" style="padding:10px 12px 12px;">
+              <button onclick="startTerminal()">Start terminal</button>
+              <button onclick="stopTerminal()">Stop terminal</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="cameraSection" class="viewSection">
+        <div class="camPanel">
+          <div class="camHeader">
+            <div class="camTitle">Front camera stream</div>
+            <div class="camHint small" id="camHint">Idle</div>
+          </div>
+
+          <div class="camViewport">
+            <img id="camImg" alt="Front camera" />
+          </div>
+
+          <div class="row" style="margin-top:10px; padding:0 12px 12px;">
+            <button onclick="startFrontCameraMode()">Start Stream</button>
+            <button onclick="stopAllVideoStreams()">Stop Stream</button>
+
+            <label class="pill" style="display:inline-flex; align-items:center; gap:8px;">
+              <input id="showYoloPanel" type="checkbox" onchange="toggleYoloPanel()" />
+              Show YOLO panel
+            </label>
+
+            <span class="pill">Frames: <span id="frameCount">0</span></span>
+            <span class="pill">Last: <span id="frameBytes">0</span> bytes</span>
+            <span class="pill">Mode: <span id="videoMode">front</span></span>
+          </div>
+
+          <div class="small" style="padding:0 12px 12px;">
+            Normal stream: <span class="mono">/ws/cam_front</span>
+          </div>
+        </div>
+
+        <div id="yoloPanel" class="camPanel" style="display:none;">
+          <div class="camHeader">
+            <div class="camTitle">YOLO stream</div>
+            <div class="camHint small" id="yoloHint">Idle</div>
+          </div>
+
+          <div style="padding:10px 12px 12px;">
+            <div class="row">
+              <button onclick="startYoloMode()">Start YOLO Stream</button>
+              <button onclick="stopYoloMode()">Stop YOLO Stream</button>
+            </div>
+
+            <div class="small" style="margin-top:10px;">
+              YOLO stream: <span class="mono">/ws/cam_yolo</span><br />
+              YOLO control API: <span class="mono">POST /yolo/start</span>, <span class="mono">POST /yolo/stop</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="dangerModal" class="modalOverlay">
+        <div class="modalCard">
+          <h2 style="margin:0 0 6px;">Are you sure?</h2>
+          <div id="dangerModalText" class="small" style="margin-bottom:12px;">
+            You are about to run a risky action.
+          </div>
+          <div class="row" style="justify-content:flex-end;">
+            <button onclick="dangerModalCancel()">Cancel</button>
+            <button class="danger" onclick="dangerModalConfirm()">Confirm</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="status">
+        <div id="msg" class="small">Ready.</div>
+        <div id="detail" class="mono"></div>
+      </div>
+
+      <div class="small" style="margin-top:10px;">
+        STOP latches the system. Teleop and actions are blocked until RESUME. Camera streaming is paused while STOP is latched.
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const COMPANY_DEFAULT_BASE = "https://p2dingo-control-backend.p2agentx.com";
+
+    let stopLatched = false;
+    let safetyBusy = false;
+    let currentMode = "movement";
+
+    let latest = { lx: 0, ly: 0, rx: 0 };
+    const MAX_LIN = 0.6;
+    const MAX_ANG = 1.2;
+    const SEND_HZ = 20;
+    const SEND_PERIOD_MS = Math.floor(1000 / SEND_HZ);
+
+    const TOGGLES = [
+      "toggle_freebound",
+      "toggle_freeavoid",
+      "toggle_crossstep",
+      "toggle_freejump",
+      "toggle_walkupright",
+      "toggle_handstand",
+      "toggle_classicwalk"
+    ];
+    const toggleState = Object.fromEntries(TOGGLES.map(a => [a, false]));
+    const DANGER_ACTIONS = new Set(["front_flip", "back_flip", "left_flip", "front_pounce"]);
+
+    let terminalOpen = false;
+    let cameraOpen = false;
+    let termBundle = null;
+
+    let ACTIVE_VIDEO_MODE = "front";
+    let CAM_WS = null;
+    let camKeepalive = null;
+    let YOLO_VIDEO_WS = null;
+    let yoloVideoKeepalive = null;
+    let lastBlobUrl = "";
+    let frames = 0;
+
+    const dangerModal = {
+      action: null,
+      open(action) {
+        this.action = action;
+        const overlay = document.getElementById("dangerModal");
+        const text = document.getElementById("dangerModalText");
+        const label = action.replaceAll("_", " ").replace(/\b\w/g, c => c.toUpperCase());
+        text.textContent = `You are about to run: ${label}. This can be unsafe if the area isn’t clear.`;
+        overlay.style.display = "flex";
+      },
+      close() {
+        this.action = null;
+        document.getElementById("dangerModal").style.display = "none";
+      }
+    };
+
+    window.addEventListener("DOMContentLoaded", async () => {
+      const defaultApi = (window.location.origin && /^https?:/i.test(window.location.origin))
+        ? window.location.origin
+        : COMPANY_DEFAULT_BASE;
+
+      // Disable shared multi-page navbar injection for this standalone page.
+      Go2Shared.injectNavBar = () => {};
+      Go2Shared.highlightActivePage = () => {};
+
+      await Go2Shared.init({ defaultApi, showAuthButtons: true });
+
+      const baseInput = document.getElementById("baseUrl");
+      const loginBase = document.getElementById("loginBaseUrl");
+
+      if (baseInput && (!baseInput.value || baseInput.value.includes("localhost") || baseInput.value.includes(":8000"))) {
+        baseInput.value = Go2Shared.state.API_BASE || defaultApi;
+      }
+      if (loginBase && !loginBase.value.trim()) {
+        loginBase.value = Go2Shared.state.API_BASE || defaultApi;
+      }
+
+      document.getElementById("uiHost").textContent = window.location.origin;
+      document.getElementById("apiHost").textContent = Go2Shared.apiBase();
+
+      updateModeUI();
+      setTimeout(refreshSafetyStatus, 200);
+
+      Go2Shared.createJoystick("joyLeft", (x, y, active) => {
+        latest.lx = active ? x : 0;
+        latest.ly = active ? y : 0;
+      });
+
+      Go2Shared.createJoystick("joyRight", (x, y, active) => {
+        latest.rx = active ? x : 0;
+      });
+
+      window.setInterval(() => {
+        if (!Go2Shared.ensureLoggedIn() || !Go2Shared.state.COMMS_ENABLED || stopLatched) return;
+        const eps = 0.01;
+        if (Math.abs(latest.lx) < eps && Math.abs(latest.ly) < eps && Math.abs(latest.rx) < eps) return;
+        sendTeleop(latest.lx, latest.ly, latest.rx);
+      }, SEND_PERIOD_MS);
+    });
+
+    async function loginAndStart() {
+      const ok = await Go2Shared.login();
+      document.getElementById("apiHost").textContent = Go2Shared.apiBase();
+      await refreshSafetyStatus();
+      if (!ok) return;
+      if (terminalOpen) startTerminal();
+    }
+
+    function authWsSuffix() {
+      const token = encodeURIComponent(Go2Shared.state.AUTH_TOKEN || "");
+      return (Go2Shared.state.AUTH_ENABLED && token) ? `?token=${token}` : "";
+    }
+
+    function setSafetyButton(latched) {
+      stopLatched = !!latched;
+      const btn = document.getElementById("safetyToggleBtn");
+      if (!btn) return;
+      btn.textContent = stopLatched ? "RESUME" : "STOP";
+      btn.classList.toggle("danger", !stopLatched);
+      btn.classList.toggle("activeMode", stopLatched);
+      btn.disabled = safetyBusy;
+    }
+
+    async function refreshSafetyStatus() {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      const r = await Go2Shared.httpGet("/safety/status", { bypassCommsGate: true });
+      if (r.ok) {
+        try {
+          const data = JSON.parse(r.text);
+          setSafetyButton(!!data.stop_latched);
+          Go2Shared.state.COMMS_ENABLED = !stopLatched;
+        } catch {}
+      }
+      return r;
+    }
+
+    async function toggleSafety() {
+      if (!Go2Shared.ensureLoggedIn() || safetyBusy) return;
+      safetyBusy = true;
+      setSafetyButton(stopLatched);
+
+      try {
+        if (!stopLatched) {
+          const r = await Go2Shared.httpPost("/safety/stop", null, { bypassCommsGate: true });
+          if (!r.ok) {
+            Go2Shared.setStatus(`STOP failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+            return;
+          }
+          Go2Shared.state.COMMS_ENABLED = false;
+          setSafetyButton(true);
+          stopAllVideoStreams();
+          setCamHint("STOP latched: camera paused");
+          setYoloHint("STOP latched");
+          Go2Shared.setStatus("STOP latched 🔒", true, `URL: ${r.url}\n${r.text}`);
+        } else {
+          const r = await Go2Shared.httpPost("/safety/resume", null, { bypassCommsGate: true });
+          if (!r.ok) {
+            Go2Shared.setStatus(`RESUME failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+            return;
+          }
+          Go2Shared.state.COMMS_ENABLED = true;
+          setSafetyButton(false);
+          Go2Shared.setStatus("RESUME ✅", true, `URL: ${r.url}\n${r.text}`);
+        }
+      } finally {
+        safetyBusy = false;
+        await refreshSafetyStatus();
+      }
+    }
+
+    function updateModeUI() {
+      const titles = {
+        movement: { left: "Left joystick: X=strafe, Y=fwd/back", right: "Right joystick: X=turn (yaw)", panel: "Movement mode commands" },
+        posing: { left: "Left joystick: X=strafe, Y=fwd/back", right: "Right joystick: X=turn (yaw)", panel: "Posing mode commands" },
+        actions: { left: "Left joystick: X=strafe, Y=fwd/back", right: "Right joystick: X=turn (yaw)", panel: "Actions mode commands" }
+      };
+
+      document.getElementById("modePill").textContent = `mode: ${currentMode}`;
+      document.getElementById("btnModeMovement").classList.toggle("activeMode", currentMode === "movement");
+      document.getElementById("btnModePosing").classList.toggle("activeMode", currentMode === "posing");
+      document.getElementById("btnModeActions").classList.toggle("activeMode", currentMode === "actions");
+      document.getElementById("joyLeftTitle").textContent = titles[currentMode].left;
+      document.getElementById("joyRightTitle").textContent = titles[currentMode].right;
+      document.getElementById("modePanelTitle").textContent = titles[currentMode].panel;
+      document.getElementById("movementPanel").style.display = currentMode === "movement" ? "block" : "none";
+      document.getElementById("posingPanel").style.display = currentMode === "posing" ? "block" : "none";
+      document.getElementById("actionsPanel").style.display = currentMode === "actions" ? "block" : "none";
+
+      const modePanel = document.getElementById("modePanel");
+      modePanel.style.display = currentMode === "actions" || currentMode === "posing" ? "block" : "none";
+    }
+
+    async function setMode(m) {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
+        Go2Shared.setStatus("STOP latched 🔒", false, "Press RESUME to enable commands.");
+        return;
+      }
+
+      const map = { movement: "mode_movement", posing: "mode_posing", actions: "mode_actions" };
+      const r = await Go2Shared.httpPost(`/actions/${map[m]}`);
+      if (!r.ok) {
+        Go2Shared.setStatus(`Mode set failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+        return;
+      }
+
+      currentMode = m;
+      updateModeUI();
+      Go2Shared.setStatus(`Mode: ${m} ✅`, true);
+    }
+
+    async function postAction(action) {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
+        Go2Shared.setStatus("STOP latched 🔒", false, "No actions until RESUME.");
+        return;
+      }
+
+      const r = await Go2Shared.httpPost(`/actions/${action}`);
+      Go2Shared.setStatus(r.ok ? `${action} ✅` : `${action} failed (HTTP ${r.status})`, r.ok, `URL: ${r.url}\n${r.text}`);
+    }
+
+    async function postDangerAction(action) {
+      if (!DANGER_ACTIONS.has(action)) return postAction(action);
+      if (!Go2Shared.ensureLoggedIn()) return;
+      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
+        Go2Shared.setStatus("STOP latched 🔒", false, "Press RESUME to enable commands.");
+        return;
+      }
+      dangerModal.open(action);
+    }
+
+    function dangerModalCancel() { dangerModal.close(); }
+
+    async function dangerModalConfirm() {
+      const action = dangerModal.action;
+      dangerModal.close();
+      if (!action) return;
+      await postAction(action);
+    }
+
+    document.addEventListener("click", (e) => {
+      const overlay = document.getElementById("dangerModal");
+      if (overlay && overlay.style.display !== "none" && e.target === overlay) {
+        dangerModal.close();
+      }
+    });
+
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") dangerModal.close();
+    });
+
+    function setToggleBtn(action, on) {
+      const btn = document.querySelector(`[data-action="${action}"]`);
+      if (!btn) return;
+      const label = btn.getAttribute("data-label");
+      btn.textContent = label + (on ? " ✅" : "");
+      btn.classList.toggle("toggleOn", !!on);
+    }
+
+    function setAllToggleButtonsEnabled(enabled) {
+      for (const a of TOGGLES) {
+        const btn = document.querySelector(`[data-action="${a}"]`);
+        if (btn) btn.disabled = !enabled;
+      }
+    }
+
+    async function setToggleExclusive(target) {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
+        Go2Shared.setStatus("STOP latched 🔒", false, "Press RESUME to enable commands.");
+        return;
+      }
+
+      setAllToggleButtonsEnabled(false);
+      try {
+        if (toggleState[target]) {
+          const r = await Go2Shared.httpPost(`/actions/${target}`);
+          if (!r.ok) {
+            Go2Shared.setStatus(`${target} failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+            return;
+          }
+          toggleState[target] = false;
+          setToggleBtn(target, false);
+          Go2Shared.setStatus(`${target.replace("toggle_", "")} DISABLED ✅`, true);
+          return;
+        }
+
+        for (const a of TOGGLES) {
+          if (a !== target && toggleState[a]) {
+            const rOff = await Go2Shared.httpPost(`/actions/${a}`);
+            if (!rOff.ok) {
+              Go2Shared.setStatus(`Failed disabling ${a} (HTTP ${rOff.status})`, false, `URL: ${rOff.url}\n${rOff.text}`);
+              return;
+            }
+            toggleState[a] = false;
+            setToggleBtn(a, false);
+          }
+        }
+
+        const rOn = await Go2Shared.httpPost(`/actions/${target}`);
+        if (!rOn.ok) {
+          Go2Shared.setStatus(`${target} failed (HTTP ${rOn.status})`, false, `URL: ${rOn.url}\n${rOn.text}`);
+          return;
+        }
+        toggleState[target] = true;
+        setToggleBtn(target, true);
+        Go2Shared.setStatus(`${target.replace("toggle_", "")} ENABLED ✅`, true);
+      } finally {
+        setAllToggleButtonsEnabled(true);
+      }
+    }
+
+    function mapToCmd(lx, ly, rx) {
+      return { linear_x: (-ly) * MAX_LIN, linear_y: (lx) * MAX_LIN, angular_z: (rx) * MAX_ANG };
+    }
+
+    async function sendTeleop(lx, ly, rx) {
+      if (!Go2Shared.ensureLoggedIn() || !Go2Shared.state.COMMS_ENABLED || stopLatched) return;
+      const r = await Go2Shared.httpPost("/teleop", mapToCmd(lx, ly, rx));
+      if (!r.ok) {
+        Go2Shared.setStatus(`Teleop failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+      }
+    }
+
+    function toggleTerminalPanel() {
+      terminalOpen = !terminalOpen;
+      const section = document.getElementById("terminalSection");
+      const btn = document.getElementById("btnTerminalToggle");
+      section.classList.toggle("open", terminalOpen);
+      btn.classList.toggle("activeMode", terminalOpen);
+      btn.classList.toggle("toggleBtnOpen", terminalOpen);
+
+      if (terminalOpen) {
+        if (Go2Shared.ensureLoggedIn()) startTerminal();
+      } else {
+        stopTerminal();
+      }
+    }
+
+    function startTerminal() {
+      stopTerminal();
+
+      const TerminalCtor = window.Terminal;
+      const FitAddonCtor = window.FitAddon && window.FitAddon.FitAddon;
+
+      if (!TerminalCtor || !FitAddonCtor) {
+        Go2Shared.setStatus("xterm.js failed to load", false);
+        return;
+      }
+
+      termBundle = Go2Shared.connectTerminalWs({
+        containerId: "termBoxMain",
+        statusId: "termStatus",
+        TerminalCtor,
+        FitAddonCtor,
+      });
+
+      Go2Shared.setStatus("Terminal connecting...", true);
+    }
+
+    function stopTerminal() {
+      if (termBundle && typeof termBundle.close === "function") {
+        termBundle.close();
+      }
+      termBundle = null;
+      const termStatus = document.getElementById("termStatus");
+      if (termStatus) termStatus.textContent = "Disconnected";
+      const termBox = document.getElementById("termBoxMain");
+      if (termBox && !terminalOpen) termBox.innerHTML = "";
+    }
+
+    function toggleCameraPanel() {
+      cameraOpen = !cameraOpen;
+      const section = document.getElementById("cameraSection");
+      const btn = document.getElementById("btnCameraToggle");
+      section.classList.toggle("open", cameraOpen);
+      btn.classList.toggle("activeMode", cameraOpen);
+      btn.classList.toggle("toggleBtnOpen", cameraOpen);
+
+      if (!cameraOpen) {
+        stopAllVideoStreams();
+        const cb = document.getElementById("showYoloPanel");
+        if (cb) cb.checked = false;
+        toggleYoloPanel();
+      }
+    }
+
+    function setCamHint(t) {
+      const el = document.getElementById("camHint");
+      if (el) el.textContent = t;
+    }
+
+    function setYoloHint(t) {
+      const el = document.getElementById("yoloHint");
+      if (el) el.textContent = t;
+    }
+
+    function setVideoModeLabel(mode) {
+      ACTIVE_VIDEO_MODE = mode;
+      const el = document.getElementById("videoMode");
+      if (el) el.textContent = mode;
+    }
+
+    function resetFrameCounters() {
+      frames = 0;
+      document.getElementById("frameCount").textContent = "0";
+      document.getElementById("frameBytes").textContent = "0";
+    }
+
+    function applyFrameBytes(u8) {
+      const bytes = u8.length;
+      frames++;
+      document.getElementById("frameCount").textContent = String(frames);
+      document.getElementById("frameBytes").textContent = String(bytes);
+
+      const blob = new Blob([u8], { type: "image/jpeg" });
+      const url = URL.createObjectURL(blob);
+      if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+      lastBlobUrl = url;
+      document.getElementById("camImg").src = url;
+    }
+
+    function toggleYoloPanel() {
+      const show = document.getElementById("showYoloPanel")?.checked;
+      document.getElementById("yoloPanel").style.display = show ? "block" : "none";
+    }
+
+    function stopFrontStreamOnly() {
+      try { if (CAM_WS) CAM_WS.close(); } catch {}
+      CAM_WS = null;
+      if (camKeepalive) { clearInterval(camKeepalive); camKeepalive = null; }
+    }
+
+    function stopYoloVideoOnly() {
+      try { if (YOLO_VIDEO_WS) YOLO_VIDEO_WS.close(); } catch {}
+      YOLO_VIDEO_WS = null;
+      if (yoloVideoKeepalive) { clearInterval(yoloVideoKeepalive); yoloVideoKeepalive = null; }
+    }
+
+    function stopAllVideoStreams() {
+      stopFrontStreamOnly();
+      stopYoloVideoOnly();
+
+      if (lastBlobUrl) {
+        URL.revokeObjectURL(lastBlobUrl);
+        lastBlobUrl = "";
+      }
+
+      const img = document.getElementById("camImg");
+      if (img) img.removeAttribute("src");
+
+      setVideoModeLabel("off");
+      setCamHint(stopLatched ? "STOP latched: camera paused" : "Idle");
+      setYoloHint(stopLatched ? "STOP latched" : "Idle");
+    }
+
+    function startFrontCameraMode() {
+      if (!cameraOpen) {
+        cameraOpen = true;
+        document.getElementById("cameraSection").classList.add("open");
+        document.getElementById("btnCameraToggle").classList.add("activeMode", "toggleBtnOpen");
+      }
+
+      if (!Go2Shared.ensureLoggedIn()) return;
+      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
+        setCamHint("STOP latched: camera paused");
+        return;
+      }
+
+      stopYoloVideoOnly();
+      stopFrontStreamOnly();
+      resetFrameCounters();
+
+      setVideoModeLabel("front");
+      setCamHint("Connecting front stream...");
+      setYoloHint("Idle");
+
+      const wsUrl = `${Go2Shared.apiWsBase()}/ws/cam_front${authWsSuffix()}`;
+      CAM_WS = new WebSocket(wsUrl);
+      CAM_WS.binaryType = "arraybuffer";
+
+      CAM_WS.onopen = () => {
+        setCamHint("Front stream live ✅");
+        camKeepalive = setInterval(() => {
+          if (CAM_WS && CAM_WS.readyState === WebSocket.OPEN) {
+            try { CAM_WS.send("ping"); } catch {}
+          }
+        }, 10000);
+      };
+
+      CAM_WS.onmessage = async (ev) => {
+        if (ACTIVE_VIDEO_MODE !== "front") return;
+        if (!Go2Shared.state.COMMS_ENABLED || stopLatched) return;
+        if (typeof ev.data === "string") return;
+
+        let u8;
+        if (ev.data instanceof ArrayBuffer) u8 = new Uint8Array(ev.data);
+        else if (ev.data instanceof Blob) u8 = new Uint8Array(await ev.data.arrayBuffer());
+        else return;
+
+        applyFrameBytes(u8);
+      };
+
+      CAM_WS.onclose = () => {
+        if (camKeepalive) { clearInterval(camKeepalive); camKeepalive = null; }
+        CAM_WS = null;
+        if (ACTIVE_VIDEO_MODE === "front") {
+          setCamHint(stopLatched ? "STOP latched: camera paused" : "Front stream disconnected");
+        }
+      };
+
+      CAM_WS.onerror = () => {
+        if (ACTIVE_VIDEO_MODE === "front") setCamHint("Front stream WS error");
+      };
+    }
+
+    async function startYoloMode() {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
+        setYoloHint("STOP latched");
+        return;
+      }
+
+      setYoloHint("Starting YOLO process...");
+      const startResp = await Go2Shared.httpPost("/yolo/start");
+      if (!startResp.ok) {
+        setYoloHint(`Start failed (${startResp.status})`);
+        Go2Shared.setStatus("YOLO start failed", false, `URL: ${startResp.url}\n${startResp.text}`);
+        return;
+      }
+
+      stopFrontStreamOnly();
+      stopYoloVideoOnly();
+      resetFrameCounters();
+
+      setVideoModeLabel("yolo");
+      setCamHint("YOLO stream active");
+      setYoloHint("Connecting YOLO stream...");
+
+      const wsUrl = `${Go2Shared.apiWsBase()}/ws/cam_yolo${authWsSuffix()}`;
+      YOLO_VIDEO_WS = new WebSocket(wsUrl);
+      YOLO_VIDEO_WS.binaryType = "arraybuffer";
+
+      YOLO_VIDEO_WS.onopen = () => {
+        setYoloHint("YOLO stream live ✅");
+        yoloVideoKeepalive = setInterval(() => {
+          if (YOLO_VIDEO_WS && YOLO_VIDEO_WS.readyState === WebSocket.OPEN) {
+            try { YOLO_VIDEO_WS.send("ping"); } catch {}
+          }
+        }, 10000);
+      };
+
+      YOLO_VIDEO_WS.onmessage = async (ev) => {
+        if (ACTIVE_VIDEO_MODE !== "yolo") return;
+        if (!Go2Shared.state.COMMS_ENABLED || stopLatched) return;
+        if (typeof ev.data === "string") return;
+
+        let u8;
+        if (ev.data instanceof ArrayBuffer) u8 = new Uint8Array(ev.data);
+        else if (ev.data instanceof Blob) u8 = new Uint8Array(await ev.data.arrayBuffer());
+        else return;
+
+        applyFrameBytes(u8);
+      };
+
+      YOLO_VIDEO_WS.onclose = async () => {
+        if (yoloVideoKeepalive) { clearInterval(yoloVideoKeepalive); yoloVideoKeepalive = null; }
+        YOLO_VIDEO_WS = null;
+
+        if (ACTIVE_VIDEO_MODE === "yolo" && !stopLatched) {
+          setYoloHint("YOLO stream disconnected");
+          startFrontCameraMode();
+        }
+      };
+
+      YOLO_VIDEO_WS.onerror = () => {
+        if (ACTIVE_VIDEO_MODE === "yolo") setYoloHint("YOLO stream WS error");
+      };
+    }
+
+    async function stopYoloMode() {
+      stopYoloVideoOnly();
+
+      const r = await Go2Shared.httpPost("/yolo/stop", null, { bypassCommsGate: true });
+      if (!r.ok) {
+        setYoloHint(`Stop failed (${r.status})`);
+        Go2Shared.setStatus("YOLO stop failed", false, `URL: ${r.url}\n${r.text}`);
+      } else {
+        setYoloHint("YOLO stopped");
+      }
+
+      if (!stopLatched && Go2Shared.state.COMMS_ENABLED && cameraOpen) {
+        startFrontCameraMode();
+      } else {
+        setVideoModeLabel("off");
+      }
+    }
+  </script>
+</body>
+</html>

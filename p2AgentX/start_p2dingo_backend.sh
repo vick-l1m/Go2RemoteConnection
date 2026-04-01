@@ -2,21 +2,18 @@
 set -eo pipefail
 # NOTE: we intentionally do NOT enable 'set -u' until after sourcing ROS
 
-WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# If the script is in workspace root:
-if [ -d "$WS_DIR/src/go2_remote_connection" ]; then
-  PKG_DIR="$WS_DIR/src/go2_remote_connection"
-# If the script is inside the package (e.g. .../src/go2_remote_connection):
-elif [ -d "$WS_DIR/app" ] && [ -d "$WS_DIR/src" ]; then
-  PKG_DIR="$WS_DIR"
-else
-  echo "[run_all] ❌ Can't locate go2_remote_connection package from $WS_DIR"
+if [ ! -d "$WS_DIR/src/go2_remote_connection" ]; then
+  echo "[run_p2dingo] ❌ Can't locate go2_remote_connection package from $WS_DIR"
   exit 1
 fi
 
+PKG_DIR="$WS_DIR/src/go2_remote_connection"
+
 API_HOST="0.0.0.0"
-API_PORT="8000"
+API_PORT="8200"
 
 # Only override HOME under systemd (when HOME may be empty)
 if [ -z "${HOME:-}" ] || [ "$HOME" = "/" ]; then
@@ -26,25 +23,6 @@ fi
 get_best_ip() {
   ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true
 }
-
-# ----------------------------
-# UI selection by CLI arg
-# ----------------------------
-MODE="${1:-joystick}"   # joystick | terminal | movement
-
-case "$MODE" in
-  terminal|joystick|movement|"")
-    ;;
-  *)
-    echo "[run_all] ❌ Unknown mode: '$MODE'"
-    echo "Usage:"
-    echo "  $0                # serve joystick UI + bridge"
-    echo "  $0 joystick       # serve joystick UI + bridge"
-    echo "  $0 terminal       # serve terminal-only UI (no bridge)"
-    echo "  $0 movement       # serve movement UI + bridge"
-    exit 1
-    ;;
-esac
 
 pids=()
 declare -A pid_names
@@ -62,15 +40,15 @@ register_pid() {
 print_log_hint() {
   local log_path="${1:-}"
   [ -z "$log_path" ] && return 0
-  echo "[run_all] Check the log with:"
+  echo "[run_p2dingo] Check the log with:"
   echo "  sed -n '1,200p' $log_path"
-  echo "[run_all] Or follow it live with:"
+  echo "[run_p2dingo] Or follow it live with:"
   echo "  tail -f $log_path"
 }
 
 cleanup() {
   echo ""
-  echo "[run_all] Stopping processes..."
+  echo "[run_p2dingo] Stopping processes..."
   for pid in "${pids[@]:-}"; do
     if kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
@@ -91,15 +69,17 @@ ok_or_die() {
   local log_path="${3:-}"
 
   if ! kill -0 "$pid" 2>/dev/null; then
-    echo "[run_all] ❌ $name failed to start"
+    echo "[run_p2dingo] ❌ $name failed to start"
     print_log_hint "$log_path"
     cleanup
     exit 1
   fi
 }
 
-echo "[run_all] Workspace: $WS_DIR"
-echo "[run_all] Mode: $MODE"
+echo "[run_p2dingo] Script dir: $SCRIPT_DIR"
+echo "[run_p2dingo] Workspace: $WS_DIR"
+echo "[run_p2dingo] Package dir: $PKG_DIR"
+echo "[run_p2dingo] Mode: p2dingo"
 
 # --- Source ROS + Unitree stack safely ---
 set +u
@@ -116,20 +96,20 @@ else
 fi
 
 if [ -f "$HOME/unitree_ros2/install/setup.sh" ]; then
-  echo "[run_all] Sourcing Unitree env: $HOME/unitree_ros2/install/setup.sh"
+  echo "[run_p2dingo] Sourcing Unitree env: $HOME/unitree_ros2/install/setup.sh"
   source "$HOME/unitree_ros2/install/setup.sh"
 elif [ -f "$HOME/unitree_ros2/install/setup.bash" ]; then
-  echo "[run_all] Sourcing Unitree env: $HOME/unitree_ros2/install/setup.bash"
+  echo "[run_p2dingo] Sourcing Unitree env: $HOME/unitree_ros2/install/setup.bash"
   source "$HOME/unitree_ros2/install/setup.bash"
 else
-  echo "[run_all] WARNING: Unitree env not found at $HOME/unitree_ros2/install/setup.(sh|bash)"
+  echo "[run_p2dingo] WARNING: Unitree env not found at $HOME/unitree_ros2/install/setup.(sh|bash)"
 fi
 
 if [ -f "$WS_DIR/install/setup.bash" ]; then
-  echo "[run_all] Sourcing overlay: $WS_DIR/install/setup.bash"
+  echo "[run_p2dingo] Sourcing overlay: $WS_DIR/install/setup.bash"
   source "$WS_DIR/install/setup.bash"
 else
-  echo "[run_all] WARNING: overlay not found: $WS_DIR/install/setup.bash (did you colcon build?)"
+  echo "[run_p2dingo] WARNING: overlay not found: $WS_DIR/install/setup.bash (did you colcon build?)"
 fi
 
 set -u
@@ -138,7 +118,7 @@ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 
 # ----------------------------
-# Turn on/off Authentication
+# Auth off by default; can enable later
 # ----------------------------
 export GO2_AUTH_ENABLED="${GO2_AUTH_ENABLED:-0}"
 export GO2_TOKEN_FILE="${GO2_TOKEN_FILE:-$HOME/go2_token}"
@@ -147,25 +127,25 @@ if [ "$GO2_AUTH_ENABLED" = "1" ] || [ "$GO2_AUTH_ENABLED" = "true" ]; then
   if [ -f "$GO2_TOKEN_FILE" ]; then
     export GO2_API_TOKEN="$(tr -d '\r\n' < "$GO2_TOKEN_FILE")"
   else
-    echo "[run_all] ❌ ERROR: $GO2_TOKEN_FILE not found (GO2_AUTH_ENABLED=1)"
+    echo "[run_p2dingo] ❌ ERROR: $GO2_TOKEN_FILE not found (GO2_AUTH_ENABLED=1)"
     exit 1
   fi
 
   if [ -z "${GO2_API_TOKEN:-}" ]; then
-    echo "[run_all] ❌ ERROR: GO2_API_TOKEN is empty (token file: $GO2_TOKEN_FILE)"
+    echo "[run_p2dingo] ❌ ERROR: GO2_API_TOKEN is empty (token file: $GO2_TOKEN_FILE)"
     exit 1
   fi
 
-  echo "[run_all] 🔐 Auth enabled"
+  echo "[run_p2dingo] 🔐 Auth enabled"
 else
   export GO2_API_TOKEN=""
-  echo "[run_all] 🔓 Auth disabled (GO2_AUTH_ENABLED=0)"
+  echo "[run_p2dingo] 🔓 Auth disabled (GO2_AUTH_ENABLED=0)"
 fi
 
 # ----------------------------
 # 0a) Start L1 -> /map2d
 # ----------------------------
-echo "[run_all] Starting flatten_l1_data (L1 -> /map2d)..."
+echo "[run_p2dingo] Starting flatten_l1_data (L1 -> /map2d)..."
 ros2 run go2_remote_connection flatten_l1_data \
   --ros-args \
   -p cloud_topic:=/utlidar/cloud_base \
@@ -177,18 +157,18 @@ ros2 run go2_remote_connection flatten_l1_data \
   -p decay_per_tick:=100 \
   -p max_occ:=100 \
   -p resolution:=0.1 \
-  > /tmp/flatten_l1_data.log 2>&1 &
+  > /tmp/flatten_l1_data_p2dingo.log 2>&1 &
 
 FLATTEN_PID=$!
-register_pid "$FLATTEN_PID" "flatten_l1_data" "/tmp/flatten_l1_data.log"
+register_pid "$FLATTEN_PID" "flatten_l1_data" "/tmp/flatten_l1_data_p2dingo.log"
 
 sleep 0.3
-ok_or_die "flatten_l1_data" "$FLATTEN_PID" "/tmp/flatten_l1_data.log"
+ok_or_die "flatten_l1_data" "$FLATTEN_PID" "/tmp/flatten_l1_data_p2dingo.log"
 
 # ------------------------------------------------------------
 # 0b) Front camera capture node + ROS bridge
 # ------------------------------------------------------------
-GO2_WS_DIR="$HOME/go2_ws/Go2RemoteConnection"
+GO2_WS_DIR="$WS_DIR"
 PKG_NAME="go2_remote_connection"
 PKG_INSTALL_DIR="$GO2_WS_DIR/install/$PKG_NAME/lib/$PKG_NAME"
 
@@ -227,51 +207,51 @@ FRONT_CAMERA_BRIDGE_EXE="$PKG_INSTALL_DIR/front_camera_ros_bridge.py"
 export GO2_CAM_JPEG_QUALITY=40
 export GO2_CAM_SCALE=0.5
 
-echo "[run_all] Using UNITREE_IFACE=$UNITREE_IFACE"
-echo "[run_all] Using VENV_PYTHON=$VENV_PYTHON"
+echo "[run_p2dingo] Using UNITREE_IFACE=$UNITREE_IFACE"
+echo "[run_p2dingo] Using VENV_PYTHON=$VENV_PYTHON"
 
-echo "[run_all] Starting front_camera_capture ..."
+echo "[run_p2dingo] Starting front_camera_capture ..."
 "$VENV_PYTHON" "$FRONT_CAMERA_CAPTURE_EXE" \
-  > /tmp/front_camera_capture.log 2>&1 &
+  > /tmp/front_camera_capture_p2dingo.log 2>&1 &
 
 FRONT_CAM_CAPTURE_PID=$!
-register_pid "$FRONT_CAM_CAPTURE_PID" "front_camera_capture" "/tmp/front_camera_capture.log"
+register_pid "$FRONT_CAM_CAPTURE_PID" "front_camera_capture" "/tmp/front_camera_capture_p2dingo.log"
 
 sleep 2.0
-ok_or_die "front_camera_capture" "$FRONT_CAM_CAPTURE_PID" "/tmp/front_camera_capture.log"
+ok_or_die "front_camera_capture" "$FRONT_CAM_CAPTURE_PID" "/tmp/front_camera_capture_p2dingo.log"
 
-echo "[run_all] Starting front_camera_ros_bridge (/front_camera/image_raw)..."
+echo "[run_p2dingo] Starting front_camera_ros_bridge (/front_camera/image_raw)..."
 "$VENV_PYTHON" "$FRONT_CAMERA_BRIDGE_EXE" --ros-args -r __node:=front_camera_node \
-  > /tmp/front_camera_node.log 2>&1 &
+  > /tmp/front_camera_node_p2dingo.log 2>&1 &
 
 FRONT_CAM_NODE_PID=$!
-register_pid "$FRONT_CAM_NODE_PID" "front_camera_ros_bridge" "/tmp/front_camera_node.log"
+register_pid "$FRONT_CAM_NODE_PID" "front_camera_ros_bridge" "/tmp/front_camera_node_p2dingo.log"
 
 sleep 2.0
-ok_or_die "front_camera_ros_bridge" "$FRONT_CAM_NODE_PID" "/tmp/front_camera_node.log"
+ok_or_die "front_camera_ros_bridge" "$FRONT_CAM_NODE_PID" "/tmp/front_camera_node_p2dingo.log"
 
 # ----------------------------
-# 1) Start FastAPI backend
+# 1) Start P2Dingo-only FastAPI backend
 # ----------------------------
-echo "[run_all] Starting FastAPI (uvicorn) on :$API_PORT ..."
+echo "[run_p2dingo] Starting FastAPI (uvicorn) on :$API_PORT ..."
 cd "$PKG_DIR"
-python3 -m uvicorn app.main:app --host "$API_HOST" --port "$API_PORT" \
-  > /tmp/go2_fastapi.log 2>&1 &
+python3 -m uvicorn app.p2dingo_main:app --host "$API_HOST" --port "$API_PORT" \
+  > /tmp/go2_fastapi_p2dingo.log 2>&1 &
 
 API_PID=$!
-register_pid "$API_PID" "FastAPI" "/tmp/go2_fastapi.log"
+register_pid "$API_PID" "FastAPI-P2Dingo" "/tmp/go2_fastapi_p2dingo.log"
 
 sleep 0.8
-ok_or_die "FastAPI" "$API_PID" "/tmp/go2_fastapi.log"
+ok_or_die "FastAPI-P2Dingo" "$API_PID" "/tmp/go2_fastapi_p2dingo.log"
 
 # ----------------------------
 # 2) Wait for Unitree sport topics before starting bridge
 # ----------------------------
-echo "[run_all] Waiting for Unitree sport topics..."
+echo "[run_p2dingo] Waiting for Unitree sport topics..."
 SPORT_READY=0
 for i in {1..30}; do
   if ros2 topic list 2>/dev/null | grep -q "^/api/sport/request$"; then
-    echo "[run_all] Unitree Sport API is up."
+    echo "[run_p2dingo] Unitree Sport API is up."
     SPORT_READY=1
     break
   fi
@@ -279,7 +259,7 @@ for i in {1..30}; do
 done
 
 kill_conflicting_nodes() {
-  echo "[run_all] Killing conflicting motion nodes (if any)..."
+  echo "[run_p2dingo] Killing conflicting motion nodes (if any)..."
   pkill -f "ros2 run go2_remote_connection web_teleop_bridge" || true
   pkill -f "ros2 run go2_remote_connection web_advanced_bridge" || true
   pkill -f "ros2 run go2_remote_connection advanced_gamepad_controller_web" || true
@@ -293,31 +273,27 @@ kill_conflicting_nodes() {
 
 kill_conflicting_nodes
 
-if [ "$MODE" = "terminal" ]; then
-  echo "[run_all] Terminal mode: skipping motion nodes ✅"
+if [ "$SPORT_READY" -eq 1 ]; then
+  echo "[run_p2dingo] Starting web_bridge ..."
+  ros2 run go2_remote_connection web_bridge > /tmp/web_bridge_p2dingo.log 2>&1 &
+  WEB_BRIDGE_PID=$!
+  register_pid "$WEB_BRIDGE_PID" "web_bridge" "/tmp/web_bridge_p2dingo.log"
+
+  echo "[run_p2dingo] Starting move_forward_meters_node ..."
+  ros2 run go2_remote_connection move_forward_meters_node > /tmp/move_forward_meters_p2dingo.log 2>&1 &
+  MOVE_PID=$!
+  register_pid "$MOVE_PID" "move_forward_meters_node" "/tmp/move_forward_meters_p2dingo.log"
+
+  sleep 0.5
+  ok_or_die "web_bridge" "$WEB_BRIDGE_PID" "/tmp/web_bridge_p2dingo.log"
+  ok_or_die "move_forward_meters_node" "$MOVE_PID" "/tmp/move_forward_meters_p2dingo.log"
 else
-  if [ "$SPORT_READY" -eq 1 ]; then
-    echo "[run_all] Starting web_bridge (for all standard web UIs)"
-    ros2 run go2_remote_connection web_bridge > /tmp/web_bridge.log 2>&1 &
-    WEB_BRIDGE_PID=$!
-    register_pid "$WEB_BRIDGE_PID" "web_bridge" "/tmp/web_bridge.log"
-
-    echo "[run_all] Starting move_forward_meters_node ..."
-    ros2 run go2_remote_connection move_forward_meters_node > /tmp/move_forward_meters.log 2>&1 &
-    MOVE_PID=$!
-    register_pid "$MOVE_PID" "move_forward_meters_node" "/tmp/move_forward_meters.log"
-
-    sleep 0.5
-    ok_or_die "web_bridge" "$WEB_BRIDGE_PID" "/tmp/web_bridge.log"
-    ok_or_die "move_forward_meters_node" "$MOVE_PID" "/tmp/move_forward_meters.log"
-  else
-    echo "[run_all] ⚠️  Unitree sport topics not found after timeout; continuing without robot motion backend."
-    echo "[run_all] ⚠️  Skipping web_bridge and move_forward_meters_node because Unitree sport topics are unavailable."
-  fi
+  echo "[run_p2dingo] ⚠️  Unitree sport topics not found after timeout; continuing without robot motion backend."
+  echo "[run_p2dingo] ⚠️  Skipping web_bridge and move_forward_meters_node because Unitree sport topics are unavailable."
 fi
 
 echo ""
-echo "[run_all] ✅ Frontend/backend started."
+echo "[run_p2dingo] ✅ P2Dingo backend started."
 
 HOST_IP="$(get_best_ip || true)"
 if [ -z "$HOST_IP" ]; then
@@ -325,30 +301,17 @@ if [ -z "$HOST_IP" ]; then
 fi
 HOST_IP="${HOST_IP:-127.0.0.1}"
 
-echo "[run_all] Home: http://$HOST_IP:$API_PORT/"
-case "$MODE" in
-  terminal)
-    echo "[run_all] UI:   http://$HOST_IP:$API_PORT/terminal"
-    ;;
-  movement)
-    echo "[run_all] UI:   http://$HOST_IP:$API_PORT/movement"
-    ;;
-  *)
-    echo "[run_all] UI:   http://$HOST_IP:$API_PORT/joystick"
-    ;;
-esac
-
-echo "[run_all] API:  http://$HOST_IP:$API_PORT"
-echo "[run_all] Press Ctrl+C to stop everything."
+echo "[run_p2dingo] Page: http://$HOST_IP:$API_PORT/"
+echo "[run_p2dingo] Press Ctrl+C to stop everything."
 echo ""
 
 echo "See logs with:"
-echo "  sed -n '1,200p' /tmp/go2_fastapi.log"
-echo "  sed -n '1,200p' /tmp/flatten_l1_data.log"
-echo "  sed -n '1,200p' /tmp/front_camera_capture.log"
-echo "  sed -n '1,200p' /tmp/front_camera_node.log"
-echo "  sed -n '1,200p' /tmp/web_bridge.log"
-echo "  sed -n '1,200p' /tmp/move_forward_meters.log"
+echo "  sed -n '1,200p' /tmp/go2_fastapi_p2dingo.log"
+echo "  sed -n '1,200p' /tmp/flatten_l1_data_p2dingo.log"
+echo "  sed -n '1,200p' /tmp/front_camera_capture_p2dingo.log"
+echo "  sed -n '1,200p' /tmp/front_camera_node_p2dingo.log"
+echo "  sed -n '1,200p' /tmp/web_bridge_p2dingo.log"
+echo "  sed -n '1,200p' /tmp/move_forward_meters_p2dingo.log"
 
 set +e
 
@@ -360,7 +323,7 @@ while true; do
       name="${pid_names[$pid]:-Child process}"
       log_path="${pid_logs[$pid]:-}"
 
-      echo "[run_all] ❌ $name exited with code $rc"
+      echo "[run_p2dingo] ❌ $name exited with code $rc"
       print_log_hint "$log_path"
       exit "$rc"
     fi

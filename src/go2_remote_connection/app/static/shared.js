@@ -13,7 +13,7 @@ It includes:
 - terminal WebSocket helper
 - shared joystick helper
 
-Version 2.1
+Version 2.2
 Author: Victor Lim
 */
 
@@ -63,15 +63,17 @@ window.Go2Shared = {
       return window.location.origin;
     }
 
-    if (!/^https?:\/\//i.test(base)) {
+    const hadScheme = /^https?:\/\//i.test(base);
+    if (!hadScheme) {
       base = "http://" + base;
     }
 
     try {
       const u = new URL(base);
 
-      // Default to :8000 if user only typed host/IP
-      if (!u.port) {
+      // Only default to :8000 for plain host/IP entries typed by the user.
+      // If they entered a full https:// domain, keep its normal origin.
+      if (!u.port && !hadScheme) {
         u.port = "8000";
       }
 
