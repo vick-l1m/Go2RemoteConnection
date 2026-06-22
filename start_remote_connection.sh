@@ -317,8 +317,11 @@ else
     # ----------------------------
     if [ "${GO2_RL_POLICY:-0}" = "1" ]; then
       RL_NODE="$GO2_WS_DIR/src/$PKG_NAME/rl_policy/go2_rl_policy_node.py"
-      echo "[run_all] Starting go2_rl_policy_node (idle until 'RL' selected in the UI)..."
-      "$VENV_PYTHON" "$RL_NODE" --net "$UNITREE_IFACE" --no-prompt \
+      RL_EXTRA_ARGS=""
+      # GO2_RL_DRY_RUN=1 -> compute obs/action and publish lowcmd with kp=kd=0 (no torque)
+      [ "${GO2_RL_DRY_RUN:-0}" = "1" ] && RL_EXTRA_ARGS="--dry-run"
+      echo "[run_all] Starting go2_rl_policy_node (idle until 'RL' selected in the UI) ${RL_EXTRA_ARGS}..."
+      "$VENV_PYTHON" "$RL_NODE" --net "$UNITREE_IFACE" --no-prompt $RL_EXTRA_ARGS \
         > /tmp/go2_rl_policy.log 2>&1 &
       RL_PID=$!
       register_pid "$RL_PID" "go2_rl_policy_node" "/tmp/go2_rl_policy.log"
