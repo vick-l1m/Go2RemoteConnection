@@ -17,17 +17,46 @@ router = APIRouter()
 
 @router.post("/safety/stop")
 async def safety_stop(_=Depends(require_token)):
+    """Genuinely stop all movement: the active controller damps and the robot
+    soft-collapses to the ground. Latched until /safety/resume.
+
+    - rl mode    : tell go2_rl_policy_node to ESTOP (damp the motors directly).
+    - sport mode : tell web_bridge to issue SportClient.Damp().
+    """
+    bridge = get_bridge()
     state.stop_latched = True
     state.teleop_enabled = False
-    get_bridge().publish_enabled(False)
-    return {"ok": True, "stop_latched": True, "teleop_enabled": False}
+    bridge.publish_enabled(False)            # stop web_bridge teleop output
+
+    if state.control_mode == "rl":
+        bridge.publish_estop(True)           # RL node -> damp (soft collapse)
+    else:
+        bridge.publish_action("damp")        # sport service -> Damp (soft collapse)
+
+    return {"ok": True, "stop_latched": True, "teleop_enabled": False,
+            "control_mode": state.control_mode}
 
 @router.post("/safety/resume")
 async def safety_resume(_=Depends(require_token)):
+    """Get back up and ready to move again, in whichever mode is active.
+
+    - rl mode    : clear the ESTOP -> the RL node ramps back up to the default
+                   pose and resumes the policy (joystick-ready).
+    - sport mode : SportClient.RecoveryStand() to stand up, then re-enable teleop.
+    """
+    bridge = get_bridge()
     state.stop_latched = False
     state.teleop_enabled = True
-    get_bridge().publish_enabled(True)
-    return {"ok": True, "stop_latched": False, "teleop_enabled": True}
+
+    if state.control_mode == "rl":
+        bridge.publish_estop(False)          # RL node -> stand up under policy, ready
+        # web_bridge stays idle while RL owns the motors (do not re-enable)
+    else:
+        bridge.publish_action("recovery")    # sport service -> RecoveryStand
+        bridge.publish_enabled(True)         # resume web_bridge teleop
+
+    return {"ok": True, "stop_latched": False, "teleop_enabled": True,
+            "control_mode": state.control_mode}
 
 @router.get("/safety/status")
 async def safety_status(_=Depends(require_token)):

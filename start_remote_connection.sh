@@ -310,6 +310,23 @@ else
     sleep 0.5
     ok_or_die "web_bridge" "$WEB_BRIDGE_PID" "/tmp/web_bridge.log"
     ok_or_die "move_forward_meters_node" "$MOVE_PID" "/tmp/move_forward_meters.log"
+
+    # ----------------------------
+    # 2b) Low-level RL policy node (opt-in via GO2_RL_POLICY=1)
+    #     Starts IDLE; only drives motors once 'RL' is selected in the UI.
+    # ----------------------------
+    if [ "${GO2_RL_POLICY:-0}" = "1" ]; then
+      RL_NODE="$GO2_WS_DIR/src/$PKG_NAME/rl_policy/go2_rl_policy_node.py"
+      echo "[run_all] Starting go2_rl_policy_node (idle until 'RL' selected in the UI)..."
+      "$VENV_PYTHON" "$RL_NODE" --net "$UNITREE_IFACE" --no-prompt \
+        > /tmp/go2_rl_policy.log 2>&1 &
+      RL_PID=$!
+      register_pid "$RL_PID" "go2_rl_policy_node" "/tmp/go2_rl_policy.log"
+      sleep 1.5
+      ok_or_die "go2_rl_policy_node" "$RL_PID" "/tmp/go2_rl_policy.log"
+    else
+      echo "[run_all] go2_rl_policy_node NOT started (set GO2_RL_POLICY=1 to enable RL control mode)."
+    fi
   else
     echo "[run_all] ⚠️  Unitree sport topics not found after timeout; continuing without robot motion backend."
     echo "[run_all] ⚠️  Skipping web_bridge and move_forward_meters_node because Unitree sport topics are unavailable."

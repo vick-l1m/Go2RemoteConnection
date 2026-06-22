@@ -26,6 +26,7 @@ from app.api.safety import router as safety_router
 from app.api.teleop import router as teleop_router
 from app.api.movement import router as movement_router
 from app.api.sport import router as sport_router
+from app.api.control import router as control_router
 from app.api.map_routes import router as map_router
 from app.api.camera_routes import router as camera_router
 from app.api.yolo_routes import router as yolo_router
@@ -145,6 +146,7 @@ app.include_router(safety_router)
 app.include_router(teleop_router)
 app.include_router(movement_router)
 app.include_router(sport_router)
+app.include_router(control_router)
 app.include_router(map_router)
 app.include_router(camera_router)
 app.include_router(yolo_router)

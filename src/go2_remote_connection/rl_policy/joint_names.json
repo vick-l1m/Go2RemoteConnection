@@ -1,0 +1,8 @@
+{
+  "_comment": "Isaac-Lab articulation joint order (robot.data.joint_names) for the Go2 flat policy. This is the order the policy's action output and joint observations are in. VERIFY against your actual env with dump_isaac_joint_order.py before driving the robot on the ground -- a wrong order moves the wrong leg. Names are stripped of the '_joint' suffix by the node.",
+  "joint_names": [
+    "FL_hip_joint", "FR_hip_joint", "RL_hip_joint", "RR_hip_joint",
+    "FL_thigh_joint", "FR_thigh_joint", "RL_thigh_joint", "RR_thigh_joint",
+    "FL_calf_joint", "FR_calf_joint", "RL_calf_joint", "RR_calf_joint"
+  ]
+}

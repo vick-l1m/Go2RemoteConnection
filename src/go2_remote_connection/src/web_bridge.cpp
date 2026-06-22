@@ -41,6 +41,15 @@ public:
         last_rx_time_ = this->now();
       });
 
+    // When the RL policy owns the motors (low-level), this bridge must not emit
+    // any SportClient command. go2_rl_policy_node performs the sport-service
+    // release/recover; this is the software-side mutual-exclusion gate.
+    control_mode_sub_ = this->create_subscription<std_msgs::msg::String>(
+      "/web_control_mode", 10,
+      [this](const std_msgs::msg::String::SharedPtr msg) {
+        rl_mode_.store(msg->data == "rl", std::memory_order_relaxed);
+      });
+
     timer_ = this->create_wall_timer(50ms, std::bind(&WebUnifiedBridge::tick, this));
     last_rx_time_ = this->now();
 
@@ -89,6 +98,7 @@ private:
   bool last_nonzero_{false};
 
   std::atomic<bool> remote_enabled_{true};
+  std::atomic<bool> rl_mode_{false};   // true while the low-level RL policy owns the motors
 
   // Posing state
   bool pose_flag_{false};
@@ -113,6 +123,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr teleop_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr action_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr enabled_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr control_mode_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   // ---------------- Unitree ----------------
@@ -264,6 +275,7 @@ private:
 
   void tick() {
     if (!remote_enabled_.load(std::memory_order_relaxed)) return;
+    if (rl_mode_.load(std::memory_order_relaxed)) return;  // RL policy owns the motors
 
     maybeAssertGait();
 

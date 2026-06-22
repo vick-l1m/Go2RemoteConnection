@@ -260,3 +260,64 @@ Once the correct token is entered, the UI is accessable.
 The frontend stores the last successful token + URL in ```localStorage```, so that the same device does not have to continuously log-in.
 
 The logout button clears this storage.
+
+## 6. Remote access from anywhere (Tailscale Funnel)
+
+By default the website is only reachable on the same Wi-Fi/LAN as the Go2. To open
+it from **any device, anywhere, with nothing installed on that device** (e.g. a
+phone), expose the backend publicly over HTTPS using **Tailscale Funnel**.
+
+The Go2 hosts everything: the FastAPI backend serves both the website and the API
+on port `8000`, and Funnel (running on the Go2) forwards a public HTTPS URL to it.
+
+### 6.1. One-time prerequisites (Tailscale admin console)
+- The Go2 must be on the tailnet: `sudo tailscale up`
+- Enable **HTTPS Certificates** for the tailnet: https://login.tailscale.com/admin/dns
+- Allow **Funnel** for the Go2 node in the tailnet policy (ACLs / `nodeAttrs`):
+  https://tailscale.com/kb/1223/funnel#requirements
+
+### 6.2. Turn on the funnel (run ON the Go2)
+```bash
+cd ~/go2_ws/Go2RemoteConnection
+./start_tailscale_funnel.sh          # exposes local :8000 publicly over HTTPS
+```
+This uses `tailscale funnel --bg 8000`, which **persists across reboots** — you
+normally run it only once. Helper commands:
+```bash
+./start_tailscale_funnel.sh status   # show the public URL + current config
+./start_tailscale_funnel.sh off      # stop exposing it (tailscale funnel reset)
+```
+
+The public URL is your Go2's tailnet name, for example:
+```text
+https://unitree-jetson-payload.tail85e7d7.ts.net/
+```
+Because the page is served over `https://`, the frontend automatically uses
+`wss://` for the terminal and camera streams (see `apiWsBase()` in `shared.js`),
+so there are no mixed-content errors. Funnel forwards WebSockets, so the
+terminal and camera work over the public URL too.
+
+> ⚠️ With auth disabled (`GO2_AUTH_ENABLED=0`), **anyone with this URL can drive
+> the robot.** Treat the URL as a secret, or turn auth on (see §5 / §1.6).
+
+### 6.3. Always-up when the robot is on
+Two things must start automatically on the Go2:
+1. **`tailscaled`** — installed as a systemd service, starts on boot by default.
+   The Funnel config set with `--bg` is restored automatically each boot.
+2. **The backend** — enable the systemd service so it starts on boot (see §2):
+   ```bash
+   sudo systemctl enable go2-remote-connection.service
+   sudo systemctl start  go2-remote-connection.service
+   ```
+With both enabled, powering on the Go2 brings the website back automatically at
+the same public URL — no commands needed.
+
+### 6.4. What happens when the Go2 is off
+Because the Go2 is the **only** host, when it is fully powered off the public URL
+cannot load (the browser shows a connection/timeout error) — there is nothing
+running to serve a custom "robot is offline" page. While the page **is** loaded,
+it shows live connection status (the `/health` check via `Go2Shared.checkHealth`)
+and reports failures. If you later want a friendly "robot is offline" page that is
+reachable even when the Go2 is off, the website has to be hosted on an always-on
+machine (the lab desktop or a small cloud page) that polls the Go2 — that is a
+different deployment than this robot-only one.

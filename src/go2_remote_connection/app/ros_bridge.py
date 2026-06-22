@@ -150,6 +150,8 @@ class WebRosBridge(Node):
         self.pub_enabled = self.create_publisher(Bool, "/web_teleop_enabled", 1)
         self.pub_move_forward = self.create_publisher(Float32, "/move_forward_meters", 10)
         self.pub_sport_cmd = self.create_publisher(RosString, "/web_sport_cmd", 10)
+        self.pub_control_mode = self.create_publisher(RosString, "/web_control_mode", 1)
+        self.pub_estop = self.create_publisher(Bool, "/web_estop", 1)
 
         # ---------------- Map subscriptions ----------------
         map_qos = QoSProfile(
@@ -265,6 +267,22 @@ class WebRosBridge(Node):
         else:
             msg.data = json.dumps(payload)
         self.pub_sport_cmd.publish(msg)
+
+    def publish_control_mode(self, mode: str):
+        if not self._ok_to_publish():
+            return
+
+        msg = RosString()
+        msg.data = str(mode)
+        self.pub_control_mode.publish(msg)
+
+    def publish_estop(self, engaged: bool):
+        if not self._ok_to_publish():
+            return
+
+        msg = Bool()
+        msg.data = bool(engaged)
+        self.pub_estop.publish(msg)
 
     # ---------------- Map callbacks ----------------
     def _on_map_full(self, msg: OccupancyGrid):

@@ -15,6 +15,7 @@ class RuntimeState:
     shutting_down: bool = False
     stop_latched: bool = False
     teleop_enabled: bool = True
+    control_mode: str = "sport"   # "sport" (Unitree SportClient) | "rl" (low-level RL policy)
 
 state = RuntimeState()
 
