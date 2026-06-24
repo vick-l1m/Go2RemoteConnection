@@ -30,6 +30,8 @@ from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Bool, Float32
 from std_msgs.msg import String as RosString
 
+from app.core.state import state
+
 
 # ============================================================
 # 2D MAP STORE
@@ -210,11 +212,43 @@ class WebRosBridge(Node):
             CompressedImage, yolo_cam_topic, self._on_yolo_cam, cam_qos
         )
 
+        # ---------------- RL policy liveness watchdog ----------------
+        # If we are in RL control mode but go2_rl_policy_node stops sending its
+        # heartbeat (crash / kill), auto-revert to sport so web_bridge un-gates and
+        # the robot stays drivable. Covers the hard-crash case the node's own
+        # SIGINT/SIGTERM handler cannot.
+        self._rl_last_hb: Optional[float] = None
+        self._rl_mode_since: Optional[float] = None
+        self.create_subscription(Bool, "/web_rl_heartbeat", self._on_rl_heartbeat, 10)
+        self.create_timer(0.5, self._rl_watchdog)
+
         # AsyncIO loop provided by FastAPI
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     def set_asyncio_loop(self, loop: asyncio.AbstractEventLoop):
         self._loop = loop
+
+    # ---------------- RL liveness watchdog ----------------
+    def _on_rl_heartbeat(self, msg: Bool):
+        self._rl_last_hb = self.get_clock().now().nanoseconds * 1e-9
+
+    def _rl_watchdog(self):
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if state.control_mode != "rl":
+            self._rl_mode_since = None
+            return
+        if self._rl_mode_since is None:
+            self._rl_mode_since = now            # just entered rl; start the grace window
+        # Use the most recent of (last heartbeat, mode-entry) so a freshly-engaged
+        # node gets a grace period to start beating before we judge it dead.
+        last = self._rl_last_hb if self._rl_last_hb is not None else self._rl_mode_since
+        if now - last > 2.0:
+            self.get_logger().warn("RL node heartbeat lost; auto-reverting to sport mode")
+            state.control_mode = "sport"
+            self.publish_control_mode("sport")   # clears web_bridge rl_mode_ gate
+            self.publish_enabled(True)           # re-enable sport teleop
+            self._rl_mode_since = None
+            self._rl_last_hb = None
 
     # ---------------- Publish helpers ----------------
     def _ok_to_publish(self) -> bool:

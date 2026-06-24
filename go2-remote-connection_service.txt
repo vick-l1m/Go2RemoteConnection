@@ -15,7 +15,7 @@ WorkingDirectory=/home/unitree/go2_ws/Go2RemoteConnection
 
 # Run your startup script
 # Change "joystick" to "terminal" or "movement" if you want a different mode
-ExecStart=/bin/bash /home/unitree/go2_ws/Go2RemoteConnection/start_remote_connection.sh joystick
+ExecStart=/bin/bash /home/unitree/go2_ws/Go2RemoteConnection/RL_start_remote_connection.sh joystick
 
 # Restart if it crashes
 Restart=always

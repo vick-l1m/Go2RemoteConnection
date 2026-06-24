@@ -48,8 +48,8 @@ source install/setup.bash
 Make the command runnable and launch:
 ```bash
 cd ~/go2_ws/Go2RemoteConnection
-chmod +x start_remote_connection.sh
-./start_remote_connection.sh
+chmod +x RL_start_remote_connection.sh
+./RL_start_remote_connection.sh
 ```
 
 To run on the Issac Sim:
@@ -179,7 +179,7 @@ sudo systemctl restart go2-remote-connection.service
 ```
 
 ## 3. How it works
-The start up script: ```./start_remote_connection.sh``` runs 3 seperate process':
+The start up script: ```./RL_start_remote_connection.sh``` runs 3 seperate process':
 
 **The backend (FastAPI)**:
 ```bash

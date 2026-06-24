@@ -72,7 +72,7 @@ the go/no-go gate. Send tiny commands (`x: 0.2`) and watch coordinated stepping
 **3. Full web integration** — start the stack with the node enabled:
 
 ```bash
-GO2_RL_POLICY=1 ./start_remote_connection.sh
+GO2_RL_POLICY=1 ./RL_start_remote_connection.sh
 ```
 
 Open the joystick page, press **RL: ON** (confirm dialog), drive with the
@@ -103,6 +103,20 @@ joystick. Press **RL: OFF** to hand back to the Unitree sport gaits.
   ramps from the collapsed pose back to the default pose and resumes the policy
   (joystick-ready); in sport mode it issues `RecoveryStand()` and re-enables teleop.
 - The **physical E-stop** remains the true hardware cut for any emergency.
+
+### Crash / exit recovery (so the robot is never stranded)
+
+- **Ctrl-C or `kill` (SIGINT/SIGTERM)** — the node traps the signal and runs a safe
+  shutdown: if it had released the sport service it **recovers it** (`SelectMode("normal")`
+  + `BalanceStand`), then publishes `sport` mode + re-enables `web_bridge`. The robot
+  stands and the website drives it again. **Always prefer pressing RL: OFF**, but a
+  Ctrl-C will no longer strand the robot.
+- **Hard crash (SIGKILL / segfault)** — the node publishes a 5 Hz heartbeat; the web
+  bridge watchdog notices it stop and, after ~2 s, **auto-reverts to sport** so
+  `web_bridge` un-gates. Note: if the policy had released the sport service, the web
+  side cannot revive it — **power-cycle the robot** to restore sport in that case.
+- The UI can always force normal mode: `POST /control_mode/sport` works even while
+  STOP is latched, and RESUME always re-enables `web_bridge`.
 
 ## Known limitation (this build)
 

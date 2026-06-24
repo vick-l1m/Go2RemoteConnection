@@ -27,12 +27,15 @@ VALID_MODES = {"sport", "rl"}
 async def set_control_mode(mode: str, _=Depends(require_token)):
     if state.shutting_down:
         raise HTTPException(status_code=503, detail="Server shutting down")
-    if state.stop_latched:
-        raise HTTPException(status_code=423, detail="STOP latched: control mode locked")
 
     mode = mode.strip().lower()
     if mode not in VALID_MODES:
         raise HTTPException(status_code=400, detail=f"mode must be one of {sorted(VALID_MODES)}")
+
+    # Switching INTO rl is blocked while STOP is latched. Switching back to sport is
+    # always allowed -- it is the safe direction and a failsafe out of a stuck state.
+    if mode == "rl" and state.stop_latched:
+        raise HTTPException(status_code=423, detail="STOP latched: RESUME before engaging RL")
 
     bridge = get_bridge()
     # Order matters for safe mutual exclusion:

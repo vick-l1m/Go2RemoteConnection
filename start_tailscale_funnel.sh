@@ -6,7 +6,7 @@
 # internet over HTTPS using Tailscale Funnel. This lets you open the website
 # from ANY device/browser (phone, etc.) with nothing installed on it.
 #
-# Run this ON THE GO2 (the same machine that runs start_remote_connection.sh).
+# Run this ON THE GO2 (the same machine that runs RL_start_remote_connection.sh).
 # Funnel config is stored by tailscaled and is restored on every boot, so you
 # normally only run this ONCE. After that, the public URL works whenever the
 # Go2 is powered on and the backend service is running.
@@ -66,7 +66,7 @@ URL="${NODE_DNS:+https://$NODE_DNS}"
 if ! curl -fsS -m 3 "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
   echo "⚠️  Nothing is answering on http://127.0.0.1:${PORT}/health yet."
   echo "    Funnel will still be set up, but it returns 502 until the backend runs."
-  echo "    Start the backend with:  ./start_remote_connection.sh joystick"
+  echo "    Start the backend with:  ./RL_start_remote_connection.sh joystick"
   echo "    (or enable the systemd service so it starts on boot — see README §2)"
   echo
 fi

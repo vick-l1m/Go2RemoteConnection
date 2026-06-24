@@ -47,13 +47,13 @@ async def safety_resume(_=Depends(require_token)):
     bridge = get_bridge()
     state.stop_latched = False
     state.teleop_enabled = True
+    bridge.publish_enabled(True)             # ALWAYS un-gate the enable flag (failsafe)
 
     if state.control_mode == "rl":
         bridge.publish_estop(False)          # RL node -> stand up under policy, ready
-        # web_bridge stays idle while RL owns the motors (do not re-enable)
+        # web_bridge still idles via its rl_mode_ gate while RL owns the motors
     else:
         bridge.publish_action("recovery")    # sport service -> RecoveryStand
-        bridge.publish_enabled(True)         # resume web_bridge teleop
 
     return {"ok": True, "stop_latched": False, "teleop_enabled": True,
             "control_mode": state.control_mode}

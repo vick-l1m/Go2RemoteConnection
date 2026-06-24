@@ -37,6 +37,7 @@ than sim -- this build validates the pipeline, not gait quality.
 import argparse
 import json
 import pathlib
+import signal
 import threading
 import time
 
@@ -190,6 +191,14 @@ class Go2RLPolicyNode(Node):
         self.create_subscription(String, "/web_control_mode", self._on_mode, 10)
         self.create_subscription(Bool, "/web_estop", self._on_estop, 10)
 
+        # Failsafe publishers: a liveness heartbeat (so the web stack can detect a
+        # dead node and auto-revert to sport), and one-shot un-gate signals sent on
+        # shutdown so web_bridge is never left latched into RL mode.
+        self._pub_hb = self.create_publisher(Bool, "/web_rl_heartbeat", 10)
+        self._pub_mode_out = self.create_publisher(String, "/web_control_mode", 1)
+        self._pub_enabled_out = self.create_publisher(Bool, "/web_teleop_enabled", 1)
+        self._tick = 0
+
         # ---- threads -----------------------------------------------------
         self._tworker = threading.Thread(target=self._transition_worker, daemon=True)
         self._tworker.start()
@@ -312,6 +321,11 @@ class Go2RLPolicyNode(Node):
     def _control_step(self):
         if self.low_state is None:
             return
+        self._tick += 1
+        if self._tick % 10 == 0:             # ~5 Hz liveness heartbeat
+            hb = Bool()
+            hb.data = True
+            self._pub_hb.publish(hb)
         with self._lock:
             phase = self.phase
         try:
@@ -426,13 +440,49 @@ class Go2RLPolicyNode(Node):
         return time.monotonic() - self._t0
 
     def shutdown(self):
+        """Safe teardown: never leave the robot stranded.
+
+        Idempotent (signal handler + finally may both call it). If the policy was
+        driving (sport service released), recover the sport service so the robot
+        stands rather than going limp; then un-gate web_bridge so sport teleop
+        works again even if FastAPI never learned the node died.
+        """
+        if getattr(self, "_shutdown_done", False):
+            return
+        self._shutdown_done = True
         self._stop = True
         self._wake.set()
+        with self._lock:
+            phase = self.phase
+        engaged = phase in (ENGAGE, RL_RUN, DISENGAGE, ESTOP)
+
+        # 1. stop the 50 Hz loop so it no longer publishes lowcmd
         try:
-            self.ctrl_thread.Wait()
+            self.ctrl_thread.Wait(timeout=1.5)
         except Exception:  # noqa: BLE001
             pass
-        self._damp()
+
+        # 2. if we released the sport service, bring it back (else the robot is
+        #    left with no controller = limp). Falls back to a damp on failure.
+        if engaged and self.handover and not self.dry_run:
+            try:
+                self.get_logger().warn("shutdown: recovering Unitree sport service")
+                self._select_sport()
+                with self._sport_lock:
+                    self.sc.BalanceStand()
+            except Exception as e:  # noqa: BLE001
+                self.get_logger().error(f"shutdown: sport recovery failed ({e}); damping")
+                self._damp()
+
+        # 3. un-gate web_bridge so sport teleop is usable again
+        try:
+            m = String(); m.data = "sport"
+            self._pub_mode_out.publish(m)
+            b = Bool(); b.data = True
+            self._pub_enabled_out.publish(b)
+            self.get_logger().info("shutdown: published sport mode + re-enabled web_bridge")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def main():
@@ -464,14 +514,38 @@ def main():
 
     rclpy.init()
     node = Go2RLPolicyNode(args)
+
+    # Catch Ctrl-C (SIGINT) AND `kill`/launcher cleanup (SIGTERM) so the node always
+    # runs its safe shutdown (recover sport service + un-gate web_bridge) instead of
+    # dying and stranding the robot. (A hard SIGKILL/-9 can't be trapped -> power-cycle.)
+    def _graceful(signum, _frame):
+        try:
+            node.get_logger().warn(f"signal {signum}: safe shutdown")
+        except Exception:  # noqa: BLE001
+            pass
+        node.shutdown()
+        try:
+            rclpy.try_shutdown()
+        except Exception:  # noqa: BLE001
+            pass
+
+    signal.signal(signal.SIGINT, _graceful)
+    signal.signal(signal.SIGTERM, _graceful)
+
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
     finally:
-        node.shutdown()
-        node.destroy_node()
-        rclpy.shutdown()
+        node.shutdown()           # idempotent; no-op if the signal handler ran
+        try:
+            node.destroy_node()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            rclpy.try_shutdown()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 if __name__ == "__main__":
