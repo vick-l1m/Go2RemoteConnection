@@ -1,15 +1,20 @@
 <!--
-go2_joystick.html
+RL_sim_to_real.html
 
-This file provides the main Go2 joystick teleoperation interface.
-It includes:
+Standalone joystick teleop interface for the RL sim-to-real workflow.
+Identical to the standard joystick page but:
+- carries the low-level RL POLICY controls (RL: ON/OFF + active banner)
+- is standalone: no navigation to the other web pages (showNav: false)
+- launched by RL_start_remote_connection.sh
+
+Includes:
 - shared login/auth overlay
-- shared navigation and health/safety controls
 - stand/sit actions
+- RL control-mode toggle + active banner
 - dual joystick teleoperation
 - status output for commands and safety state
 
-Version 2.0
+Version 1.0
 Author: Victor Lim
 -->
 
@@ -18,7 +23,7 @@ Author: Victor Lim
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Go2 Joystick Teleop</title>
+  <title>RL_sim_to_real</title>
 
   <link rel="stylesheet" href="/app/static/shared.css" />
   <script src="/app/static/shared.js"></script>
@@ -27,12 +32,62 @@ Author: Victor Lim
     let latest = { lx: 0, ly: 0, rx: 0, ry: 0 };
     let teleopTimer = null;
     let safetyLatched = false;
+    let controlMode = "sport";
 
     window.addEventListener("DOMContentLoaded", async () => {
-      await Go2Shared.init({ defaultApi: "", showAuthButtons: true });
+      // Standalone page: no nav bar to the other UIs.
+      await Go2Shared.init({ defaultApi: "", showAuthButtons: true, showNav: false });
       setTimeout(refreshSafetyStatus, 200);
+      setTimeout(refreshControlMode, 250);
       initJoysticks();
     });
+
+    async function toggleControlMode() {
+      // Decide from the current mode: RL on -> turn sport service OFF,
+      // RL off -> hand control back so the sport service starts again.
+      const next = controlMode === "rl" ? "sport" : "rl";
+      if (next === "rl" && !confirm(
+        "Switch to LOW-LEVEL RL POLICY control?\n\n" +
+        "The robot releases the Unitree sport service, stands to the policy's " +
+        "default pose, then walks under the trained policy. Ensure the area is " +
+        "clear / the robot is on a gantry, with the E-stop in reach.")) return;
+
+      const r = await Go2Shared.httpPost(`/control_mode/${next}`, null, { bypassCommsGate: true });
+      Go2Shared.setStatus(
+        r.ok ? `Control mode: ${next}` : "Mode switch failed",
+        r.ok,
+        `URL: ${r.url}\n${r.text}`
+      );
+
+      // On a successful POST, reflect the new mode locally right away. The button
+      // must always flip back, even if the GET /control_mode readback below can't
+      // be reached -- otherwise the toggle gets stuck pointing into RL.
+      if (r.ok) {
+        controlMode = next;
+        applyControlModeUi();
+      }
+      await refreshControlMode();
+    }
+
+    function applyControlModeUi() {
+      const btn = document.getElementById("controlModeBtn");
+      if (btn) {
+        btn.textContent = controlMode === "rl" ? "RL: ON" : "RL: OFF";
+        btn.classList.toggle("activeMode", controlMode === "rl");
+      }
+      const banner = document.getElementById("rlBanner");
+      if (banner) banner.style.display = controlMode === "rl" ? "block" : "none";
+    }
+
+    async function refreshControlMode() {
+      const r = await Go2Shared.httpGet("/control_mode", { bypassCommsGate: true });
+      if (!r.ok) return;
+      try {
+        const data = JSON.parse(r.text);
+        controlMode = data.control_mode || "sport";
+        applyControlModeUi();
+      } catch (_) {}
+    }
 
     async function loginAndStart() {
       await Go2Shared.login();
@@ -131,13 +186,19 @@ Author: Victor Lim
 
   <div id="appRoot">
     <div class="card">
-      <h1>Unitree Go2 – Joystick Teleop</h1>
+      <h1>Go2 RL Sim-to-Real – Joystick Teleop</h1>
+
+      <div id="rlBanner" style="display:none; background:#b71c1c; color:#fff; padding:8px;
+           border-radius:6px; margin-bottom:8px; font-weight:bold; text-align:center;">
+        ⚠ LOW-LEVEL RL POLICY ACTIVE — the joystick drives the trained policy
+      </div>
 
       <div class="row">
         <input id="baseUrl" placeholder="http://<go2-ip>:8000" />
         <button onclick="Go2Shared.checkHealth()">Health</button>
         <button onclick="postAction('stand')">Stand</button>
         <button onclick="postAction('sit')">Sit</button>
+        <button id="controlModeBtn" onclick="toggleControlMode()">RL: OFF</button>
         <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
         <button onclick="Go2Shared.logout()">Logout</button>
       </div>
@@ -160,7 +221,7 @@ Author: Victor Lim
 
       <div class="small" style="margin-top:10px;">
         STOP damps the robot (soft collapse) and latches the system; RESUME stands
-        it back up and re-arms control.
+        it back up and re-arms control. Works in both RL and Unitree-gait modes.
       </div>
     </div>
   </div>

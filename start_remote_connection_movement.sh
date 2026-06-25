@@ -86,11 +86,19 @@ else
 fi
 
 # 3) Your overlay
-if [ -f "$WS_DIR/install/setup.bash" ]; then
-  echo "[run_movement_only] Sourcing overlay: $WS_DIR/install/setup.bash"
-  source "$WS_DIR/install/setup.bash"
-else
-  echo "[run_movement_only] WARNING: overlay not found: $WS_DIR/install/setup.bash (did you colcon build?)"
+# The colcon-built overlay may live in this repo or in the dedicated
+# build workspace (~/go2_ws/Go2RemoteConnection). Try both.
+OVERLAY_SOURCED=0
+for overlay in "$WS_DIR/install/setup.bash" "$HOME/go2_ws/Go2RemoteConnection/install/setup.bash"; do
+  if [ -f "$overlay" ]; then
+    echo "[run_movement_only] Sourcing overlay: $overlay"
+    source "$overlay"
+    OVERLAY_SOURCED=1
+    break
+  fi
+done
+if [ "$OVERLAY_SOURCED" -eq 0 ]; then
+  echo "[run_movement_only] WARNING: no go2_remote_connection overlay found (did you colcon build?)"
 fi
 
 set -u

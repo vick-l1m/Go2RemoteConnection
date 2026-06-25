@@ -196,7 +196,7 @@ ros2 run go2_remote_connection web_teleop_bridge
 The script does the following:
   - Source ROS 2 Foxy
   - Source Unitree Go2 ROS environment
-  - Source this workspace’s overlay
+  - Source the colcon overlay (checks `$WS_DIR/install` first, then falls back to `~/go2_ws/Go2RemoteConnection/install`, so the script works whether it's launched from the repo or the build workspace)
   - Export DDS / ROS environment variables explicitly
   - Wait for the Go2 driver node to be available
   - Start:

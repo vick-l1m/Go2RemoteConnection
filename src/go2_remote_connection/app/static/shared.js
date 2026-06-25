@@ -29,6 +29,7 @@ window.Go2Shared = {
   async init(opts = {}) {
     const defaultApi = opts.defaultApi ?? window.location.origin;
     const showAuthButtons = opts.showAuthButtons ?? true;
+    const showNav = opts.showNav ?? true;
 
     this.state.SHOW_AUTH_BUTTONS = !!showAuthButtons;
 
@@ -49,8 +50,10 @@ window.Go2Shared = {
     const loginToken = document.getElementById("loginToken");
     if (loginToken) loginToken.value = this.state.AUTH_TOKEN;
 
-    this.injectNavBar();
-    this.highlightActivePage();
+    if (showNav) {
+      this.injectNavBar();
+      this.highlightActivePage();
+    }
 
     await this.fetchConfigMaybe();
     this.updateAuthUi();
@@ -144,7 +147,6 @@ window.Go2Shared = {
       <a class="navBtn" href="/">Home</a>
       <a class="navBtn" href="/joystick">Joysticks</a>
       <a class="navBtn" href="/movement">Movement</a>
-      <a class="navBtn" href="/map">Map</a>
       <a class="navBtn" href="/terminal">Terminal</a>
       <a class="navBtn" href="/other">Other</a>
       <a class="navBtn" href="/camera">Camera</a>

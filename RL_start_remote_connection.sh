@@ -28,35 +28,30 @@ get_best_ip() {
 }
 
 # ----------------------------
-# UI selection by CLI arg
+# UI: this launcher is RL-only — it serves the standalone RL_sim_to_real
+# page (/rl_sim_to_real), which carries the RL control buttons and shows
+# no navigation to the other web pages. No mode selection.
 # ----------------------------
-MODE="${1:-joystick}"   # joystick | terminal | movement
-
-case "$MODE" in
-  terminal|joystick|movement|"")
-    ;;
-  *)
-    echo "[run_all] ❌ Unknown mode: '$MODE'"
-    echo "Usage:"
-    echo "  $0                # serve joystick UI + bridge"
-    echo "  $0 joystick       # serve joystick UI + bridge"
-    echo "  $0 terminal       # serve terminal-only UI (no bridge)"
-    echo "  $0 movement       # serve movement UI + bridge"
-    exit 1
-    ;;
-esac
+MODE="rl_sim_to_real"
 
 pids=()
 declare -A pid_names
 declare -A pid_logs
+declare -A pid_critical
+declare -A pid_reported
 
+# register_pid <pid> <name> [log_path] [critical]
+#   critical=1 (default): if this process dies, tear the whole stack down.
+#   critical=0          : non-essential (e.g. lidar/camera); warn but keep running.
 register_pid() {
   local pid="$1"
   local name="$2"
   local log_path="${3:-}"
+  local critical="${4:-1}"
   pids+=("$pid")
   pid_names["$pid"]="$name"
   pid_logs["$pid"]="$log_path"
+  pid_critical["$pid"]="$critical"
 }
 
 print_log_hint() {
@@ -98,6 +93,20 @@ ok_or_die() {
   fi
 }
 
+# warn_if_dead: for non-essential nodes (lidar/camera). Warns but never exits.
+warn_if_dead() {
+  local name="$1"
+  local pid="$2"
+  local log_path="${3:-}"
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "[run_all] ⚠️  $name failed to start — continuing without it (non-essential)."
+    print_log_hint "$log_path"
+    return 1
+  fi
+  return 0
+}
+
 echo "[run_all] Workspace: $WS_DIR"
 echo "[run_all] Mode: $MODE"
 
@@ -125,11 +134,19 @@ else
   echo "[run_all] WARNING: Unitree env not found at $HOME/unitree_ros2/install/setup.(sh|bash)"
 fi
 
-if [ -f "$WS_DIR/install/setup.bash" ]; then
-  echo "[run_all] Sourcing overlay: $WS_DIR/install/setup.bash"
-  source "$WS_DIR/install/setup.bash"
-else
-  echo "[run_all] WARNING: overlay not found: $WS_DIR/install/setup.bash (did you colcon build?)"
+# The colcon-built overlay may live in this repo or in the dedicated
+# build workspace (~/go2_ws/Go2RemoteConnection). Try both.
+OVERLAY_SOURCED=0
+for overlay in "$WS_DIR/install/setup.bash" "$HOME/go2_ws/Go2RemoteConnection/install/setup.bash"; do
+  if [ -f "$overlay" ]; then
+    echo "[run_all] Sourcing overlay: $overlay"
+    source "$overlay"
+    OVERLAY_SOURCED=1
+    break
+  fi
+done
+if [ "$OVERLAY_SOURCED" -eq 0 ]; then
+  echo "[run_all] WARNING: no go2_remote_connection overlay found (did you colcon build?)"
 fi
 
 set -u
@@ -162,35 +179,13 @@ else
   echo "[run_all] 🔓 Auth disabled (GO2_AUTH_ENABLED=0)"
 fi
 
-# ----------------------------
-# 0a) Start L1 -> /map2d
-# ----------------------------
-echo "[run_all] Starting flatten_l1_data (L1 -> /map2d)..."
-ros2 run go2_remote_connection flatten_l1_data \
-  --ros-args \
-  -p cloud_topic:=/utlidar/cloud_base \
-  -p map2d_topic:=/map2d \
-  -p min_height_rel:=-5.0 \
-  -p max_height_rel:=5.0 \
-  -p tick_rate_hz:=5.0 \
-  -p update_radius_m:=20.0 \
-  -p decay_per_tick:=100 \
-  -p max_occ:=100 \
-  -p resolution:=0.1 \
-  > /tmp/flatten_l1_data.log 2>&1 &
-
-FLATTEN_PID=$!
-register_pid "$FLATTEN_PID" "flatten_l1_data" "/tmp/flatten_l1_data.log"
-
-sleep 0.3
-ok_or_die "flatten_l1_data" "$FLATTEN_PID" "/tmp/flatten_l1_data.log"
-
 # ------------------------------------------------------------
-# 0b) Front camera capture node + ROS bridge
+# Runtime env needed by the RL policy node (interface, venv python,
+# DDS config). No lidar/camera/perception nodes are started — this
+# launcher runs the movement-related stack only.
 # ------------------------------------------------------------
 GO2_WS_DIR="$HOME/go2_ws/Go2RemoteConnection"
 PKG_NAME="go2_remote_connection"
-PKG_INSTALL_DIR="$GO2_WS_DIR/install/$PKG_NAME/lib/$PKG_NAME"
 
 VENV_PYTHON="$HOME/venvs/unitree_sdk2_python/bin/python3"
 UNITREE_SDK_SRC="$HOME/unitree_sdk2_python"
@@ -221,34 +216,8 @@ fi
 export UNITREE_IFACE="${UNITREE_IFACE:-$DEFAULT_UNITREE_IFACE}"
 export CYCLONEDDS_URI="<CycloneDDS><Domain><General><Interfaces><NetworkInterface name=\"${UNITREE_IFACE}\" priority=\"default\" multicast=\"default\" /></Interfaces></General></Domain></CycloneDDS>"
 
-FRONT_CAMERA_CAPTURE_EXE="$PKG_INSTALL_DIR/front_camera_capture.py"
-FRONT_CAMERA_BRIDGE_EXE="$PKG_INSTALL_DIR/front_camera_ros_bridge.py"
-
-export GO2_CAM_JPEG_QUALITY=40
-export GO2_CAM_SCALE=0.5
-
 echo "[run_all] Using UNITREE_IFACE=$UNITREE_IFACE"
 echo "[run_all] Using VENV_PYTHON=$VENV_PYTHON"
-
-echo "[run_all] Starting front_camera_capture ..."
-"$VENV_PYTHON" "$FRONT_CAMERA_CAPTURE_EXE" \
-  > /tmp/front_camera_capture.log 2>&1 &
-
-FRONT_CAM_CAPTURE_PID=$!
-register_pid "$FRONT_CAM_CAPTURE_PID" "front_camera_capture" "/tmp/front_camera_capture.log"
-
-sleep 2.0
-ok_or_die "front_camera_capture" "$FRONT_CAM_CAPTURE_PID" "/tmp/front_camera_capture.log"
-
-echo "[run_all] Starting front_camera_ros_bridge (/front_camera/image_raw)..."
-"$VENV_PYTHON" "$FRONT_CAMERA_BRIDGE_EXE" --ros-args -r __node:=front_camera_node \
-  > /tmp/front_camera_node.log 2>&1 &
-
-FRONT_CAM_NODE_PID=$!
-register_pid "$FRONT_CAM_NODE_PID" "front_camera_ros_bridge" "/tmp/front_camera_node.log"
-
-sleep 2.0
-ok_or_die "front_camera_ros_bridge" "$FRONT_CAM_NODE_PID" "/tmp/front_camera_node.log"
 
 # ----------------------------
 # 1) Start FastAPI backend
@@ -293,47 +262,43 @@ kill_conflicting_nodes() {
 
 kill_conflicting_nodes
 
-if [ "$MODE" = "terminal" ]; then
-  echo "[run_all] Terminal mode: skipping motion nodes ✅"
-else
-  if [ "$SPORT_READY" -eq 1 ]; then
-    echo "[run_all] Starting web_bridge (for all standard web UIs)"
-    ros2 run go2_remote_connection web_bridge > /tmp/web_bridge.log 2>&1 &
-    WEB_BRIDGE_PID=$!
-    register_pid "$WEB_BRIDGE_PID" "web_bridge" "/tmp/web_bridge.log"
+if [ "$SPORT_READY" -eq 1 ]; then
+  echo "[run_all] Starting web_bridge (for the joystick UI)"
+  ros2 run go2_remote_connection web_bridge > /tmp/web_bridge.log 2>&1 &
+  WEB_BRIDGE_PID=$!
+  register_pid "$WEB_BRIDGE_PID" "web_bridge" "/tmp/web_bridge.log"
 
-    echo "[run_all] Starting move_forward_meters_node ..."
-    ros2 run go2_remote_connection move_forward_meters_node > /tmp/move_forward_meters.log 2>&1 &
-    MOVE_PID=$!
-    register_pid "$MOVE_PID" "move_forward_meters_node" "/tmp/move_forward_meters.log"
+  echo "[run_all] Starting move_forward_meters_node ..."
+  ros2 run go2_remote_connection move_forward_meters_node > /tmp/move_forward_meters.log 2>&1 &
+  MOVE_PID=$!
+  register_pid "$MOVE_PID" "move_forward_meters_node" "/tmp/move_forward_meters.log"
 
-    sleep 0.5
-    ok_or_die "web_bridge" "$WEB_BRIDGE_PID" "/tmp/web_bridge.log"
-    ok_or_die "move_forward_meters_node" "$MOVE_PID" "/tmp/move_forward_meters.log"
+  sleep 0.5
+  ok_or_die "web_bridge" "$WEB_BRIDGE_PID" "/tmp/web_bridge.log"
+  ok_or_die "move_forward_meters_node" "$MOVE_PID" "/tmp/move_forward_meters.log"
 
-    # ----------------------------
-    # 2b) Low-level RL policy node (opt-in via GO2_RL_POLICY=1)
-    #     Starts IDLE; only drives motors once 'RL' is selected in the UI.
-    # ----------------------------
-    if [ "${GO2_RL_POLICY:-0}" = "1" ]; then
-      RL_NODE="$GO2_WS_DIR/src/$PKG_NAME/rl_policy/go2_rl_policy_node.py"
-      RL_EXTRA_ARGS=""
-      # GO2_RL_DRY_RUN=1 -> compute obs/action and publish lowcmd with kp=kd=0 (no torque)
-      [ "${GO2_RL_DRY_RUN:-0}" = "1" ] && RL_EXTRA_ARGS="--dry-run"
-      echo "[run_all] Starting go2_rl_policy_node (idle until 'RL' selected in the UI) ${RL_EXTRA_ARGS}..."
-      "$VENV_PYTHON" "$RL_NODE" --net "$UNITREE_IFACE" --no-prompt $RL_EXTRA_ARGS \
-        > /tmp/go2_rl_policy.log 2>&1 &
-      RL_PID=$!
-      register_pid "$RL_PID" "go2_rl_policy_node" "/tmp/go2_rl_policy.log"
-      sleep 1.5
-      ok_or_die "go2_rl_policy_node" "$RL_PID" "/tmp/go2_rl_policy.log"
-    else
-      echo "[run_all] go2_rl_policy_node NOT started (set GO2_RL_POLICY=1 to enable RL control mode)."
-    fi
+  # ----------------------------
+  # 2b) Low-level RL policy node (enabled by default; disable with GO2_RL_POLICY=0)
+  #     Starts IDLE; only drives motors once 'RL' is selected on the joystick page.
+  # ----------------------------
+  if [ "${GO2_RL_POLICY:-1}" = "1" ]; then
+    RL_NODE="$GO2_WS_DIR/src/$PKG_NAME/rl_policy/go2_rl_policy_node.py"
+    RL_EXTRA_ARGS=""
+    # GO2_RL_DRY_RUN=1 -> compute obs/action and publish lowcmd with kp=kd=0 (no torque)
+    [ "${GO2_RL_DRY_RUN:-0}" = "1" ] && RL_EXTRA_ARGS="--dry-run"
+    echo "[run_all] Starting go2_rl_policy_node (idle until 'RL' selected in the UI) ${RL_EXTRA_ARGS}..."
+    "$VENV_PYTHON" "$RL_NODE" --net "$UNITREE_IFACE" --no-prompt $RL_EXTRA_ARGS \
+      > /tmp/go2_rl_policy.log 2>&1 &
+    RL_PID=$!
+    register_pid "$RL_PID" "go2_rl_policy_node" "/tmp/go2_rl_policy.log"
+    sleep 1.5
+    ok_or_die "go2_rl_policy_node" "$RL_PID" "/tmp/go2_rl_policy.log"
   else
-    echo "[run_all] ⚠️  Unitree sport topics not found after timeout; continuing without robot motion backend."
-    echo "[run_all] ⚠️  Skipping web_bridge and move_forward_meters_node because Unitree sport topics are unavailable."
+    echo "[run_all] go2_rl_policy_node NOT started (GO2_RL_POLICY=0)."
   fi
+else
+  echo "[run_all] ⚠️  Unitree sport topics not found after timeout; continuing without robot motion backend."
+  echo "[run_all] ⚠️  Skipping web_bridge, move_forward_meters_node and go2_rl_policy_node because Unitree sport topics are unavailable."
 fi
 
 echo ""
@@ -345,44 +310,38 @@ if [ -z "$HOST_IP" ]; then
 fi
 HOST_IP="${HOST_IP:-127.0.0.1}"
 
-echo "[run_all] Home: http://$HOST_IP:$API_PORT/"
-case "$MODE" in
-  terminal)
-    echo "[run_all] UI:   http://$HOST_IP:$API_PORT/terminal"
-    ;;
-  movement)
-    echo "[run_all] UI:   http://$HOST_IP:$API_PORT/movement"
-    ;;
-  *)
-    echo "[run_all] UI:   http://$HOST_IP:$API_PORT/joystick"
-    ;;
-esac
-
+echo "[run_all] UI:   http://$HOST_IP:$API_PORT/rl_sim_to_real   (standalone RL joystick page)"
 echo "[run_all] API:  http://$HOST_IP:$API_PORT"
 echo "[run_all] Press Ctrl+C to stop everything."
 echo ""
 
 echo "See logs with:"
 echo "  sed -n '1,200p' /tmp/go2_fastapi.log"
-echo "  sed -n '1,200p' /tmp/flatten_l1_data.log"
-echo "  sed -n '1,200p' /tmp/front_camera_capture.log"
-echo "  sed -n '1,200p' /tmp/front_camera_node.log"
 echo "  sed -n '1,200p' /tmp/web_bridge.log"
 echo "  sed -n '1,200p' /tmp/move_forward_meters.log"
+echo "  sed -n '1,200p' /tmp/go2_rl_policy.log"
 
 set +e
 
 while true; do
   for pid in "${pids[@]}"; do
     if ! kill -0 "$pid" 2>/dev/null; then
-      wait "$pid"
+      # Only report each dead pid once.
+      [ -n "${pid_reported[$pid]:-}" ] && continue
+      wait "$pid" 2>/dev/null
       rc=$?
       name="${pid_names[$pid]:-Child process}"
       log_path="${pid_logs[$pid]:-}"
+      pid_reported["$pid"]=1
 
-      echo "[run_all] ❌ $name exited with code $rc"
-      print_log_hint "$log_path"
-      exit "$rc"
+      if [ "${pid_critical[$pid]:-1}" = "1" ]; then
+        echo "[run_all] ❌ $name exited with code $rc — shutting down."
+        print_log_hint "$log_path"
+        exit "$rc"
+      else
+        echo "[run_all] ⚠️  $name (non-essential) exited with code $rc — continuing without it."
+        print_log_hint "$log_path"
+      fi
     fi
   done
   sleep 1

@@ -27,7 +27,6 @@ from app.api.teleop import router as teleop_router
 from app.api.movement import router as movement_router
 from app.api.sport import router as sport_router
 from app.api.control import router as control_router
-from app.api.map_routes import router as map_router
 from app.api.camera_routes import router as camera_router
 from app.api.yolo_routes import router as yolo_router
 from app.api.terminal_routes import router as terminal_router
@@ -83,14 +82,14 @@ async def joystick_page():
     return FileResponse(os.path.join(PAGES_DIR, "go2_joystick.html"))
 
 
+@app.get("/rl_sim_to_real")
+async def rl_sim_to_real_page():
+    return FileResponse(os.path.join(PAGES_DIR, "RL_sim_to_real.html"))
+
+
 @app.get("/movement")
 async def movement_page():
     return FileResponse(os.path.join(PAGES_DIR, "go2_movement_controller.html"))
-
-
-@app.get("/map")
-async def map_page():
-    return FileResponse(os.path.join(PAGES_DIR, "go2_map_viewer.html"))
 
 
 @app.get("/terminal")
@@ -124,13 +123,6 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
     expose_headers=[
-        "x-map-frame",
-        "x-map-resolution",
-        "x-map-width",
-        "x-map-height",
-        "x-map-origin-x",
-        "x-map-origin-y",
-        "x-map-seq",
         "content-encoding",
     ],
     max_age=86400,
@@ -147,7 +139,6 @@ app.include_router(teleop_router)
 app.include_router(movement_router)
 app.include_router(sport_router)
 app.include_router(control_router)
-app.include_router(map_router)
 app.include_router(camera_router)
 app.include_router(yolo_router)
 app.include_router(terminal_router)

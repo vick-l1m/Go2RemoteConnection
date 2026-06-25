@@ -54,14 +54,21 @@ esac
 pids=()
 declare -A pid_names
 declare -A pid_logs
+declare -A pid_critical
+declare -A pid_reported
 
+# register_pid <pid> <name> [log_path] [critical]
+#   critical=1 (default): if this process dies, tear the whole stack down.
+#   critical=0          : non-essential (e.g. lidar/camera); warn but keep running.
 register_pid() {
   local pid="$1"
   local name="$2"
   local log_path="${3:-}"
+  local critical="${4:-1}"
   pids+=("$pid")
   pid_names["$pid"]="$name"
   pid_logs["$pid"]="$log_path"
+  pid_critical["$pid"]="$critical"
 }
 
 print_log_hint() {
@@ -103,6 +110,20 @@ ok_or_die() {
   fi
 }
 
+# warn_if_dead: for non-essential nodes (lidar/camera). Warns but never exits.
+warn_if_dead() {
+  local name="$1"
+  local pid="$2"
+  local log_path="${3:-}"
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "[run_all] ⚠️  $name failed to start — continuing without it (non-essential)."
+    print_log_hint "$log_path"
+    return 1
+  fi
+  return 0
+}
+
 echo "[run_all] Workspace: $WS_DIR"
 echo "[run_all] Mode: $MODE"
 
@@ -133,11 +154,19 @@ else
 fi
 
 # 3) Your overlay
-if [ -f "$WS_DIR/install/setup.bash" ]; then
-  echo "[run_all] Sourcing overlay: $WS_DIR/install/setup.bash"
-  source "$WS_DIR/install/setup.bash"
-else
-  echo "[run_all] WARNING: overlay not found: $WS_DIR/install/setup.bash (did you colcon build?)"
+# The colcon-built overlay may live in this repo or in the dedicated
+# build workspace (~/go2_ws/Go2RemoteConnection). Try both.
+OVERLAY_SOURCED=0
+for overlay in "$WS_DIR/install/setup.bash" "$HOME/go2_ws/Go2RemoteConnection/install/setup.bash"; do
+  if [ -f "$overlay" ]; then
+    echo "[run_all] Sourcing overlay: $overlay"
+    source "$overlay"
+    OVERLAY_SOURCED=1
+    break
+  fi
+done
+if [ "$OVERLAY_SOURCED" -eq 0 ]; then
+  echo "[run_all] WARNING: no go2_remote_connection overlay found (did you colcon build?)"
 fi
 
 set -u
@@ -178,25 +207,25 @@ fi
 # ----------------------------
 # 0a) Start L1 -> /map2d
 # ----------------------------
-echo "[run_all] Starting flatten_l1_data (L1 -> /map2d)..."
-ros2 run go2_remote_connection flatten_l1_data \
-  --ros-args \
-  -p cloud_topic:=/utlidar/cloud_base \
-  -p map2d_topic:=/map2d \
-  -p min_height_rel:=-5.0 \
-  -p max_height_rel:=5.0 \
-  -p tick_rate_hz:=5.0 \
-  -p update_radius_m:=20.0 \
-  -p decay_per_tick:=100 \
-  -p max_occ:=100 \
-  -p resolution:=0.1 \
-  > /tmp/flatten_l1_data.log 2>&1 &
+# echo "[run_all] Starting flatten_l1_data (L1 -> /map2d)..."
+# ros2 run go2_remote_connection flatten_l1_data \
+#   --ros-args \
+#   -p cloud_topic:=/utlidar/cloud_base \
+#   -p map2d_topic:=/map2d \
+#   -p min_height_rel:=-5.0 \
+#   -p max_height_rel:=5.0 \
+#   -p tick_rate_hz:=5.0 \
+#   -p update_radius_m:=20.0 \
+#   -p decay_per_tick:=100 \
+#   -p max_occ:=100 \
+#   -p resolution:=0.1 \
+#   > /tmp/flatten_l1_data.log 2>&1 &
 
-FLATTEN_PID=$!
-register_pid "$FLATTEN_PID" "flatten_l1_data" "/tmp/flatten_l1_data.log"
+# FLATTEN_PID=$!
+# register_pid "$FLATTEN_PID" "flatten_l1_data" "/tmp/flatten_l1_data.log" 0
 
-sleep 0.3
-ok_or_die "flatten_l1_data" "$FLATTEN_PID" "/tmp/flatten_l1_data.log"
+# sleep 0.3
+# warn_if_dead "flatten_l1_data (lidar)" "$FLATTEN_PID" "/tmp/flatten_l1_data.log" || true
 
 # ------------------------------------------------------------
 # 0b) Front camera capture node + ROS bridge
@@ -248,20 +277,20 @@ echo "[run_all] Starting front_camera_capture ..."
   > /tmp/front_camera_capture.log 2>&1 &
 
 front_cam_capture_PID=$!
-register_pid "$front_cam_capture_PID" "front_camera_capture" "/tmp/front_camera_capture.log"
+register_pid "$front_cam_capture_PID" "front_camera_capture" "/tmp/front_camera_capture.log" 0
 
 sleep 2.0
-ok_or_die "front_camera_capture" "$front_cam_capture_PID" "/tmp/front_camera_capture.log"
+warn_if_dead "front_camera_capture" "$front_cam_capture_PID" "/tmp/front_camera_capture.log" || true
 
 echo "[run_all] Starting front_camera_ros_bridge (/front_camera/image_raw)..."
 "$VENV_PYTHON" "$FRONT_CAMERA_BRIDGE_EXE" --ros-args -r __node:=front_camera_node \
   > /tmp/front_camera_node.log 2>&1 &
 
 front_cam_node_PID=$!
-register_pid "$front_cam_node_PID" "front_camera_ros_bridge" "/tmp/front_camera_node.log"
+register_pid "$front_cam_node_PID" "front_camera_ros_bridge" "/tmp/front_camera_node.log" 0
 
 sleep 2.0
-ok_or_die "front_camera_ros_bridge" "$front_cam_node_PID" "/tmp/front_camera_node.log"
+warn_if_dead "front_camera_ros_bridge" "$front_cam_node_PID" "/tmp/front_camera_node.log" || true
 
 # ----------------------------
 # 1) Start FastAPI backend
@@ -348,7 +377,6 @@ case "$MODE" in
     ;;
 esac
 
-echo "[run_all] Map:  http://$HOST_IP:$API_PORT/map"
 echo "[run_all] Cam:  http://$HOST_IP:$API_PORT/camera"
 echo "[run_all] API:  http://$HOST_IP:$API_PORT"
 echo "[run_all] Press Ctrl+C to stop everything."
@@ -359,14 +387,22 @@ set +e
 while true; do
   for pid in "${pids[@]}"; do
     if ! kill -0 "$pid" 2>/dev/null; then
-      wait "$pid"
+      # Only report each dead pid once.
+      [ -n "${pid_reported[$pid]:-}" ] && continue
+      wait "$pid" 2>/dev/null
       rc=$?
       name="${pid_names[$pid]:-Child process}"
       log_path="${pid_logs[$pid]:-}"
+      pid_reported["$pid"]=1
 
-      echo "[run_all] ❌ $name exited with code $rc"
-      print_log_hint "$log_path"
-      exit "$rc"
+      if [ "${pid_critical[$pid]:-1}" = "1" ]; then
+        echo "[run_all] ❌ $name exited with code $rc — shutting down."
+        print_log_hint "$log_path"
+        exit "$rc"
+      else
+        echo "[run_all] ⚠️  $name (non-essential) exited with code $rc — continuing without it."
+        print_log_hint "$log_path"
+      fi
     fi
   done
   sleep 1
