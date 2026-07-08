@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Low-level RL locomotion controller for the Unitree Go2.
+"""Low-level RL locomotion controller for the Unitree Go2 (SDK-only process).
 
 Runs the flat-terrain policy trained in Isaac Lab (RSL-RL PPO,
 ``Isaac-Velocity-Flat-Unitree-Go2-v0``) directly on the robot's motors, driven
@@ -7,9 +7,29 @@ by the Go2RemoteConnection web joystick. Sits alongside the existing
 ``web_bridge`` (Unitree SportClient) path; the operator switches between them
 from the website.
 
-Topics (ROS 2 / rclpy):
-    SUB  /web_teleop        geometry_msgs/Twist   joystick (vx=linear.x, vy=linear.y, wz=angular.z)
-    SUB  /web_control_mode  std_msgs/String       "sport" | "rl"
+PROCESS SPLIT (why this file has no rclpy):
+    The Unitree SDK and ROS 2's rmw_cyclonedds both use CycloneDDS, and in one
+    process they share a single ``libddsc`` (same SONAME -> one instance). Both
+    insist on *creating* DDS domain 0 (the robot's low-level interface is fixed
+    there, and the SDK's ChannelFactory has no "join" path), so whichever calls
+    ``dds_create_domain(0)`` second fails ("Precondition Not Met"). They cannot
+    coexist in one process on this platform. So the RL controller is split in two:
+
+      * THIS process (``go2_rl_policy_node.py``) -- pure ``unitree_sdk2py``, no
+        rclpy: the 50 Hz control loop, policy inference, sport-service handover,
+        and all safety fallbacks. Talks to the bridge over localhost UDP.
+      * ``go2_rl_bridge_node.py`` -- pure rclpy: subscribes the web topics and
+        forwards them here over UDP; relays our heartbeat / un-gate signals back
+        onto ROS. (Pure ROS, exactly like ``web_bridge`` -- no SDK, no conflict.)
+
+Web control (via the bridge, localhost UDP JSON datagrams):
+    IN   teleop   {vx,vy,wz}      joystick (from /web_teleop)
+    IN   mode     {"sport"|"rl"}  control-mode request (from /web_control_mode)
+    IN   estop    {on: bool}      emergency stop / resume (from /web_estop)
+    IN   ping                     bridge liveness (10 Hz)
+    OUT  heartbeat                5 Hz liveness (bridge -> /web_rl_heartbeat)
+    OUT  mode_out {"sport"}       on shutdown, un-gate web_bridge (-> /web_control_mode)
+    OUT  enabled  {val: bool}     on shutdown, re-enable web_bridge (-> /web_teleop_enabled)
 
 Robot (unitree_sdk2py / DDS):
     SUB  rt/lowstate   LowState_   IMU (quat, gyro) + per-joint q, dq
@@ -36,18 +56,16 @@ than sim -- this build validates the pipeline, not gait quality.
 
 import argparse
 import json
+import logging
+import os
 import pathlib
 import signal
+import socket
 import threading
 import time
 
 import numpy as np
 import onnxruntime as ort
-
-import rclpy
-from rclpy.node import Node
-from geometry_msgs.msg import Twist
-from std_msgs.msg import Bool, String
 
 from unitree_sdk2py.core.channel import (
     ChannelFactoryInitialize,
@@ -93,9 +111,15 @@ KP, KD = 25.0, 0.5     # trained actuator gains
 RAMP_KP, RAMP_KD = 40.0, 4.0   # firmer during the stand-up ramp
 RAMP_TIME = 2.0        # s, measured pose -> default pose
 DISENGAGE_HOLD = 1.0   # s, PD-hold default before handing back to sport
-CMD_TIMEOUT = 0.5      # s, deadman on /web_teleop
+CMD_TIMEOUT = 0.5      # s, deadman on the joystick command
 CMD_CLIP = 1.0         # training command range +/-1
 DAMP_KD = 3.0          # damping fallback (soft collapse) on fault
+BRIDGE_TIMEOUT = 1.0   # s, deadman on the ROS bridge link (heartbeat/ping/teleop)
+
+# localhost UDP link to the rclpy bridge (go2_rl_bridge_node.py).
+DEF_UDP_HOST = "127.0.0.1"
+DEF_CTRL_PORT = 47811  # this process listens here (web -> control)
+DEF_BRIDGE_PORT = 47812  # the bridge listens here (control -> web)
 
 # Control-phase state machine.
 #   SPORT     idle, the Unitree sport service owns the robot (node publishes nothing)
@@ -104,6 +128,26 @@ DAMP_KD = 3.0          # damping fallback (soft collapse) on fault
 #   DISENGAGE PD-hold default while handing back to the sport service
 #   ESTOP     emergency stop: continuously damp (soft collapse), latched until RESUME
 SPORT, ENGAGE, RL_RUN, DISENGAGE, ESTOP = "SPORT", "ENGAGE", "RL_RUN", "DISENGAGE", "ESTOP"
+
+
+class _StdLogger:
+    """Minimal logger shim so the control logic keeps its ``get_logger().info(...)``
+    call sites unchanged now that this class is no longer an rclpy ``Node``."""
+
+    def __init__(self, name):
+        self._l = logging.getLogger(name)
+
+    def info(self, m):
+        self._l.info(m)
+
+    def warn(self, m):
+        self._l.warning(m)
+
+    def warning(self, m):
+        self._l.warning(m)
+
+    def error(self, m):
+        self._l.error(m)
 
 
 def projected_gravity(quat_wxyz):
@@ -135,21 +179,9 @@ def load_isaac_joints(path):
         return default, True
 
 
-class Go2RLPolicyNode(Node):
+class Go2RLPolicyController:
     def __init__(self, args):
-        super().__init__("go2_rl_policy_node")
-
-        # Initialise the Unitree DDS channel factory AFTER the rclpy node exists.
-        # Both the SDK and rmw_cyclonedds share one CycloneDDS instance on domain 0;
-        # rmw *explicitly* creates+configures the domain when the node is built, and
-        # that fails with "Precondition Not Met" if the SDK already created domain 0.
-        # Creating the rclpy node first lets rmw own the domain; the SDK participant
-        # then just joins it. (Must run before any ChannelPublisher/Subscriber below.)
-        if args.net:
-            ChannelFactoryInitialize(0, args.net)
-        else:
-            ChannelFactoryInitialize(0)
-
+        self._logger = _StdLogger("go2_rl_policy")
         self.dry_run = args.dry_run
         self.handover = not args.no_handover
         self.lin_vel_mode = args.lin_vel_mode
@@ -184,6 +216,18 @@ class Go2RLPolicyNode(Node):
         self._wake = threading.Event()
         self._stop = False
         self._t0 = time.monotonic()
+        self.last_bridge_t = self._now()   # bridge-link deadman (updated on any datagram)
+
+        # ---- localhost UDP link to the rclpy bridge ----------------------
+        self._bridge_addr = (args.udp_host, args.bridge_port)
+        self._tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._rx.bind((args.udp_host, args.ctrl_port))
+        self._rx.settimeout(0.5)
+        self.get_logger().info(
+            f"bridge link: listening on {args.udp_host}:{args.ctrl_port}, "
+            f"sending to {args.udp_host}:{args.bridge_port}")
 
         # ---- DDS lowcmd/lowstate ----------------------------------------
         self.crc = CRC()
@@ -198,20 +242,11 @@ class Go2RLPolicyNode(Node):
         self.sc = SportClient(); self.sc.SetTimeout(5.0); self.sc.Init()
         self.msc = MotionSwitcherClient(); self.msc.SetTimeout(5.0); self.msc.Init()
 
-        # ---- ROS subscriptions ------------------------------------------
-        self.create_subscription(Twist, "/web_teleop", self._on_teleop, 10)
-        self.create_subscription(String, "/web_control_mode", self._on_mode, 10)
-        self.create_subscription(Bool, "/web_estop", self._on_estop, 10)
-
-        # Failsafe publishers: a liveness heartbeat (so the web stack can detect a
-        # dead node and auto-revert to sport), and one-shot un-gate signals sent on
-        # shutdown so web_bridge is never left latched into RL mode.
-        self._pub_hb = self.create_publisher(Bool, "/web_rl_heartbeat", 10)
-        self._pub_mode_out = self.create_publisher(String, "/web_control_mode", 1)
-        self._pub_enabled_out = self.create_publisher(Bool, "/web_teleop_enabled", 1)
         self._tick = 0
 
         # ---- threads -----------------------------------------------------
+        self._rxthread = threading.Thread(target=self._udp_rx_loop, daemon=True)
+        self._rxthread.start()
         self._tworker = threading.Thread(target=self._transition_worker, daemon=True)
         self._tworker.start()
         self.ctrl_thread = RecurrentThread(interval=CONTROL_DT, target=self._control_step,
@@ -219,28 +254,66 @@ class Go2RLPolicyNode(Node):
         self.ctrl_thread.Start()
         self.get_logger().info("go2_rl_policy_node ready (mode=sport, idle).")
 
+    def get_logger(self):
+        return self._logger
+
     # ------------------------------------------------------------------ #
-    # Callbacks
+    # Bridge link (localhost UDP JSON datagrams)
+    # ------------------------------------------------------------------ #
+    def _send(self, obj):
+        """Best-effort send of one JSON datagram to the bridge (never raises)."""
+        try:
+            self._tx.sendto(json.dumps(obj).encode("utf-8"), self._bridge_addr)
+        except OSError:
+            pass
+
+    def _udp_rx_loop(self):
+        while not self._stop:
+            try:
+                data, _ = self._rx.recvfrom(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                if self._stop:
+                    break
+                continue
+            self.last_bridge_t = self._now()   # any datagram proves the bridge is alive
+            try:
+                msg = json.loads(data.decode("utf-8"))
+                t = msg.get("t")
+            except (ValueError, AttributeError):
+                continue
+            if t == "teleop":
+                self._set_teleop(msg.get("vx", 0.0), msg.get("vy", 0.0), msg.get("wz", 0.0))
+            elif t == "mode":
+                self._set_mode(msg.get("mode", ""))
+            elif t == "estop":
+                self._set_estop(bool(msg.get("on", False)))
+            elif t == "ping":
+                pass   # liveness only; last_bridge_t already updated above
+
+    # ------------------------------------------------------------------ #
+    # Web-command handlers (driven by the bridge over UDP)
     # ------------------------------------------------------------------ #
     def _on_lowstate(self, msg: LowState_):
         self.low_state = msg
 
-    def _on_teleop(self, msg: Twist):
+    def _set_teleop(self, vx, vy, wz):
         with self._lock:
-            self.cmd = np.array([msg.linear.x, msg.linear.y, msg.angular.z], np.float32)
+            self.cmd = np.array([vx, vy, wz], np.float32)
             self.last_cmd_t = self._now()
 
-    def _on_mode(self, msg: String):
-        new = msg.data.strip().lower()
+    def _set_mode(self, mode):
+        new = str(mode).strip().lower()
         if new not in ("sport", "rl"):
             return
         with self._lock:
             self.requested_mode = new
         self._wake.set()
 
-    def _on_estop(self, msg: Bool):
+    def _set_estop(self, on):
         """Emergency stop from the web STOP button (only meaningful when RL owns the robot)."""
-        if msg.data:
+        if on:
             with self._lock:
                 # Only damp if the policy is (or was) driving; if the sport service owns
                 # the robot (SPORT phase) the sport-side Damp handles it, not us.
@@ -334,12 +407,19 @@ class Go2RLPolicyNode(Node):
         if self.low_state is None:
             return
         self._tick += 1
-        if self._tick % 10 == 0:             # ~5 Hz liveness heartbeat
-            hb = Bool()
-            hb.data = True
-            self._pub_hb.publish(hb)
+        if self._tick % 10 == 0:             # ~5 Hz liveness heartbeat to the bridge
+            self._send({"t": "heartbeat"})
         with self._lock:
             phase = self.phase
+        # Bridge-link deadman: if the rclpy bridge (our only path to the web STOP
+        # button and mode switch) goes silent while we own the motors, fail safe
+        # to ESTOP -- a soft collapse -- rather than keep driving blind. Mirrors
+        # the web-side watchdog that reverts to sport when our heartbeat stops.
+        if phase in (ENGAGE, RL_RUN) and (self._now() - self.last_bridge_t) > BRIDGE_TIMEOUT:
+            self.get_logger().error("bridge link lost; ESTOP (soft collapse)")
+            with self._lock:
+                self.phase = ESTOP
+            phase = ESTOP
         try:
             if phase == SPORT:
                 return                       # sport svc owns the robot
@@ -486,19 +566,21 @@ class Go2RLPolicyNode(Node):
                 self.get_logger().error(f"shutdown: sport recovery failed ({e}); damping")
                 self._damp()
 
-        # 3. un-gate web_bridge so sport teleop is usable again
+        # 3. un-gate web_bridge so sport teleop is usable again (via the bridge)
         try:
-            m = String(); m.data = "sport"
-            self._pub_mode_out.publish(m)
-            b = Bool(); b.data = True
-            self._pub_enabled_out.publish(b)
+            self._send({"t": "mode_out", "mode": "sport"})
+            self._send({"t": "enabled", "val": True})
             self.get_logger().info("shutdown: published sport mode + re-enabled web_bridge")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self._rx.close()
         except Exception:  # noqa: BLE001
             pass
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Go2 low-level RL policy controller")
+    ap = argparse.ArgumentParser(description="Go2 low-level RL policy controller (SDK-only)")
     ap.add_argument("--net", default="", help="DDS network interface to the robot (e.g. eth0)")
     ap.add_argument("--policy", default=str(HERE / "policy.onnx"))
     ap.add_argument("--joint-names", default=str(HERE / "joint_names.json"))
@@ -512,51 +594,47 @@ def main():
     ap.add_argument("--no-prompt", action="store_true",
                     help="skip the interactive confirmation (for background launch). The node still "
                          "stays idle until 'rl' is selected; the UI confirm dialog is the human gate.")
+    ap.add_argument("--udp-host", default=os.environ.get("GO2_RL_UDP_HOST", DEF_UDP_HOST),
+                    help="localhost address for the rclpy bridge link")
+    ap.add_argument("--ctrl-port", type=int,
+                    default=int(os.environ.get("GO2_RL_CTRL_PORT", DEF_CTRL_PORT)),
+                    help="UDP port this process listens on (web -> control)")
+    ap.add_argument("--bridge-port", type=int,
+                    default=int(os.environ.get("GO2_RL_BRIDGE_PORT", DEF_BRIDGE_PORT)),
+                    help="UDP port the bridge listens on (control -> web)")
     args = ap.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] [%(name)s] %(message)s")
 
     print("WARNING: low-level control. Ensure the robot is on a gantry / clear area, E-stop ready.")
     print("The node starts IDLE (sport mode) and only drives motors once 'rl' is selected.")
     if not args.no_prompt:
         input("Press Enter to start...")
 
-    # NOTE: ChannelFactoryInitialize is deliberately deferred into the node's
-    # __init__ (after super().__init__) so rmw_cyclonedds owns/configures DDS
-    # domain 0 before the Unitree SDK participant joins it. Initialising the SDK
-    # here (before rclpy) makes node creation fail with "Precondition Not Met".
-    rclpy.init()
-    node = Go2RLPolicyNode(args)
+    # Pure-SDK process: no rclpy here, so the SDK is the only CycloneDDS user and
+    # can safely own domain 0. (The ROS side lives in go2_rl_bridge_node.py.)
+    if args.net:
+        ChannelFactoryInitialize(0, args.net)
+    else:
+        ChannelFactoryInitialize(0)
+
+    controller = Go2RLPolicyController(args)
+    stop_event = threading.Event()
 
     # Catch Ctrl-C (SIGINT) AND `kill`/launcher cleanup (SIGTERM) so the node always
     # runs its safe shutdown (recover sport service + un-gate web_bridge) instead of
     # dying and stranding the robot. (A hard SIGKILL/-9 can't be trapped -> power-cycle.)
     def _graceful(signum, _frame):
-        try:
-            node.get_logger().warn(f"signal {signum}: safe shutdown")
-        except Exception:  # noqa: BLE001
-            pass
-        node.shutdown()
-        try:
-            rclpy.try_shutdown()
-        except Exception:  # noqa: BLE001
-            pass
+        controller.get_logger().warn(f"signal {signum}: safe shutdown")
+        stop_event.set()
 
     signal.signal(signal.SIGINT, _graceful)
     signal.signal(signal.SIGTERM, _graceful)
 
     try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, SystemExit):
-        pass
+        stop_event.wait()
     finally:
-        node.shutdown()           # idempotent; no-op if the signal handler ran
-        try:
-            node.destroy_node()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            rclpy.try_shutdown()
-        except Exception:  # noqa: BLE001
-            pass
+        controller.shutdown()           # idempotent; safe if called more than once
 
 
 if __name__ == "__main__":

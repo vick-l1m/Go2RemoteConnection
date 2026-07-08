@@ -283,9 +283,23 @@ if [ "$SPORT_READY" -eq 1 ]; then
   # ----------------------------
   if [ "${GO2_RL_POLICY:-1}" = "1" ]; then
     RL_NODE="$GO2_WS_DIR/src/$PKG_NAME/rl_policy/go2_rl_policy_node.py"
+    RL_BRIDGE="$GO2_WS_DIR/src/$PKG_NAME/rl_policy/go2_rl_bridge_node.py"
     RL_EXTRA_ARGS=""
     # GO2_RL_DRY_RUN=1 -> compute obs/action and publish lowcmd with kp=kd=0 (no torque)
     [ "${GO2_RL_DRY_RUN:-0}" = "1" ] && RL_EXTRA_ARGS="--dry-run"
+
+    # The RL controller is split into two processes because unitree_sdk2py and
+    # rmw_cyclonedds cannot both own DDS domain 0 in one process (see the node's
+    # header). The bridge is pure rclpy (ROS <-> localhost UDP); the controller is
+    # pure SDK. Start the bridge first so its keepalive is flowing before RL engages.
+    echo "[run_all] Starting go2_rl_bridge_node (ROS<->UDP bridge for the RL controller) ..."
+    "$VENV_PYTHON" "$RL_BRIDGE" \
+      > /tmp/go2_rl_bridge.log 2>&1 &
+    RL_BRIDGE_PID=$!
+    register_pid "$RL_BRIDGE_PID" "go2_rl_bridge_node" "/tmp/go2_rl_bridge.log"
+    sleep 0.5
+    ok_or_die "go2_rl_bridge_node" "$RL_BRIDGE_PID" "/tmp/go2_rl_bridge.log"
+
     echo "[run_all] Starting go2_rl_policy_node (idle until 'RL' selected in the UI) ${RL_EXTRA_ARGS}..."
     "$VENV_PYTHON" "$RL_NODE" --net "$UNITREE_IFACE" --no-prompt $RL_EXTRA_ARGS \
       > /tmp/go2_rl_policy.log 2>&1 &
@@ -319,6 +333,7 @@ echo "See logs with:"
 echo "  sed -n '1,200p' /tmp/go2_fastapi.log"
 echo "  sed -n '1,200p' /tmp/web_bridge.log"
 echo "  sed -n '1,200p' /tmp/move_forward_meters.log"
+echo "  sed -n '1,200p' /tmp/go2_rl_bridge.log"
 echo "  sed -n '1,200p' /tmp/go2_rl_policy.log"
 
 set +e

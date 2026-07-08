@@ -15,10 +15,24 @@ Full design + rationale: `Go2_RL_workflow/sim_to_real_deployment_plan.md`.
 
 | File | What |
 |------|------|
-| `go2_rl_policy_node.py` | the controller: `rt/lowstate` → 48-dim obs → `policy.onnx` → `rt/lowcmd` @ 50 Hz, plus sport-service handover and safety fallbacks |
+| `go2_rl_policy_node.py` | the controller (pure `unitree_sdk2py`, **no rclpy**): `rt/lowstate` → 48-dim obs → `policy.onnx` → `rt/lowcmd` @ 50 Hz, plus sport-service handover and safety fallbacks. Talks to the bridge over localhost UDP. |
+| `go2_rl_bridge_node.py` | the ROS↔UDP bridge (pure rclpy, **no SDK**): forwards `/web_teleop`, `/web_control_mode`, `/web_estop` to the controller and republishes its heartbeat / un-gate signals. |
 | `policy.onnx` | exported flat policy (copy of `logs/rsl_rl/unitree_go2_flat/<ts>/exported/policy.onnx`) |
 | `joint_names.json` | Isaac-Lab joint order — **verify before ground tests** |
 | `dump_isaac_joint_order.py` | run in the Isaac Lab env to regenerate `joint_names.json` from the real env |
+
+### Why two processes?
+
+`unitree_sdk2py` and ROS 2's `rmw_cyclonedds` both use CycloneDDS, and in a
+single process they share one `libddsc`. Both insist on **creating** DDS domain 0
+(the robot's low-level interface is fixed there, and the SDK's `ChannelFactory`
+has no "join" path), so whichever calls `dds_create_domain(0)` second dies with
+`Precondition Not Met`. They cannot coexist in one process. So the controller is
+SDK-only (owns domain 0) and the bridge is ROS-only (like `web_bridge`); they
+exchange the web commands over a localhost UDP link (`127.0.0.1`, ports 47811/47812,
+override with `GO2_RL_CTRL_PORT` / `GO2_RL_BRIDGE_PORT` / `GO2_RL_UDP_HOST`). If the
+bridge link goes silent while RL is driving, the controller fails safe to a damp
+(soft collapse).
 
 ## One-time setup
 
@@ -43,12 +57,18 @@ python ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection/rl_policy/dump_isa
 
 **0. Robot on a stand, feet off the ground. E-stop in hand.**
 
+Standalone bring-up runs **two** processes: the SDK controller and the ROS
+bridge. The `ros2 topic pub` commands reach the controller *through* the bridge.
+
 **1. Dry run** — validate obs/inference/remap with no torque (motors limp):
 
 ```bash
 cd ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection/rl_policy
-~/venvs/unitree_sdk2_python/bin/python3 go2_rl_policy_node.py --net <iface> --dry-run --no-handover
-# in another shell, publish a mode + a command and watch the logs:
+# terminal A — the ROS<->UDP bridge (pure rclpy):
+~/venvs/unitree_sdk2_python/bin/python3 go2_rl_bridge_node.py
+# terminal B — the SDK controller:
+~/venvs/unitree_sdk2_python/bin/python3 go2_rl_policy_node.py --net <iface> --dry-run --no-handover --no-prompt
+# terminal C — publish a mode + a command and watch B's logs:
 ros2 topic pub -1 /web_control_mode std_msgs/String "{data: 'rl'}"
 ros2 topic pub -r 10 /web_teleop geometry_msgs/Twist "{linear: {x: 0.3}}"
 ```
@@ -60,7 +80,10 @@ state, builds a finite 48-dim obs, and produces sane targets at 50 Hz.
 manually stopped the sport service; otherwise omit it so the node releases it:
 
 ```bash
-~/venvs/unitree_sdk2_python/bin/python3 go2_rl_policy_node.py --net <iface>
+# terminal A — bridge (leave running from step 1)
+~/venvs/unitree_sdk2_python/bin/python3 go2_rl_bridge_node.py
+# terminal B — controller
+~/venvs/unitree_sdk2_python/bin/python3 go2_rl_policy_node.py --net <iface> --no-prompt
 ros2 topic pub -1 /web_control_mode std_msgs/String "{data: 'rl'}"
 ```
 
