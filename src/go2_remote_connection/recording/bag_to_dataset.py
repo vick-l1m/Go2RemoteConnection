@@ -54,6 +54,10 @@ SPORT_TOPICS = {"/sportmodestate", "sportmodestate", "rt/sportmodestate"}
 TELEOP_TOPICS = {"/web_teleop"}
 MODE_TOPICS = {"/web_control_mode"}
 ESTOP_TOPICS = {"/web_estop"}
+HEIGHTSCAN_TOPICS = {"/go2/height_scan"}   # sim-matched 187-cell mask (rough obs)
+# NB: the raw depth cloud (/go2/camera/depth/color/points) is deliberately NOT
+# exported here — it stays in the bag for offline reprocessing. Only the already
+# masked /go2/height_scan is flattened into the dataset.
 
 
 def projected_gravity(quat_wxyz):
@@ -85,7 +89,8 @@ def read_bag(bag_dir):
 
 def collect(bag_dir):
     """First pass: bucket messages per stream as (t_ns, payload)."""
-    streams = {"lowstate": [], "sport": [], "teleop": [], "mode": [], "estop": []}
+    streams = {"lowstate": [], "sport": [], "teleop": [], "mode": [], "estop": [],
+               "height_scan": []}
     for topic, msg, t_ns in read_bag(bag_dir):
         if topic in LOWSTATE_TOPICS:
             ms = msg.motor_state
@@ -111,6 +116,13 @@ def collect(bag_dir):
                 "base_vx": msg.velocity[0], "base_vy": msg.velocity[1], "base_vz": msg.velocity[2],
                 "base_yaw_speed": msg.yaw_speed,
             }
+            # Foot positions in the base/body frame (Unitree order FR,FL,RR,RL; xyz per
+            # foot). Used as AMP end-effector style features (see training/amp).
+            fp = msg.foot_position_body
+            for j, foot in enumerate(FOOT_ORDER):
+                row[f"footpos_{foot}_x"] = fp[3 * j + 0]
+                row[f"footpos_{foot}_y"] = fp[3 * j + 1]
+                row[f"footpos_{foot}_z"] = fp[3 * j + 2]
             streams["sport"].append((t_ns, row))
         elif topic in TELEOP_TOPICS:
             streams["teleop"].append((t_ns, {
@@ -119,6 +131,8 @@ def collect(bag_dir):
             streams["mode"].append((t_ns, {"control_mode": msg.data}))
         elif topic in ESTOP_TOPICS:
             streams["estop"].append((t_ns, {"estop": bool(msg.data)}))
+        elif topic in HEIGHTSCAN_TOPICS:
+            streams["height_scan"].append((t_ns, {"_hs": np.asarray(msg.data, np.float32)}))
     return streams
 
 
@@ -139,8 +153,13 @@ def build_dataframe(streams, rate_hz):
     low = sorted(streams["lowstate"], key=lambda x: x[0])
     if not low:
         raise SystemExit("no lowstate messages in bag — nothing to export")
-    for k in ("sport", "teleop", "mode", "estop"):
+    for k in ("sport", "teleop", "mode", "estop", "height_scan"):
         streams[k].sort(key=lambda x: x[0])
+
+    # Height scan is optional (camera sessions only). Fix column count from the
+    # first sample so every row has the same hs_### columns (NaN when absent).
+    n_hs = len(streams["height_scan"][0][1]["_hs"]) if streams["height_scan"] else 0
+    hs_nan = np.full(n_hs, np.nan, np.float32)
 
     t0 = low[0][0]
     step_ns = int(1e9 / rate_hz)
@@ -152,13 +171,21 @@ def build_dataframe(streams, rate_hz):
         next_emit = t_ns + step_ns
         row = {"t": (t_ns - t0) / 1e9}
         row.update(jrow)
-        row.update(zoh(streams["sport"], t_ns,
-                       {"base_x": np.nan, "base_y": np.nan, "base_z": np.nan,
-                        "base_vx": np.nan, "base_vy": np.nan, "base_vz": np.nan,
-                        "base_yaw_speed": np.nan}))
+        sport_default = {"base_x": np.nan, "base_y": np.nan, "base_z": np.nan,
+                         "base_vx": np.nan, "base_vy": np.nan, "base_vz": np.nan,
+                         "base_yaw_speed": np.nan}
+        for foot in FOOT_ORDER:
+            sport_default[f"footpos_{foot}_x"] = np.nan
+            sport_default[f"footpos_{foot}_y"] = np.nan
+            sport_default[f"footpos_{foot}_z"] = np.nan
+        row.update(zoh(streams["sport"], t_ns, sport_default))
         row.update(zoh(streams["teleop"], t_ns, {"cmd_vx": 0.0, "cmd_vy": 0.0, "cmd_wz": 0.0}))
         row.update(zoh(streams["mode"], t_ns, {"control_mode": "unknown"}))
         row.update(zoh(streams["estop"], t_ns, {"estop": False}))
+        if n_hs:
+            hs = zoh(streams["height_scan"], t_ns, {"_hs": hs_nan})["_hs"]
+            for i in range(n_hs):
+                row[f"hs_{i:03d}"] = hs[i]
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -181,7 +208,9 @@ def main():
     if not df.empty:
         span = df["t"].iloc[-1]
         modes = df["control_mode"].value_counts().to_dict()
-        print(f"[export] duration {span:.1f}s | drive-mode rows: {modes}")
+        n_hs = sum(c.startswith("hs_") for c in df.columns)
+        hs_note = f" | height_scan: {n_hs} cells" if n_hs else " | no height_scan"
+        print(f"[export] duration {span:.1f}s | drive-mode rows: {modes}{hs_note}")
     if args.csv:
         csv_path = out.with_suffix(".csv")
         df.to_csv(csv_path, index=False)

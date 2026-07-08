@@ -9,6 +9,12 @@ mode) to a rosbag2, then export an aligned Parquet dataset. Two downstream uses:
 The recording is **read-only** — it never commands the robot. Drive as normal
 (Unitree sport mode and/or the RL policy) from the web joystick while it runs.
 
+The **camera is its own module** ([topics.sh](topics.sh) `CAMERA_TOPICS`): record
+it alone with `record_camera.sh`, or fold it into a joint-state session with
+`record_session.sh --camera` (one time-aligned bag). Both capture the raw D435i
+depth cloud **and** the sim-matched `/go2/height_scan` (the 187-cell mask the
+rough policy trained on).
+
 ## 1. Record (on the Go2 / Jetson)
 
 Source ROS 2 Humble + the `unitree_ros2` overlay first (or just run the script —
@@ -45,6 +51,37 @@ Output lands in `sessions/<UTCdate>_<name>/`:
 Override the state-topic names for a different `unitree_ros2` install via
 `GO2_STATE_TOPICS="..."`, and add extra topics with `--topics "/a /b"`.
 
+## 1b. Record camera (perception)
+
+You have the RealSense **driver only**, so first bring up the full perception
+stack — pointcloud filter, `/go2/camera` namespace, camera TF, and the height
+map — on the robot (from the `go2_rl_workflow` overlay):
+
+```bash
+ros2 launch go2_bringup real_perception.launch.py rviz:=false
+# verify the cloud + mask are live:
+ros2 topic list | grep -E "go2/camera/depth|go2/height_scan"
+```
+
+This mirrors `sim_perception.launch.py` using the same `camera.yaml`, so
+`/go2/height_scan` carries the **same 187-cell mask** as the sim rough policy.
+If the cloud topic name differs from `/go2/camera/depth/color/points`, pass
+`cloud_topic:=...` to the launch and set `GO2_CLOUD_TOPIC=...` for the recorders.
+
+Then record — camera alone:
+```bash
+./record_camera.sh --name stepfield_01 --terrain "cubic stepfield"
+```
+…or camera **with** joint states in one time-aligned bag:
+```bash
+./record_session.sh --name perc_walk_01 --camera --terrain "cubic stepfield"
+```
+
+Recorded camera topics: `$GO2_CLOUD_TOPIC` (raw cloud, reprocessable),
+`/go2/height_scan` (processed mask), `/go2/local_heightmap`,
+`/go2/camera/color/image_raw` + `camera_info` (set `GO2_RECORD_RGB=0` to skip),
+and `/tf` + `/tf_static` (to rebuild the cloud in the base frame offline).
+
 ## 2. Export to Parquet
 
 Runs in the **ROS 2 Humble env** (deserialising `unitree_go` messages needs the
@@ -73,6 +110,9 @@ The resulting Parquet loads directly in the Python-3.11 training harness
 - `quat_{w,x,y,z}`, `gyro_{x,y,z}`, `acc_{x,y,z}`, `proj_g_{x,y,z}` — IMU
 - `foot_force_{FR,FL,RR,RL}`
 - `base_{x,y,z}`, `base_v{x,y,z}`, `base_yaw_speed` — from sportmodestate
+- `hs_000`…`hs_186` — the `/go2/height_scan` mask (camera sessions only; absent
+  otherwise). Same layout/ordering as the rough policy's obs suffix. The raw
+  depth cloud is **not** exported — it stays in the bag for offline reprocessing.
 
 Joint columns are keyed by name, so the SDK↔Isaac ordering never leaks into the
 dataset. `session_metadata.yaml` records the mapping and gains for reference.

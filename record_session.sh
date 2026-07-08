@@ -10,6 +10,12 @@
 # Usage:
 #   ./record_session.sh --name flat_walk_01 --mode both --terrain "lab floor" \
 #                       --notes "figure-8, comfortable pace"
+#   ./record_session.sh --name perc_walk_01 --camera   # joints + camera in ONE bag
+#
+# --camera records the D435i (raw cloud + sim-matched /go2/height_scan) into the
+# SAME bag as the joint states, so they are time-aligned. It needs the perception
+# stack up first: ros2 launch go2_bringup real_perception.launch.py
+# For camera-only sessions use record_camera.sh instead.
 #
 # Output: sessions/<UTCdate>_<name>/  containing the bag + session_metadata.yaml
 #
@@ -26,6 +32,7 @@ DRIVE_MODE="both"          # sport | rl | both — recorded as a marker + metada
 TERRAIN=""
 NOTES=""
 EXTRA_TOPICS=""
+WITH_CAMERA=0
 
 usage() { grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
@@ -35,6 +42,7 @@ while [ $# -gt 0 ]; do
     --mode)     DRIVE_MODE="$2";   shift 2 ;;
     --terrain)  TERRAIN="$2";      shift 2 ;;
     --notes)    NOTES="$2";        shift 2 ;;
+    --camera)   WITH_CAMERA=1;     shift 1 ;;   # also record the D435i into this bag
     --topics)   EXTRA_TOPICS="$2"; shift 2 ;;   # space-separated extra topics
     -h|--help)  usage 0 ;;
     *) echo "[record] unknown arg: $1" >&2; usage 1 ;;
@@ -62,12 +70,15 @@ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 
 # ---- topic set -------------------------------------------------------------
-# Unitree state topics. Names as published by the unitree_ros2 bridge; override
-# via GO2_STATE_TOPICS if your install differs (e.g. leading-slash variants).
-STATE_TOPICS="${GO2_STATE_TOPICS:-/lowstate /sportmodestate /wirelesscontroller /lowcmd}"
-# Web joystick + drive-mode + safety context (published by ros_bridge.py / web_bridge).
-WEB_TOPICS="/web_teleop /web_control_mode /web_estop /web_teleop_enabled /web_sport_cmd"
+# Shared topic sets (JOINT_STATE_TOPICS, WEB_TOPICS, CAMERA_TOPICS) — single
+# source of truth in recording/topics.sh.
+source "$WS_DIR/src/go2_remote_connection/recording/topics.sh"
+STATE_TOPICS="$JOINT_STATE_TOPICS"
 TOPICS="$STATE_TOPICS $WEB_TOPICS $EXTRA_TOPICS"
+if [ "$WITH_CAMERA" = "1" ]; then
+  TOPICS="$TOPICS $CAMERA_TOPICS"
+  echo "[record] camera enabled — needs real_perception.launch.py running (cloud=$GO2_CLOUD_TOPIC)"
+fi
 
 # ---- output dir + metadata -------------------------------------------------
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
