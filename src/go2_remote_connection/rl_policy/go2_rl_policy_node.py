@@ -138,6 +138,18 @@ def load_isaac_joints(path):
 class Go2RLPolicyNode(Node):
     def __init__(self, args):
         super().__init__("go2_rl_policy_node")
+
+        # Initialise the Unitree DDS channel factory AFTER the rclpy node exists.
+        # Both the SDK and rmw_cyclonedds share one CycloneDDS instance on domain 0;
+        # rmw *explicitly* creates+configures the domain when the node is built, and
+        # that fails with "Precondition Not Met" if the SDK already created domain 0.
+        # Creating the rclpy node first lets rmw own the domain; the SDK participant
+        # then just joins it. (Must run before any ChannelPublisher/Subscriber below.)
+        if args.net:
+            ChannelFactoryInitialize(0, args.net)
+        else:
+            ChannelFactoryInitialize(0)
+
         self.dry_run = args.dry_run
         self.handover = not args.no_handover
         self.lin_vel_mode = args.lin_vel_mode
@@ -507,11 +519,10 @@ def main():
     if not args.no_prompt:
         input("Press Enter to start...")
 
-    if args.net:
-        ChannelFactoryInitialize(0, args.net)
-    else:
-        ChannelFactoryInitialize(0)
-
+    # NOTE: ChannelFactoryInitialize is deliberately deferred into the node's
+    # __init__ (after super().__init__) so rmw_cyclonedds owns/configures DDS
+    # domain 0 before the Unitree SDK participant joins it. Initialising the SDK
+    # here (before rclpy) makes node creation fail with "Precondition Not Met".
     rclpy.init()
     node = Go2RLPolicyNode(args)
 
