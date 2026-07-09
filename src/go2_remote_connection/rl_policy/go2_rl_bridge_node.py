@@ -12,11 +12,13 @@ localhost UDP link.
 ROS -> controller (forwarded as JSON UDP datagrams):
     SUB /web_teleop        geometry_msgs/Twist   -> {"t":"teleop","vx","vy","wz"}
     SUB /web_control_mode  std_msgs/String       -> {"t":"mode","mode":"sport"|"rl"}
+    SUB /web_rl_policy     std_msgs/String       -> {"t":"policy","id":str}
     SUB /web_estop         std_msgs/Bool         -> {"t":"estop","on":bool}
     (plus a 10 Hz {"t":"ping"} keepalive so the controller can deadman this link)
 
 controller -> ROS (received over UDP, republished):
     {"t":"heartbeat"}          -> PUB /web_rl_heartbeat    std_msgs/Bool(true)  (~5 Hz)
+    {"t":"policy_out","id"}    -> PUB /web_rl_active_policy std_msgs/String      (loaded policy)
     {"t":"mode_out","mode"}    -> PUB /web_control_mode     std_msgs/String      (shutdown un-gate)
     {"t":"enabled","val"}      -> PUB /web_teleop_enabled   std_msgs/Bool        (shutdown un-gate)
 """
@@ -56,10 +58,12 @@ class Go2RLBridge(Node):
         # ROS -> controller
         self.create_subscription(Twist, "/web_teleop", self._on_teleop, 10)
         self.create_subscription(String, "/web_control_mode", self._on_mode, 10)
+        self.create_subscription(String, "/web_rl_policy", self._on_policy, 10)
         self.create_subscription(Bool, "/web_estop", self._on_estop, 10)
 
         # controller -> ROS
         self._pub_hb = self.create_publisher(Bool, "/web_rl_heartbeat", 10)
+        self._pub_active_policy = self.create_publisher(String, "/web_rl_active_policy", 1)
         self._pub_mode_out = self.create_publisher(String, "/web_control_mode", 1)
         self._pub_enabled_out = self.create_publisher(Bool, "/web_teleop_enabled", 1)
 
@@ -91,6 +95,11 @@ class Go2RLBridge(Node):
         if new in ("sport", "rl"):
             self._send({"t": "mode", "mode": new}, repeat=CRITICAL_REPEAT)
 
+    def _on_policy(self, msg: String):
+        pid = msg.data.strip()
+        if pid:
+            self._send({"t": "policy", "id": pid}, repeat=CRITICAL_REPEAT)
+
     def _on_estop(self, msg: Bool):
         self._send({"t": "estop", "on": bool(msg.data)}, repeat=CRITICAL_REPEAT)
 
@@ -112,6 +121,8 @@ class Go2RLBridge(Node):
                 continue
             if t == "heartbeat":
                 self._pub_hb.publish(Bool(data=True))
+            elif t == "policy_out":
+                self._pub_active_policy.publish(String(data=str(msg.get("id") or "")))
             elif t == "mode_out":
                 self._pub_mode_out.publish(String(data=str(msg.get("mode", "sport"))))
             elif t == "enabled":

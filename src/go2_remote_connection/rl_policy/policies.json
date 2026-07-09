@@ -1,0 +1,61 @@
+{
+  "_comment": [
+    "Registry of RL policies selectable from the RL web page's dropdown.",
+    "Hand-maintained: add an entry when you export a new .onnx into rl_policy/",
+    "(or rl_policy/policies/). Fields:",
+    "  id             stable key used by the API/UDP link (kebab/underscore, no spaces)",
+    "  name           human label shown in the dropdown",
+    "  model          checkpoint / training run description (2nd dropdown column)",
+    "  type           'blind' (proprioceptive only) or 'camera' (needs a height scan)",
+    "  obs_dim        expected observation width; the node validates the loaded onnx",
+    "  uses_heightmap true if the obs includes the 187-ray height scan",
+    "  runnable       false if it cannot run through the current RL launcher",
+    "                 (camera/height-scan policies need the perception pipeline,",
+    "                  which this launcher does not start -- see realsense_d435i_plan.md)",
+    "  path           onnx path, relative to rl_policy/ (or absolute)",
+    "The backend also reports a computed 'available' flag (whether the file exists)."
+  ],
+  "default": "flat",
+  "policies": [
+    {
+      "id": "flat",
+      "name": "Flat terrain (baseline)",
+      "model": "RSL-RL PPO · Isaac-Velocity-Flat-Unitree-Go2-v0",
+      "type": "blind",
+      "obs_dim": 48,
+      "uses_heightmap": false,
+      "runnable": true,
+      "path": "policy.onnx"
+    },
+    {
+      "id": "flat_custom",
+      "name": "Flat terrain (custom reward)",
+      "model": "RSL-RL PPO · unitree_go2_flat_custom",
+      "type": "blind",
+      "obs_dim": 48,
+      "uses_heightmap": false,
+      "runnable": true,
+      "path": "policies/flat_custom.onnx"
+    },
+    {
+      "id": "rough",
+      "name": "Rough terrain (height-scan)",
+      "model": "RSL-RL PPO · unitree_go2_rough",
+      "type": "camera",
+      "obs_dim": 235,
+      "uses_heightmap": true,
+      "runnable": false,
+      "path": "policies/rough.onnx"
+    },
+    {
+      "id": "rough_camera",
+      "name": "Rough terrain (D435i camera)",
+      "model": "RSL-RL PPO · unitree_go2_rough_camera",
+      "type": "camera",
+      "obs_dim": 235,
+      "uses_heightmap": true,
+      "runnable": false,
+      "path": "policies/rough_camera.onnx"
+    }
+  ]
+}

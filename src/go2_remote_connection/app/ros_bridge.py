@@ -153,6 +153,7 @@ class WebRosBridge(Node):
         self.pub_move_forward = self.create_publisher(Float32, "/move_forward_meters", 10)
         self.pub_sport_cmd = self.create_publisher(RosString, "/web_sport_cmd", 10)
         self.pub_control_mode = self.create_publisher(RosString, "/web_control_mode", 1)
+        self.pub_rl_policy = self.create_publisher(RosString, "/web_rl_policy", 1)
         self.pub_estop = self.create_publisher(Bool, "/web_estop", 1)
 
         # ---------------- Map subscriptions ----------------
@@ -222,6 +223,11 @@ class WebRosBridge(Node):
         self.create_subscription(Bool, "/web_rl_heartbeat", self._on_rl_heartbeat, 10)
         self.create_timer(0.5, self._rl_watchdog)
 
+        # ---------------- RL active-policy feedback ----------------
+        # The RL node echoes the policy it actually loaded here; mirror it into
+        # server state so GET /rl/policy reflects reality (incl. a rejected switch).
+        self.create_subscription(RosString, "/web_rl_active_policy", self._on_rl_active_policy, 1)
+
         # AsyncIO loop provided by FastAPI
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -231,6 +237,11 @@ class WebRosBridge(Node):
     # ---------------- RL liveness watchdog ----------------
     def _on_rl_heartbeat(self, msg: Bool):
         self._rl_last_hb = self.get_clock().now().nanoseconds * 1e-9
+
+    def _on_rl_active_policy(self, msg: RosString):
+        pid = msg.data.strip()
+        if pid:
+            state.rl_policy_id = pid
 
     def _rl_watchdog(self):
         now = self.get_clock().now().nanoseconds * 1e-9
@@ -309,6 +320,14 @@ class WebRosBridge(Node):
         msg = RosString()
         msg.data = str(mode)
         self.pub_control_mode.publish(msg)
+
+    def publish_rl_policy(self, policy_id: str):
+        if not self._ok_to_publish():
+            return
+
+        msg = RosString()
+        msg.data = str(policy_id)
+        self.pub_rl_policy.publish(msg)
 
     def publish_estop(self, engaged: bool):
         if not self._ok_to_publish():

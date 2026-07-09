@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.core.auth import require_token
 from app.core.state import state
 from app.ros_bridge import get_bridge
+from app.api.rl_policy import _load_registry, _current_id
 
 router = APIRouter()
 
@@ -36,6 +37,21 @@ async def set_control_mode(mode: str, _=Depends(require_token)):
     # always allowed -- it is the safe direction and a failsafe out of a stuck state.
     if mode == "rl" and state.stop_latched:
         raise HTTPException(status_code=423, detail="STOP latched: RESUME before engaging RL")
+
+    # Don't release the sport service for a policy the controller can't actually
+    # run (needs perception, or its onnx isn't on the robot).
+    if mode == "rl":
+        default_id, policies = _load_registry()
+        by_id = {p["id"]: p for p in policies}
+        sel = _current_id(policies, default_id)
+        policy = by_id.get(sel)
+        if policy is None:
+            raise HTTPException(status_code=409, detail="no RL policy selected")
+        if not policy["available"]:
+            raise HTTPException(status_code=409, detail=f"policy '{sel}' onnx not found on robot")
+        if not policy["runnable"] or policy["uses_heightmap"]:
+            raise HTTPException(status_code=409,
+                                detail=f"policy '{sel}' needs the perception pipeline (not runnable here)")
 
     bridge = get_bridge()
     # Order matters for safe mutual exclusion:

@@ -33,14 +33,86 @@ Author: Victor Lim
     let teleopTimer = null;
     let safetyLatched = false;
     let controlMode = "sport";
+    let policies = [];         // registry entries from /rl/policies
+    let currentPolicy = "";    // id of the selected/loaded policy
 
     window.addEventListener("DOMContentLoaded", async () => {
       // Standalone page: no nav bar to the other UIs.
       await Go2Shared.init({ defaultApi: "", showAuthButtons: true, showNav: false });
       setTimeout(refreshSafetyStatus, 200);
       setTimeout(refreshControlMode, 250);
+      setTimeout(loadPolicies, 300);
       initJoysticks();
     });
+
+    // ---- RL policy dropdown -------------------------------------------
+    function policyLabel(p) {
+      const kind = p.type === "camera" ? "camera" : "blind";
+      let s = `${p.name} · ${p.model || "—"} · ${kind}`;
+      if (!p.available) s += "  (onnx missing)";
+      else if (!p.runnable || p.uses_heightmap) s += "  (needs perception)";
+      return s;
+    }
+
+    async function loadPolicies() {
+      const r = await Go2Shared.httpGet("/rl/policies", { bypassCommsGate: true });
+      if (!r.ok) return;
+      try {
+        const data = JSON.parse(r.text);
+        policies = data.policies || [];
+        currentPolicy = data.current || data.default || "";
+      } catch (_) { return; }
+      renderPolicyOptions();
+    }
+
+    function renderPolicyOptions() {
+      const sel = document.getElementById("policySelect");
+      if (!sel) return;
+      sel.innerHTML = "";
+      for (const p of policies) {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = policyLabel(p);
+        // Camera/height-scan or missing policies stay visible but unselectable.
+        if (!p.available || !p.runnable || p.uses_heightmap) opt.disabled = true;
+        if (p.id === currentPolicy) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      applyControlModeUi();       // lock the dropdown while RL is engaged
+      updatePolicyCaption();
+    }
+
+    function updatePolicyCaption() {
+      const cap = document.getElementById("policyCaption");
+      if (!cap) return;
+      const p = policies.find((x) => x.id === currentPolicy);
+      cap.textContent = p ? policyLabel(p) : "";
+    }
+
+    async function onPolicyChange() {
+      const sel = document.getElementById("policySelect");
+      if (!sel) return;
+      const id = sel.value;
+      const r = await Go2Shared.httpPost(`/rl/policy/${id}`, null, { bypassCommsGate: true });
+      Go2Shared.setStatus(
+        r.ok ? `Policy: ${id}` : "Policy switch failed",
+        r.ok,
+        `URL: ${r.url}\n${r.text}`
+      );
+      await refreshPolicy();      // re-read the truth: the node may reject/fall back
+    }
+
+    async function refreshPolicy() {
+      const r = await Go2Shared.httpGet("/rl/policy", { bypassCommsGate: true });
+      if (!r.ok) return;
+      try {
+        const data = JSON.parse(r.text);
+        currentPolicy = data.current || currentPolicy;
+        const sel = document.getElementById("policySelect");
+        if (sel) sel.value = currentPolicy;
+        updatePolicyCaption();
+      } catch (_) {}
+    }
 
     async function toggleControlMode() {
       // Decide from the current mode: RL on -> turn sport service OFF,
@@ -77,6 +149,10 @@ Author: Victor Lim
       }
       const banner = document.getElementById("rlBanner");
       if (banner) banner.style.display = controlMode === "rl" ? "block" : "none";
+      // The policy can only be switched while idle -- lock the dropdown once RL owns
+      // the motors so the control law can't change mid-run.
+      const sel = document.getElementById("policySelect");
+      if (sel) sel.disabled = controlMode === "rl";
     }
 
     async function refreshControlMode() {
@@ -202,6 +278,13 @@ Author: Victor Lim
         <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
         <button onclick="Go2Shared.logout()">Logout</button>
       </div>
+
+      <div class="row" style="align-items:center; gap:8px; margin-bottom:2px;">
+        <label for="policySelect" style="font-weight:bold; white-space:nowrap;">RL policy:</label>
+        <select id="policySelect" onchange="onPolicyChange()"
+                style="flex:1; min-width:240px; padding:4px;"></select>
+      </div>
+      <div id="policyCaption" class="small" style="margin-bottom:8px; color:#555;"></div>
 
       <div class="joyRow">
         <div class="joyBox">

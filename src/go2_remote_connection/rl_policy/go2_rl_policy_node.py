@@ -25,9 +25,11 @@ PROCESS SPLIT (why this file has no rclpy):
 Web control (via the bridge, localhost UDP JSON datagrams):
     IN   teleop   {vx,vy,wz}      joystick (from /web_teleop)
     IN   mode     {"sport"|"rl"}  control-mode request (from /web_control_mode)
+    IN   policy   {id: str}       hot-swap the active policy, idle only (from /web_rl_policy)
     IN   estop    {on: bool}      emergency stop / resume (from /web_estop)
     IN   ping                     bridge liveness (10 Hz)
     OUT  heartbeat                5 Hz liveness (bridge -> /web_rl_heartbeat)
+    OUT  policy_out {id: str}     the policy actually loaded now (-> /web_rl_active_policy)
     OUT  mode_out {"sport"}       on shutdown, un-gate web_bridge (-> /web_control_mode)
     OUT  enabled  {val: bool}     on shutdown, re-enable web_bridge (-> /web_teleop_enabled)
 
@@ -41,6 +43,10 @@ Control mode handover:
                   default pose under PD -> run policy @ 50 Hz.
     rl -> sport : ramp command to 0, PD-hold default -> SelectMode + BalanceStand
                   (sport svc takes over) -> stop publishing lowcmd.
+    flip (rl)   : if the robot ends up inverted while the policy runs, stop driving
+                  lowcmd -> SelectMode + Damp + RecoveryStand + BalanceStand (the
+                  sport svc rights it) -> idle in sport mode (operator re-engages RL).
+                  Detected from body-frame gravity + a low-angular-velocity gate.
 
 DEPLOYMENT CONTRACT (must match training -- see sim_to_real_deployment_plan.md):
     rate 50 Hz; q_target = q_default + 0.25*action; kp=25, kd=0.5;
@@ -116,6 +122,16 @@ CMD_CLIP = 1.0         # training command range +/-1
 DAMP_KD = 3.0          # damping fallback (soft collapse) on fault
 BRIDGE_TIMEOUT = 1.0   # s, deadman on the ROS bridge link (heartbeat/ping/teleop)
 
+# Flip auto-recovery (RL_RUN only). Body-frame gravity z is -1 upright and flips to
+# +1 inverted (see projected_gravity); fire only once the robot has *settled* upside
+# down (low |gyro|), after a debounce, then hand back to the sport service for a
+# RecoveryStand. A cooldown stops it re-triggering on the same tumble.
+FLIP_PROJ_G_Z = 0.7      # proj_gravity[2] threshold for "upside down" (>0 = inverted)
+FLIP_GYRO_MAX = 2.5      # rad/s, max |gyro| to count as settled (reject mid-tumble)
+FLIP_DEBOUNCE = 0.75     # s, inverted+settled must hold continuously before firing
+FLIP_COOLDOWN = 5.0      # s, suppress re-trigger after a recovery completes
+FLIP_RECOVERY_WAIT = 5.0 # s, let the sport-service RecoveryStand maneuver finish
+
 # localhost UDP link to the rclpy bridge (go2_rl_bridge_node.py).
 DEF_UDP_HOST = "127.0.0.1"
 DEF_CTRL_PORT = 47811  # this process listens here (web -> control)
@@ -127,7 +143,9 @@ DEF_BRIDGE_PORT = 47812  # the bridge listens here (control -> web)
 #   RL_RUN    policy active @ 50 Hz
 #   DISENGAGE PD-hold default while handing back to the sport service
 #   ESTOP     emergency stop: continuously damp (soft collapse), latched until RESUME
-SPORT, ENGAGE, RL_RUN, DISENGAGE, ESTOP = "SPORT", "ENGAGE", "RL_RUN", "DISENGAGE", "ESTOP"
+#   RECOVER   auto flip-recovery: hand back to the sport svc + RecoveryStand -> SPORT
+SPORT, ENGAGE, RL_RUN, DISENGAGE, ESTOP, RECOVER = \
+    "SPORT", "ENGAGE", "RL_RUN", "DISENGAGE", "ESTOP", "RECOVER"
 
 
 class _StdLogger:
@@ -179,27 +197,68 @@ def load_isaac_joints(path):
         return default, True
 
 
+def load_registry(path, logger=None):
+    """Read the policy registry (policies.json) selectable from the web dropdown.
+
+    Returns ``(policies_by_id, default_id)``. On any failure returns ``({}, None)``
+    so the node falls back to the bare ``--policy`` file (legacy behaviour).
+    """
+    def _warn(m):
+        (logger.warn if logger else print)(m)
+    try:
+        data = json.loads(pathlib.Path(path).read_text())
+        by_id = {}
+        for entry in data.get("policies", []):
+            pid = str(entry.get("id", "")).strip()
+            if pid:
+                by_id[pid] = entry
+        default_id = data.get("default") or (next(iter(by_id), None))
+        return by_id, default_id
+    except FileNotFoundError:
+        _warn(f"policy registry {path} not found; using --policy file only")
+        return {}, None
+    except Exception as e:  # noqa: BLE001
+        _warn(f"could not parse policy registry {path} ({e}); using --policy file only")
+        return {}, None
+
+
 class Go2RLPolicyController:
     def __init__(self, args):
         self._logger = _StdLogger("go2_rl_policy")
         self.dry_run = args.dry_run
         self.handover = not args.no_handover
+        self.flip_recovery = True    # auto flip-recovery is always armed while the policy runs
         self.lin_vel_mode = args.lin_vel_mode
 
-        # ---- policy + joint remap ----------------------------------------
-        self.session = ort.InferenceSession(args.policy, providers=["CPUExecutionProvider"])
-        self.in_name = self.session.get_inputs()[0].name
-        self.obs_dim = int(self.session.get_inputs()[0].shape[1])
+        # ---- joint remap -------------------------------------------------
         isaac_joints, used_default = load_isaac_joints(args.joint_names)
         self.isaac_joints = isaac_joints
         self.isaac_from_sdk = [SDK_JOINTS.index(n) for n in isaac_joints]   # lowstate -> obs order
         self.sdk_from_isaac = [isaac_joints.index(n) for n in SDK_JOINTS]   # action  -> lowcmd order
         self.q_default_isaac = np.array([Q_DEFAULT_BY_NAME[n] for n in isaac_joints], np.float32)
         self.q_default_sdk = np.array([Q_DEFAULT_BY_NAME[n] for n in SDK_JOINTS], np.float32)
+
+        # ---- policy registry + initial policy ----------------------------
+        # The onnx is hot-swappable at runtime (only while idle) so the operator can
+        # pick a policy from the web dropdown without restarting the node. The
+        # registry (policies.json) is the source of truth for that dropdown.
+        self.registry_path = pathlib.Path(args.policies)
+        self.policies, self.default_policy_id = load_registry(self.registry_path, self.get_logger())
+        self._policy_lock = threading.Lock()      # guards the session swap on hot-reload
+        self.session = None
+        self.in_name = None
+        self.obs_dim = None
+        self.active_policy_id = None
+        start_entry = self.policies.get(self.default_policy_id) if self.default_policy_id else None
+        if start_entry is None or not self._load_policy_entry(start_entry):
+            # No usable registry default -> fall back to the bare --policy file.
+            self._load_policy_file(args.policy)
+            self.active_policy_id = self.default_policy_id
         self.get_logger().info(
-            f"policy={args.policy} obs_dim={self.obs_dim} "
+            f"active_policy={self.active_policy_id} obs_dim={self.obs_dim} "
             f"joint_order={'DEFAULT(verify!)' if used_default else 'joint_names.json'} "
-            f"dry_run={self.dry_run} handover={self.handover} lin_vel={self.lin_vel_mode}")
+            f"dry_run={self.dry_run} handover={self.handover} lin_vel={self.lin_vel_mode} "
+            f"flip_recovery={self.flip_recovery}")
 
         # ---- shared state ------------------------------------------------
         self._lock = threading.Lock()
@@ -213,6 +272,9 @@ class Go2RLPolicyController:
         self.start_pos_sdk = self.q_default_sdk.copy()
         self.ramp_t = 0.0
         self._recover_pending = False
+        self._flip_pending = False             # set by the loop, consumed by the worker
+        self._flip_since = None                # monotonic t when inversion first held
+        self._flip_cooldown_until = 0.0        # suppress re-trigger after a recovery
         self._wake = threading.Event()
         self._stop = False
         self._t0 = time.monotonic()
@@ -252,6 +314,7 @@ class Go2RLPolicyController:
         self.ctrl_thread = RecurrentThread(interval=CONTROL_DT, target=self._control_step,
                                            name="rl_control")
         self.ctrl_thread.Start()
+        self._send({"t": "policy_out", "id": self.active_policy_id})   # tell the web which policy is loaded
         self.get_logger().info("go2_rl_policy_node ready (mode=sport, idle).")
 
     def get_logger(self):
@@ -287,6 +350,8 @@ class Go2RLPolicyController:
                 self._set_teleop(msg.get("vx", 0.0), msg.get("vy", 0.0), msg.get("wz", 0.0))
             elif t == "mode":
                 self._set_mode(msg.get("mode", ""))
+            elif t == "policy":
+                self._set_policy(msg.get("id", ""))
             elif t == "estop":
                 self._set_estop(bool(msg.get("on", False)))
             elif t == "ping":
@@ -310,6 +375,69 @@ class Go2RLPolicyController:
         with self._lock:
             self.requested_mode = new
         self._wake.set()
+
+    # ------------------------------------------------------------------ #
+    # Policy selection (hot-swap the onnx, idle only)
+    # ------------------------------------------------------------------ #
+    def _resolve_policy_path(self, entry):
+        """Resolve a registry entry's onnx path (relative paths are anchored at the
+        registry file's directory, i.e. rl_policy/)."""
+        p = pathlib.Path(entry.get("path", ""))
+        if not p.is_absolute():
+            p = self.registry_path.resolve().parent / p
+        return p
+
+    def _load_policy_file(self, path):
+        """Build a fresh ORT session and swap it in. Assigns only after a successful
+        build so a bad file never leaves us with a half-loaded session. Raises on error."""
+        sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        with self._policy_lock:
+            self.session = sess
+            self.in_name = sess.get_inputs()[0].name
+            self.obs_dim = int(sess.get_inputs()[0].shape[1])
+
+    def _load_policy_entry(self, entry):
+        """Load the onnx described by a registry entry. Returns True on success and
+        leaves the current policy untouched on any failure (unknown/unrunnable/missing)."""
+        pid = entry.get("id")
+        if not entry.get("runnable", True) or entry.get("uses_heightmap", False):
+            self.get_logger().warn(
+                f"policy '{pid}' needs a height scan this node cannot provide; not loading")
+            return False
+        path = self._resolve_policy_path(entry)
+        if not path.exists():
+            self.get_logger().warn(f"policy '{pid}' onnx not found at {path}; not loading")
+            return False
+        try:
+            self._load_policy_file(path)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"policy '{pid}' failed to load ({e}); keeping previous policy")
+            return False
+        exp = entry.get("obs_dim")
+        if exp is not None and int(exp) != self.obs_dim:
+            self.get_logger().warn(
+                f"policy '{pid}' onnx obs_dim {self.obs_dim} != registry {exp}")
+        self.active_policy_id = pid
+        self.get_logger().info(f"loaded policy '{pid}' from {path} (obs_dim={self.obs_dim})")
+        return True
+
+    def _set_policy(self, pid):
+        """Web dropdown asked to switch the active policy. Allowed only while idle
+        (SPORT): swapping the onnx mid-run would change the control law under load.
+        Always echoes the *actual* active policy back to the web so the UI stays honest."""
+        pid = str(pid).strip()
+        entry = self.policies.get(pid)
+        if entry is None:
+            self.get_logger().warn(f"unknown policy id '{pid}'; ignoring")
+        else:
+            with self._lock:
+                phase = self.phase
+            if phase != SPORT:
+                self.get_logger().warn(
+                    f"policy switch to '{pid}' ignored: only allowed while idle (phase={phase})")
+            elif pid != self.active_policy_id:
+                self._load_policy_entry(entry)
+        self._send({"t": "policy_out", "id": self.active_policy_id})
 
     def _set_estop(self, on):
         """Emergency stop from the web STOP button (only meaningful when RL owns the robot)."""
@@ -337,14 +465,38 @@ class Go2RLPolicyController:
                 break
             with self._lock:
                 req, phase, recover = self.requested_mode, self.phase, self._recover_pending
-            if recover and phase == ESTOP:
+                flip = self._flip_pending
+            # A flip recovery is already latched by the 50 Hz loop (phase == RECOVER);
+            # run it first and to completion -- it is a single, safe, blocking sequence.
+            if flip and phase == RECOVER:
+                self._recover_flip()
+            # A "sport" request always wins -- it is the safe direction and the
+            # failsafe out of any engaged state. Handle it from every phase where
+            # we still own the motors, not just RL_RUN, so toggling RL off never
+            # strands the robot with the sport service released.
+            elif req == "sport" and phase in (ENGAGE, RL_RUN):
+                self._disengage()
+            elif req == "sport" and phase == ESTOP:
+                self._disengage_from_estop()
+            elif recover and phase == ESTOP:
                 self._recover()
             elif req == "rl" and phase == SPORT:
                 self._engage()
-            elif req == "sport" and phase == RL_RUN:
-                self._disengage()
 
     def _engage(self):
+        # Defence in depth: the web backend already blocks engaging a policy that
+        # needs perception, but never release the sport service for one we cannot
+        # feed. Revert the web toggle to sport instead of stranding the robot.
+        entry = self.policies.get(self.active_policy_id)
+        if entry is not None and (not entry.get("runnable", True) or entry.get("uses_heightmap", False)):
+            self.get_logger().error(
+                f"refusing to engage '{self.active_policy_id}': needs a height scan this "
+                "node cannot provide; staying in sport mode")
+            with self._lock:
+                self.requested_mode = "sport"
+            self._send({"t": "mode_out", "mode": "sport"})   # bounce the web toggle back to sport
+            self._send({"t": "enabled", "val": True})
+            return
         self.get_logger().info("ENGAGE: handing control from sport service to RL policy")
         if self.handover and not self.dry_run:
             with self._sport_lock:
@@ -371,6 +523,25 @@ class Go2RLPolicyController:
         with self._lock:
             self.phase = SPORT               # stop publishing lowcmd
 
+    def _disengage_from_estop(self):
+        """Hand control back to the sport service from an ESTOP (soft collapse).
+
+        Reached when the operator hits STOP while RL owns the robot and then
+        toggles RL off. Unlike _disengage(), we do NOT PD-hold the default pose
+        first: the robot is collapsed on the ground, so snapping it to the default
+        stance would be a violent lurch. Instead we stop driving lowcmd at once and
+        recover the sport service so it listens to SportClient commands again. The
+        robot stays down (STOP is still latched) until the operator RESUMEs, which
+        stands it back up via the sport service's RecoveryStand -- exactly how STOP
+        already behaves in plain sport mode.
+        """
+        self.get_logger().info("DISENGAGE (from ESTOP): handing control back to sport service")
+        with self._lock:
+            self._recover_pending = False    # cancel any pending RL stand-up
+            self.phase = SPORT               # 50 Hz loop stops publishing lowcmd now
+        if self.handover and not self.dry_run:
+            self._select_sport()             # restart sport svc -> sport teleop usable again
+
     def _recover(self):
         """Stand back up under the RL policy after an ESTOP (RESUME button).
 
@@ -384,6 +555,44 @@ class Go2RLPolicyController:
             self.last_action = np.zeros(12, np.float32)
             self.ramp_t = 0.0
             self.phase = ENGAGE          # control loop ramps -> RL_RUN
+
+    def _recover_flip(self):
+        """Auto-recover from an inverted robot while the policy was running.
+
+        Detected by the 50 Hz loop (see _flip_detected), which has already set
+        phase == RECOVER so the loop has stopped driving lowcmd. Here we run the
+        one-shot handoff: recover the sport service (released on engage), then
+        Damp -> RecoveryStand -> BalanceStand so the sport controller rights and
+        stands the robot. We deliberately land in *sport* mode (not RL): a flip is
+        a fault, so the operator re-engages RL when ready rather than us diving
+        straight back into the policy that just tipped over.
+        """
+        self.get_logger().warn("FLIP RECOVERY: handing back to sport service for RecoveryStand")
+        with self._lock:
+            self._flip_pending = False
+            self.requested_mode = "sport"    # stay idle after recovery; no auto re-engage
+            self.phase = RECOVER             # (already set by the loop) loop drives nothing
+        time.sleep(0.1)                      # let the 50 Hz loop observe RECOVER and go quiet
+        if self.handover and not self.dry_run:
+            self._select_sport()             # restart the sport svc (released on engage)
+            with self._sport_lock:
+                self.sc.Damp()               # relax from the collapsed/inverted pose
+            time.sleep(0.5)
+            with self._sport_lock:
+                self.sc.RecoveryStand()      # flip upright and stand
+            time.sleep(FLIP_RECOVERY_WAIT)   # let the maneuver finish before settling
+            with self._sport_lock:
+                self.sc.BalanceStand()       # settle into balance stand
+            time.sleep(0.5)
+        # Reflect sport mode on the web UI and re-enable web_bridge teleop.
+        self._send({"t": "mode_out", "mode": "sport"})
+        self._send({"t": "enabled", "val": True})
+        with self._lock:
+            self.phase = SPORT               # sport svc owns the robot; loop stays quiet
+            self._flip_since = None
+            self._flip_cooldown_until = self._now() + FLIP_COOLDOWN
+        self.get_logger().info(
+            "FLIP RECOVERY complete: standing under sport service (mode=sport, re-select RL to resume)")
 
     def _release_sport(self):
         status, result = self.msc.CheckMode()
@@ -428,9 +637,19 @@ class Go2RLPolicyController:
             elif phase == ENGAGE:
                 self._ramp_step()
             elif phase == RL_RUN:
+                if self.flip_recovery and self._flip_detected():
+                    self.get_logger().warn(
+                        "flip detected (robot inverted and settled); starting auto-recovery")
+                    with self._lock:
+                        self.phase = RECOVER      # stop driving lowcmd this instant
+                        self._flip_pending = True
+                    self._wake.set()              # transition worker runs the sequence
+                    return
                 self._policy_step()
             elif phase == DISENGAGE:
                 self._publish(self.q_default_sdk, KP, KD)
+            elif phase == RECOVER:
+                return                            # sport svc (being) restored; do not drive
         except Exception as e:               # noqa: BLE001 - never let the loop die mid-flight
             self.get_logger().error(f"control step fault: {e}; damping")
             self._damp()
@@ -461,6 +680,31 @@ class Go2RLPolicyController:
         q_target_isaac = self.q_default_isaac + ACTION_SCALE * action
         q_target_sdk = q_target_isaac[self.sdk_from_isaac]
         self._publish(q_target_sdk, KP, KD)
+
+    def _flip_detected(self):
+        """True once the robot has been inverted *and settled* for FLIP_DEBOUNCE.
+
+        proj_gravity[2] is -1 upright and swings positive when the base rolls/pitches
+        past ~90 deg; > FLIP_PROJ_G_Z means clearly upside down. The |gyro| gate rejects
+        transient inversions mid-tumble (we want to recover only once it has come to
+        rest on its back). A cooldown after each recovery stops repeat firing on the
+        same event. Called only from RL_RUN, where low_state is guaranteed non-None.
+        """
+        if self._now() < self._flip_cooldown_until:
+            self._flip_since = None
+            return False
+        ls = self.low_state
+        proj_g = projected_gravity(ls.imu_state.quaternion)
+        gyro = np.asarray(ls.imu_state.gyroscope, np.float32)
+        inverted = proj_g[2] > FLIP_PROJ_G_Z and float(np.linalg.norm(gyro)) < FLIP_GYRO_MAX
+        if not inverted:
+            self._flip_since = None              # reset the debounce window
+            return False
+        now = self._now()
+        if self._flip_since is None:
+            self._flip_since = now               # start the debounce window
+            return False
+        return (now - self._flip_since) >= FLIP_DEBOUNCE
 
     def _build_obs(self):
         ls = self.low_state
@@ -582,7 +826,10 @@ class Go2RLPolicyController:
 def main():
     ap = argparse.ArgumentParser(description="Go2 low-level RL policy controller (SDK-only)")
     ap.add_argument("--net", default="", help="DDS network interface to the robot (e.g. eth0)")
-    ap.add_argument("--policy", default=str(HERE / "policy.onnx"))
+    ap.add_argument("--policy", default=str(HERE / "policy.onnx"),
+                    help="fallback onnx if the registry has no usable default")
+    ap.add_argument("--policies", default=str(HERE / "policies.json"),
+                    help="policy registry (JSON) listing the web-selectable policies")
     ap.add_argument("--joint-names", default=str(HERE / "joint_names.json"))
     ap.add_argument("--lin-vel-mode", default="zero", choices=["zero"],
                     help="source for base_lin_vel obs (48-dim policy). 'zero' = un-retrained test.")
@@ -591,6 +838,9 @@ def main():
                          "validate the pipeline on a powered robot with limp motors")
     ap.add_argument("--no-handover", action="store_true",
                     help="skip sport-service release/recover (gantry-only; YOU ensure no sport svc)")
+    ap.add_argument("--no-flip-recovery", action="store_true",
+                    help="disable automatic flip detection + RecoveryStand while the policy runs "
+                         "(detection is RL_RUN-only; leave ON for free-standing ground tests)")
     ap.add_argument("--no-prompt", action="store_true",
                     help="skip the interactive confirmation (for background launch). The node still "
                          "stays idle until 'rl' is selected; the UI confirm dialog is the human gate.")

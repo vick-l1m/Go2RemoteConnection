@@ -16,6 +16,7 @@ class RuntimeState:
     stop_latched: bool = False
     teleop_enabled: bool = True
     control_mode: str = "sport"   # "sport" (Unitree SportClient) | "rl" (low-level RL policy)
+    rl_policy_id: str = ""        # id of the selected/loaded RL policy (see rl_policy/policies.json)
 
 state = RuntimeState()
 
