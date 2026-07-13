@@ -230,7 +230,11 @@ fi
 # ------------------------------------------------------------
 # 0b) Front camera capture node + ROS bridge
 # ------------------------------------------------------------
-GO2_WS_DIR="$HOME/go2_ws/Go2RemoteConnection"
+# Default to THIS checkout's workspace root (auto-detected as $WS_DIR) so the
+# launcher works both inside the Go2_RL_workflow project and as a standalone
+# Go2RemoteConnection repo. Matches the overlay loop above, which sources
+# $WS_DIR/install first. Set GO2_WS_DIR to force a different built workspace.
+GO2_WS_DIR="${GO2_WS_DIR:-$WS_DIR}"
 PKG_NAME="go2_remote_connection"
 PKG_INSTALL_DIR="$GO2_WS_DIR/install/$PKG_NAME/lib/$PKG_NAME"
 

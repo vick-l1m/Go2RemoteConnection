@@ -184,8 +184,19 @@ fi
 # DDS config). No lidar/camera/perception nodes are started — this
 # launcher runs the movement-related stack only.
 # ------------------------------------------------------------
-GO2_WS_DIR="$HOME/go2_ws/Go2RemoteConnection"
+# The RL controller + bridge run as raw Python from the source tree (not via
+# `ros2 run`), so anchor their paths to THIS checkout's package dir ($PKG_DIR,
+# auto-detected above). This makes the launcher work both inside the
+# Go2_RL_workflow project and as a standalone Go2RemoteConnection repo, wherever
+# it is cloned -- no hard-coded ~/go2_ws path.
+# To force the RL nodes to run from a DIFFERENT checkout, set GO2_WS_DIR to that
+# repo root (the dir containing src/go2_remote_connection) before launching.
 PKG_NAME="go2_remote_connection"
+if [ -n "${GO2_WS_DIR:-}" ]; then
+  RL_PKG_DIR="$GO2_WS_DIR/src/$PKG_NAME"
+else
+  RL_PKG_DIR="$PKG_DIR"
+fi
 
 VENV_PYTHON="$HOME/venvs/unitree_sdk2_python/bin/python3"
 UNITREE_SDK_SRC="$HOME/unitree_sdk2_python"
@@ -282,8 +293,8 @@ if [ "$SPORT_READY" -eq 1 ]; then
   #     Starts IDLE; only drives motors once 'RL' is selected on the joystick page.
   # ----------------------------
   if [ "${GO2_RL_POLICY:-1}" = "1" ]; then
-    RL_NODE="$GO2_WS_DIR/src/$PKG_NAME/rl_policy/go2_rl_policy_node.py"
-    RL_BRIDGE="$GO2_WS_DIR/src/$PKG_NAME/rl_policy/go2_rl_bridge_node.py"
+    RL_NODE="$RL_PKG_DIR/rl_policy/go2_rl_policy_node.py"
+    RL_BRIDGE="$RL_PKG_DIR/rl_policy/go2_rl_bridge_node.py"
     RL_EXTRA_ARGS=""
     # GO2_RL_DRY_RUN=1 -> compute obs/action and publish lowcmd with kp=kd=0 (no torque)
     [ "${GO2_RL_DRY_RUN:-0}" = "1" ] && RL_EXTRA_ARGS="--dry-run"

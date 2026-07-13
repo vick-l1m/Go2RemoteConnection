@@ -130,7 +130,7 @@ FLIP_PROJ_G_Z = 0.7      # proj_gravity[2] threshold for "upside down" (>0 = inv
 FLIP_GYRO_MAX = 2.5      # rad/s, max |gyro| to count as settled (reject mid-tumble)
 FLIP_DEBOUNCE = 0.75     # s, inverted+settled must hold continuously before firing
 FLIP_COOLDOWN = 5.0      # s, suppress re-trigger after a recovery completes
-FLIP_RECOVERY_WAIT = 5.0 # s, let the sport-service RecoveryStand maneuver finish
+FLIP_RECOVERY_WAIT = 7.0 # s, let the sport-service self-right (roll off back) + stand finish
 
 # localhost UDP link to the rclpy bridge (go2_rl_bridge_node.py).
 DEF_UDP_HOST = "127.0.0.1"
@@ -269,6 +269,7 @@ class Go2RLPolicyController:
         self.last_action = np.zeros(12, np.float32)
         self.phase = SPORT
         self.requested_mode = "sport"
+        self._prev_sport_mode = "normal"       # sport mode to restore on disengage (set at release)
         self.start_pos_sdk = self.q_default_sdk.copy()
         self.ramp_t = 0.0
         self._recover_pending = False
@@ -303,6 +304,11 @@ class Go2RLPolicyController:
         # ---- sport service control --------------------------------------
         self.sc = SportClient(); self.sc.SetTimeout(5.0); self.sc.Init()
         self.msc = MotionSwitcherClient(); self.msc.SetTimeout(5.0); self.msc.Init()
+        # Arm the Go2's built-in fall/flip auto-recovery so the sport service self-
+        # rights the robot (rolls off its back and stands) whenever it owns the
+        # motors. Our flip handler relies on this rather than a bare RecoveryStand,
+        # which cannot roll the robot over from a full inversion.
+        self._set_auto_recovery(True)
 
         self._tick = 0
 
@@ -575,12 +581,14 @@ class Go2RLPolicyController:
         time.sleep(0.1)                      # let the 50 Hz loop observe RECOVER and go quiet
         if self.handover and not self.dry_run:
             self._select_sport()             # restart the sport svc (released on engage)
+            self._set_auto_recovery(True)    # re-arm built-in recovery (release may clear it)
+            # Let the sport service self-right: with auto-recovery armed it rolls the
+            # robot off its back and stands on its own. We do NOT Damp first -- limp
+            # motors would stop the firmware from righting itself. RecoveryStand is a
+            # nudge that also covers the fell-on-its-side case.
             with self._sport_lock:
-                self.sc.Damp()               # relax from the collapsed/inverted pose
-            time.sleep(0.5)
-            with self._sport_lock:
-                self.sc.RecoveryStand()      # flip upright and stand
-            time.sleep(FLIP_RECOVERY_WAIT)   # let the maneuver finish before settling
+                self.sc.RecoveryStand()
+            time.sleep(FLIP_RECOVERY_WAIT)   # let the roll-upright + stand finish
             with self._sport_lock:
                 self.sc.BalanceStand()       # settle into balance stand
             time.sleep(0.5)
@@ -596,6 +604,14 @@ class Go2RLPolicyController:
 
     def _release_sport(self):
         status, result = self.msc.CheckMode()
+        # Remember the mode that was active so we can restore *that exact* mode on
+        # disengage. Hard-coding "normal" is fragile -- the name varies by firmware
+        # (e.g. "normal" vs "ai"), and selecting the wrong one silently no-ops,
+        # leaving the robot released and limp.
+        if result and result.get("name"):
+            self._prev_sport_mode = result["name"]
+        self.get_logger().info(
+            f"releasing sport service (was: {result}, will restore '{self._prev_sport_mode}')")
         for _ in range(10):
             if not result or not result.get("name"):
                 break
@@ -604,10 +620,43 @@ class Go2RLPolicyController:
             status, result = self.msc.CheckMode()
         self.get_logger().info(f"sport service released (mode now: {result})")
 
-    def _select_sport(self):
-        self.msc.SelectMode("normal")
-        time.sleep(1.0)
-        self.get_logger().info("sport service selected (normal)")
+    def _select_sport(self, mode=None):
+        """Bring the Unitree sport service back after a release, and VERIFY it.
+
+        Symmetric to _release_sport: fire SelectMode, then poll CheckMode until a
+        mode is actually active (non-empty name), retrying a few times. Restores the
+        mode captured at release time (falls back to 'normal'). Returns True on
+        success. Logs loudly on failure so a limp robot is diagnosable, not silent."""
+        name = mode or getattr(self, "_prev_sport_mode", None) or "normal"
+        result = None
+        for attempt in range(6):
+            self.msc.SelectMode(name)
+            time.sleep(1.0)
+            _status, result = self.msc.CheckMode()
+            if result and result.get("name"):
+                self.get_logger().info(f"sport service selected (mode now: {result})")
+                return True
+            self.get_logger().warn(
+                f"sport service still down after SelectMode('{name}') "
+                f"attempt {attempt + 1}/6 (CheckMode={result}); retrying")
+        self.get_logger().error(
+            f"sport service FAILED to restart after SelectMode('{name}'); robot is likely "
+            "limp -- recover with the Unitree remote (L2+A / damp+stand) or power-cycle")
+        return False
+
+    def _set_auto_recovery(self, enabled):
+        """Toggle the Go2's built-in fall/flip auto-recovery (SportClient AutoRecoverySet).
+
+        When on, the sport service automatically rights the robot after a fall --
+        including rolling it off its back -- which a one-shot RecoveryStand cannot do.
+        Best-effort: logs and swallows errors (e.g. if the SDK build lacks the API)."""
+        try:
+            with self._sport_lock:
+                self.sc.AutoRecoverySet(bool(enabled))
+                got = self.sc.AutoRecoveryGet()
+            self.get_logger().info(f"auto-recovery set to {enabled} (readback: {got})")
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warn(f"could not set auto-recovery ({e}); relying on RecoveryStand")
 
     # ------------------------------------------------------------------ #
     # 50 Hz control loop
