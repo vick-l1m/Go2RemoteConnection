@@ -126,6 +126,7 @@ Author: Victor Lim
 
     async function toggleSafety() {
       if (!Go2Shared.ensureLoggedIn() || safetyBusy) return;
+      if (!stopLatched && !(await Go2Shared.confirmStop())) return;   // confirm before damping
       safetyBusy = true;
       setSafetyButton(stopLatched);
 

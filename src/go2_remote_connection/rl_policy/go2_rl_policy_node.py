@@ -276,6 +276,13 @@ class Go2RLPolicyController:
         self._flip_pending = False             # set by the loop, consumed by the worker
         self._flip_since = None                # monotonic t when inversion first held
         self._flip_cooldown_until = 0.0        # suppress re-trigger after a recovery
+        # STOP-always-wins plumbing. _sport_owns tracks who currently holds the
+        # motors so ESTOP/RESUME damp/stand through the right controller. _abort_recover
+        # is raised by STOP to tear down an in-flight flip recovery; _estop_pending asks
+        # the worker to run the sport-side ESTOP damp (kill firmware auto-recovery + Damp).
+        self._sport_owns = True                # sport service owns the motors at startup (idle)
+        self._abort_recover = False            # STOP pressed mid flip-recovery -> bail out
+        self._estop_pending = False            # worker: run the sport-side ESTOP damp
         self._wake = threading.Event()
         self._stop = False
         self._t0 = time.monotonic()
@@ -446,19 +453,61 @@ class Go2RLPolicyController:
         self._send({"t": "policy_out", "id": self.active_policy_id})
 
     def _set_estop(self, on):
-        """Emergency stop from the web STOP button (only meaningful when RL owns the robot)."""
+        """Emergency stop from the web STOP button. STOP always wins: the motors go
+        damp no matter what the node was doing -- including mid flip-recovery -- and
+        nothing tries to stand up again until RESUME."""
         if on:
             with self._lock:
-                # Only damp if the policy is (or was) driving; if the sport service owns
-                # the robot (SPORT phase) the sport-side Damp handles it, not us.
-                if self.phase in (ENGAGE, RL_RUN, ESTOP):
-                    self.phase = ESTOP
-                    self.get_logger().warn("ESTOP: damping motors (soft collapse)")
+                # STOP must damp the motors from EVERY phase -- there is no state in which
+                # the robot should keep its stance after STOP. RECOVER is included so an
+                # in-flight flip recovery is aborted; SPORT is included so that even when
+                # the policy is idle and the sport service owns the motors (RL selected
+                # but not engaged), the ESTOP still damps (via SportClient.Damp in
+                # _estop_damp) instead of leaving the robot standing.
+                if self.phase == RECOVER:
+                    self._abort_recover = True       # tear down the in-flight flip recovery
+                self.phase = ESTOP
+                self._recover_pending = False        # cancel any queued stand-up
+                self._flip_pending = False           # cancel a not-yet-started flip recovery
+                self._estop_pending = True           # worker: kill auto-recovery + sport Damp
+                self.get_logger().warn("ESTOP: damping motors (soft collapse)")
+            self._wake.set()
         else:
             with self._lock:
                 if self.phase == ESTOP:
                     self._recover_pending = True
             self._wake.set()
+
+    def _estop_damp(self):
+        """Worker-side half of an ESTOP. Runs the blocking SDK work the rx thread and
+        50 Hz loop must not: disarm the Go2's built-in auto-recovery so the firmware
+        stops trying to stand the robot up, and -- if the sport service currently owns
+        the motors (e.g. we STOPped mid flip-recovery) -- damp through it. The 50 Hz
+        loop separately drives a lowcmd damp for the case where the policy owns them.
+        Latched: nothing stands up again until RESUME clears the ESTOP."""
+        with self._lock:
+            self._estop_pending = False
+            self._abort_recover = False         # abort consumed; don't trip the next recovery
+            sport_owns = self._sport_owns
+        self._set_auto_recovery(False)          # stop the firmware from auto-standing
+        if sport_owns and not self.dry_run:
+            self.get_logger().warn("ESTOP: sport service owns the motors -> SportClient.Damp()")
+            with self._sport_lock:
+                self.sc.Damp()
+
+    def _recover_aborted(self):
+        with self._lock:
+            return self._abort_recover
+
+    def _sleep_or_abort(self, total):
+        """Sleep up to ``total`` s, returning True the instant a STOP requests an abort.
+        Lets a blocking recovery bail out promptly instead of ignoring STOP for seconds."""
+        end = self._now() + total
+        while self._now() < end:
+            if self._recover_aborted():
+                return True
+            time.sleep(0.05)
+        return self._recover_aborted()
 
     # ------------------------------------------------------------------ #
     # Transition worker (blocking SDK calls live here, never in the 50 Hz loop)
@@ -472,6 +521,13 @@ class Go2RLPolicyController:
             with self._lock:
                 req, phase, recover = self.requested_mode, self.phase, self._recover_pending
                 flip = self._flip_pending
+                estop = self._estop_pending
+            # STOP wins over everything: complete the sport-side damp (kill firmware
+            # auto-recovery, and Damp through the sport service if it owns the motors).
+            # The 50 Hz loop already drives a lowcmd damp for the case where we own them.
+            if estop:
+                self._estop_damp()
+                continue
             # A flip recovery is already latched by the 50 Hz loop (phase == RECOVER);
             # run it first and to completion -- it is a single, safe, blocking sequence.
             if flip and phase == RECOVER:
@@ -549,14 +605,36 @@ class Go2RLPolicyController:
             self._select_sport()             # restart sport svc -> sport teleop usable again
 
     def _recover(self):
-        """Stand back up under the RL policy after an ESTOP (RESUME button).
+        """Stand back up after an ESTOP (RESUME button) -- the only path that stands
+        the robot after STOP damped it. Re-arms the firmware auto-recovery that STOP
+        disabled, then stands up through whichever controller owns the motors:
 
-        The sport service was already released on first engage, so this only ramps
-        the (collapsed) measured pose back to the default pose, then resumes the policy.
+        - RL owns them (STOPped mid-policy, sport still released from engage): ramp the
+          collapsed pose back to the default pose and resume the policy.
+        - Sport owns them (STOPped during/after a flip recovery): RecoveryStand through
+          the sport service and settle in sport mode, mirroring the flip-recovery landing.
         """
-        self.get_logger().info("RECOVER: standing back up under RL policy")
+        self._set_auto_recovery(True)           # re-arm the firmware auto-recovery STOP killed
         with self._lock:
             self._recover_pending = False
+            sport_owns = self._sport_owns
+        if sport_owns:
+            self.get_logger().info("RECOVER: standing back up under sport service")
+            if self.handover and not self.dry_run:
+                with self._sport_lock:
+                    self.sc.RecoveryStand()
+                time.sleep(FLIP_RECOVERY_WAIT)
+                with self._sport_lock:
+                    self.sc.BalanceStand()
+                time.sleep(0.5)
+            self._send({"t": "mode_out", "mode": "sport"})
+            self._send({"t": "enabled", "val": True})
+            with self._lock:
+                self.requested_mode = "sport"
+                self.phase = SPORT
+            return
+        self.get_logger().info("RECOVER: standing back up under RL policy")
+        with self._lock:
             self.start_pos_sdk = self._read_q_sdk()
             self.last_action = np.zeros(12, np.float32)
             self.ramp_t = 0.0
@@ -575,20 +653,35 @@ class Go2RLPolicyController:
         """
         self.get_logger().warn("FLIP RECOVERY: handing back to sport service for RecoveryStand")
         with self._lock:
+            # STOP may have fired between the loop latching RECOVER and us getting here.
+            # Check-and-set atomically so a concurrent ESTOP is never clobbered: if the
+            # abort is already up, bail without touching phase (it is ESTOP by now).
+            if self._abort_recover:
+                return
             self._flip_pending = False
             self.requested_mode = "sport"    # stay idle after recovery; no auto re-engage
             self.phase = RECOVER             # (already set by the loop) loop drives nothing
         time.sleep(0.1)                      # let the 50 Hz loop observe RECOVER and go quiet
         if self.handover and not self.dry_run:
+            # Between each blocking step, bail the instant STOP asks for an abort so the
+            # robot goes damp instead of finishing the stand-up. _estop_damp (worker) then
+            # kills firmware auto-recovery and Damps; the phase is already ESTOP.
+            if self._recover_aborted():
+                return
             self._select_sport()             # restart the sport svc (released on engage)
+            if self._recover_aborted():
+                return
             self._set_auto_recovery(True)    # re-arm built-in recovery (release may clear it)
+            if self._recover_aborted():
+                return
             # Let the sport service self-right: with auto-recovery armed it rolls the
             # robot off its back and stands on its own. We do NOT Damp first -- limp
             # motors would stop the firmware from righting itself. RecoveryStand is a
             # nudge that also covers the fell-on-its-side case.
             with self._sport_lock:
                 self.sc.RecoveryStand()
-            time.sleep(FLIP_RECOVERY_WAIT)   # let the roll-upright + stand finish
+            if self._sleep_or_abort(FLIP_RECOVERY_WAIT):   # let the roll-upright + stand finish
+                return
             with self._sport_lock:
                 self.sc.BalanceStand()       # settle into balance stand
             time.sleep(0.5)
@@ -618,6 +711,8 @@ class Go2RLPolicyController:
             self.msc.ReleaseMode()
             time.sleep(0.5)
             status, result = self.msc.CheckMode()
+        with self._lock:
+            self._sport_owns = False          # sport svc released -> the policy owns lowcmd now
         self.get_logger().info(f"sport service released (mode now: {result})")
 
     def _select_sport(self, mode=None):
@@ -634,6 +729,8 @@ class Go2RLPolicyController:
             time.sleep(1.0)
             _status, result = self.msc.CheckMode()
             if result and result.get("name"):
+                with self._lock:
+                    self._sport_owns = True   # sport svc back in control of the motors
                 self.get_logger().info(f"sport service selected (mode now: {result})")
                 return True
             self.get_logger().warn(

@@ -26,7 +26,7 @@ On the Go2 (or the device running the server)
 # Install dependancies
 sudo apt update
 sudo apt install ros-humble-map-msgs
-cd ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection
+cd ~/Go2_RL_workflow/Go2RemoteConnection/src/go2_remote_connection
 pip install -r requirements.txt
 
 
@@ -35,11 +35,11 @@ sudo apt install -y \
   ros-humble-cv-bridge \
   ros-humble-image-transport \
   ros-humble-sensor-msgs
-cd ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection/src/cv/model
+cd ~/Go2_RL_workflow/Go2RemoteConnection/src/go2_remote_connection/src/cv/model
 python3 model_download.py
 
 # Setup the workspace
-cd ~/go2_ws/Go2RemoteConnection
+cd ~/Go2_RL_workflow/Go2RemoteConnection
 colcon build
 source install/setup.bash
 ```
@@ -47,7 +47,7 @@ source install/setup.bash
 ### 1.2. Launch the backend and ros2 node
 Make the command runnable and launch:
 ```bash
-cd ~/go2_ws/Go2RemoteConnection
+cd ~/Go2_RL_workflow/Go2RemoteConnection
 chmod +x RL_start_remote_connection.sh
 ./RL_start_remote_connection.sh
 ```
@@ -55,7 +55,7 @@ chmod +x RL_start_remote_connection.sh
 To run on the Issac Sim:
 ```bash
 use_fastrtps
-cd ~/go2_ws/Go2RemoteConnection
+cd ~/Go2_RL_workflow/Go2RemoteConnection
 chmod +x start_remote_connection_humble.sh
 ./start_remote_connection_humble.sh
 ```
@@ -196,7 +196,7 @@ ros2 run go2_remote_connection web_teleop_bridge
 The script does the following:
   - Source ROS 2 Foxy
   - Source Unitree Go2 ROS environment
-  - Source the colcon overlay (checks `$WS_DIR/install` first, then falls back to `~/go2_ws/Go2RemoteConnection/install`, so the script works whether it's launched from the repo or the build workspace)
+  - Source the colcon overlay (checks `$WS_DIR/install` first, then falls back to `~/Go2_RL_workflow/Go2RemoteConnection/install`, so the script works whether it's launched from the repo or the build workspace)
   - Export DDS / ROS environment variables explicitly
   - Wait for the Go2 driver node to be available
   - Start:
@@ -278,7 +278,7 @@ on port `8000`, and Funnel (running on the Go2) forwards a public HTTPS URL to i
 
 ### 6.2. Turn on the funnel (run ON the Go2)
 ```bash
-cd ~/go2_ws/Go2RemoteConnection
+cd ~/Go2_RL_workflow/Go2RemoteConnection
 ./start_tailscale_funnel.sh          # exposes local :8000 publicly over HTTPS
 ```
 This uses `tailscale funnel --bg 8000`, which **persists across reboots** — you

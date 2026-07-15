@@ -48,6 +48,7 @@ Author: Victor Lim
     }
 
     async function toggleSafety() {
+      if (!safetyLatched && !(await Go2Shared.confirmStop())) return;   // confirm before damping
       const path = safetyLatched ? "/safety/resume" : "/safety/stop";
       const r = await Go2Shared.httpPost(path, null, { bypassCommsGate: true });
 

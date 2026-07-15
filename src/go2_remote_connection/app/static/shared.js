@@ -136,6 +136,68 @@ window.Go2Shared = {
     }
   },
 
+  // Confirmation gate for the STOP button. STOP damps the motors no matter what the
+  // robot is doing (including aborting an auto-recovery), so the operator must make a
+  // second, deliberate click in an in-page confirmation dialog before the robot
+  // soft-collapses. Returns a Promise that resolves true only if they confirm.
+  confirmStop() {
+    return new Promise((resolve) => {
+      // Reuse a single injected overlay across calls so we don't leak DOM nodes.
+      let overlay = document.getElementById("stopConfirmOverlay");
+      if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.id = "stopConfirmOverlay";
+        overlay.style.cssText =
+          "position:fixed;inset:0;z-index:9999;display:none;align-items:center;" +
+          "justify-content:center;background:rgba(0,0,0,0.45);padding:20px;";
+        overlay.innerHTML =
+          '<div role="dialog" aria-modal="true" aria-labelledby="stopConfirmTitle" ' +
+          'style="max-width:420px;width:100%;background:#fff;border:1px solid #ffb3b3;' +
+          'border-radius:16px;padding:20px;box-shadow:0 12px 40px rgba(0,0,0,0.3);' +
+          'font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;">' +
+          '<div id="stopConfirmTitle" style="font-size:18px;font-weight:700;' +
+          'color:#b00020;margin-bottom:10px;">⚠️ Confirm STOP — damp the motors?</div>' +
+          '<div style="font-size:14px;color:#333;line-height:1.5;margin-bottom:18px;">' +
+          "The robot's motors will go <b>DAMP</b> and it will soft-collapse to the ground. " +
+          "Any auto-recovery in progress is aborted. The robot stays down and will not " +
+          "try to stand again until you press <b>RESUME</b>." +
+          '</div>' +
+          '<div style="display:flex;gap:10px;justify-content:flex-end;">' +
+          '<button id="stopConfirmCancel" style="padding:10px 16px;border:1px solid #ddd;' +
+          'border-radius:12px;background:#f7f7f7;cursor:pointer;font-size:14px;">Cancel</button>' +
+          '<button id="stopConfirmProceed" style="padding:10px 16px;border:1px solid #ffb3b3;' +
+          'border-radius:12px;background:#fff1f1;color:#b00020;font-weight:700;cursor:pointer;' +
+          'font-size:14px;">STOP — damp motors</button>' +
+          '</div></div>';
+        document.body.appendChild(overlay);
+      }
+
+      const cancelBtn = overlay.querySelector("#stopConfirmCancel");
+      const proceedBtn = overlay.querySelector("#stopConfirmProceed");
+
+      const close = (result) => {
+        overlay.style.display = "none";
+        cancelBtn.onclick = null;
+        proceedBtn.onclick = null;
+        overlay.onclick = null;
+        document.removeEventListener("keydown", onKey);
+        resolve(result);
+      };
+      const onKey = (e) => {
+        if (e.key === "Escape") close(false);
+      };
+
+      cancelBtn.onclick = () => close(false);
+      proceedBtn.onclick = () => close(true);
+      // Click on the dimmed backdrop (outside the dialog) cancels.
+      overlay.onclick = (e) => { if (e.target === overlay) close(false); };
+      document.addEventListener("keydown", onKey);
+
+      overlay.style.display = "flex";
+      proceedBtn.focus();
+    });
+  },
+
   injectNavBar() {
     const root = document.getElementById("pageNavMount") || document.querySelector(".card");
     if (!root) return;

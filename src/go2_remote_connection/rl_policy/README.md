@@ -49,7 +49,7 @@ silently drives the wrong leg):
 ```bash
 # in the Isaac Lab env, on the training machine
 conda activate env_isaaclab && cd ~/IsaacLab
-python ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection/rl_policy/dump_isaac_joint_order.py
+python ~/Go2_RL_workflow/Go2RemoteConnection/src/go2_remote_connection/rl_policy/dump_isaac_joint_order.py
 # copy the regenerated joint_names.json back next to policy.onnx
 ```
 
@@ -63,7 +63,7 @@ bridge. The `ros2 topic pub` commands reach the controller *through* the bridge.
 **1. Dry run** — validate obs/inference/remap with no torque (motors limp):
 
 ```bash
-cd ~/go2_ws/Go2RemoteConnection/src/go2_remote_connection/rl_policy
+cd ~/Go2_RL_workflow/Go2RemoteConnection/src/go2_remote_connection/rl_policy
 # terminal A — the ROS<->UDP bridge (pure rclpy):
 ~/venvs/unitree_sdk2_python/bin/python3 go2_rl_bridge_node.py
 # terminal B — the SDK controller:

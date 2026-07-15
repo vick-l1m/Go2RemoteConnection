@@ -270,6 +270,13 @@ private:
     if (a == "damp")         { sportClient_.Damp(req); return; }
     if (a == "balance_stand"){ sportClient_.BalanceStand(req); return; }
 
+    // ----- safety: firmware auto-recovery arm/disarm -----
+    // The sport-mode STOP path disarms this so a Damp'd robot stays down instead of
+    // the firmware auto-standing it; RESUME re-arms it. Mirrors the RL node's ESTOP/
+    // RESUME handling of AutoRecoverySet so both control modes behave the same.
+    if (a == "autorecovery_off") { sportClient_.AutoRecoverySet(req, false); return; }
+    if (a == "autorecovery_on")  { sportClient_.AutoRecoverySet(req, true);  return; }
+
     // unknown: ignore
   }
 

@@ -21,7 +21,7 @@ Source ROS 2 Humble + the `unitree_ros2` overlay first (or just run the script �
 it sources them, mirroring `RL_start_remote_connection.sh`). Then:
 
 ```bash
-cd ~/go2_ws/Go2RemoteConnection      # or wherever this repo lives
+cd ~/Go2_RL_workflow/Go2RemoteConnection      # or wherever this repo lives
 ./record_session.sh --name flat_walk_01 --mode both \
     --terrain "lab floor" --notes "figure-8, comfortable pace"
 # ... drive the robot from the web joystick ... Ctrl+C to stop.
@@ -116,6 +116,76 @@ The resulting Parquet loads directly in the Python-3.11 training harness
 
 Joint columns are keyed by name, so the SDK↔Isaac ordering never leaks into the
 dataset. `session_metadata.yaml` records the mapping and gains for reference.
+
+## 3. Replay a session in RViz
+
+Watch a recorded session play back with the Go2 articulating (and camera, for
+`--camera` sessions). `ros2 bag play` just re-publishes the recorded topics; the
+viewer turns them into a moving robot:
+
+- `lowstate_to_jointstate.py` — `/lowstate` (`unitree_go/LowState`) → name-keyed
+  `sensor_msgs/JointState` on `/joint_states` (RViz can't animate from `LowState`).
+- `robot_state_publisher` + the self-contained URDF at
+  `description/go2/go2.urdf` → TF *inside* the robot (base_link → legs).
+- `sportmodestate_to_tf.py` — `/sportmodestate` → `odom` → `base_link` TF, so the
+  base **moves through space** instead of walking on the spot. It's the Go2's
+  onboard odometry (drifts over a long run, no loop closure). Disable with
+  `base_motion:=false` to pin the robot at the origin. Camera-only bags have no
+  `/sportmodestate`, so the node stays silent for those.
+- `view_session.rviz` — RobotModel + camera RGB + depth-cloud displays, fixed
+  frame `odom` (so the robot traverses a fixed ground grid).
+
+`view_session.launch.py` wires all three (+ rviz2) together.
+
+### One-time host setup (until reboot)
+Local replay needs the ROS 2 processes to discover each other over **loopback**.
+The `unitree_ros2` overlay pins DDS to the robot NIC, and loopback isn't
+multicast-capable by default, so enable it once:
+
+```bash
+sudo ip link set lo multicast on
+```
+
+### Every terminal
+Source ROS 2 + the overlay, then `viewer_env.sh` (**last**, so it overrides the
+overlay's DDS config for local loopback and resets the stale `ros2` daemon):
+
+```bash
+cd ~/Go2_RL_workflow/Go2RemoteConnection
+source /opt/ros/humble/setup.bash
+source ~/unitree_ros2/install/setup.bash
+source src/go2_remote_connection/recording/viewer_env.sh   # prints "... multicast, domain 0. Daemon reset."
+```
+
+### Run it (two terminals, both sourced as above)
+```bash
+# Terminal A — viewer (bridge + robot_state_publisher + RViz)
+ros2 launch src/go2_remote_connection/recording/view_session.launch.py
+
+# Terminal B — play the bag (Terminal A does NOT play it)
+ros2 bag play sessions/<UTCdate>_<name>/bag --loop
+```
+Handy: `-r 0.5` (half speed), `-p` (start paused; SPACE=play, s=step). If a live
+Go2 is on the same domain, add `-x '/lowcmd'` so replayed commands never reach it.
+
+### Verify (third sourced terminal)
+```bash
+ros2 node list                        # rviz, robot_state_publisher, lowstate_to_jointstate, rosbag2_player
+ros2 topic echo /joint_states --once  # 12 named joints with positions
+```
+
+### Gotchas learned the hard way
+- **`ros2 node list` empty / `echo` "Could not determine the type"** — the `ros2`
+  CLI daemon cached a stale DDS config. `viewer_env.sh` runs `ros2 daemon stop`
+  on source; if you changed configs mid-session, run `ros2 daemon stop` manually.
+- **Nothing discovers anything** — re-source `viewer_env.sh` in *every* terminal
+  (including the launch) and confirm it prints `multicast, domain 0`, not the
+  ⚠️ "not multicast-capable" warning (→ redo the `sudo ip link` step).
+- **Fixed frame** is `odom` (robot moves in space). Switch to `base_link` in
+  RViz — or launch with `base_motion:=false` — to view it on the spot. Note the
+  URDF root is `base_link`, not `base`.
+- **Camera displays empty** — the session was recorded without `--camera`; only
+  joints are in the bag. They populate automatically for `--camera` sessions.
 
 ## Before your first real record
 1. `ros2 topic list` must show `/lowstate` and `/sportmodestate` — confirms the
