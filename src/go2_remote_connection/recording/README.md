@@ -82,6 +82,48 @@ Recorded camera topics: `$GO2_CLOUD_TOPIC` (raw cloud, reprocessable),
 `/go2/camera/color/image_raw` + `camera_info` (set `GO2_RECORD_RGB=0` to skip),
 and `/tf` + `/tf_static` (to rebuild the cloud in the base frame offline).
 
+## 1c. Copy a session from the Go2 to your laptop
+
+The recorder writes to the robot's **onboard computer** (Jetson Orin), under its
+own checkout at `~/Go2_RL_workflow/Go2RemoteConnection/sessions/`. Exporting
+([§2](#2-export-to-parquet)) and replaying ([§3](#3-replay-a-session-in-rviz)) run
+on the **laptop**, so copy the session directory across first. Copy the *whole*
+`<UTCdate>_<name>/` folder — the `bag/` **and** its `session_metadata.yaml` — so
+the joint-order / gains contract travels with the data.
+
+The robot is reachable at **`192.168.123.18`** over the Go2 wired ethernet (the
+same address that serves the web app); over wifi, use its `wlan0` IP instead (run
+`ip -br a` on the robot to find it). Use `unitree@…` or whatever the Jetson login is.
+
+**`rsync` (preferred — resumes if the link drops, shows progress).** Bags are
+large (~325 MB for ~4 min at 50 Hz), so a resumable transfer matters:
+
+```bash
+# on the laptop, from the workspace root
+cd ~/Go2_RL_workflow/Go2RemoteConnection
+rsync -avP \
+    unitree@192.168.123.18:'~/Go2_RL_workflow/Go2RemoteConnection/sessions/20260713T054223Z_flat_walk_01' \
+    sessions/
+```
+
+`-a` preserves timestamps/permissions, `-v` is verbose, `-P` shows progress and
+keeps partial files so a re-run resumes. To pull **every** session not yet on the
+laptop, sync the whole folder (trailing slash on the source):
+
+```bash
+rsync -avP unitree@192.168.123.18:'~/Go2_RL_workflow/Go2RemoteConnection/sessions/' sessions/
+```
+
+**`scp` alternative** (no resume — restart from scratch if it drops):
+
+```bash
+scp -r unitree@192.168.123.18:'~/Go2_RL_workflow/Go2RemoteConnection/sessions/20260713T054223Z_flat_walk_01' sessions/
+```
+
+After copying, the `sessions/<UTCdate>_<name>/…` paths in §2 and §3 refer to the
+**laptop** copy. Leave the originals on the robot until you've confirmed the copy
+exports/replays cleanly, then delete them there to reclaim space.
+
 ## 2. Export to Parquet
 
 Runs in the **ROS 2 Humble env** (deserialising `unitree_go` messages needs the
@@ -120,8 +162,9 @@ dataset. `session_metadata.yaml` records the mapping and gains for reference.
 ## 3. Replay a session in RViz
 
 Watch a recorded session play back with the Go2 articulating (and camera, for
-`--camera` sessions). `ros2 bag play` just re-publishes the recorded topics; the
-viewer turns them into a moving robot:
+`--camera` sessions). This runs on the **laptop**, so copy the session across
+first ([§1c](#1c-copy-a-session-from-the-go2-to-your-laptop)). `ros2 bag play`
+just re-publishes the recorded topics; the viewer turns them into a moving robot:
 
 - `lowstate_to_jointstate.py` — `/lowstate` (`unitree_go/LowState`) → name-keyed
   `sensor_msgs/JointState` on `/joint_states` (RViz can't animate from `LowState`).
@@ -186,6 +229,59 @@ ros2 topic echo /joint_states --once  # 12 named joints with positions
   URDF root is `base_link`, not `base`.
 - **Camera displays empty** — the session was recorded without `--camera`; only
   joints are in the bag. They populate automatically for `--camera` sessions.
+
+## 4. Inventory of recorded runs
+
+Sessions recorded so far, under `sessions/` (i.e.
+`~/Go2_RL_workflow/Go2RemoteConnection/sessions/`). Each holds a `bag/` (raw,
+replayable ground truth) + `session_metadata.yaml` (drive mode, terrain, notes,
+git SHA, joint-order/gains contract). Keep this table updated as you record more —
+one row per session, so the AMP dataset glob stays legible.
+
+| Session dir | Date (UTC) | Mode | Terrain | Duration | Camera | Dataset built? | Notes |
+|---|---|---|---|---|---|---|---|
+| `20260713T054223Z_flat_walk_01` | 2026-07-13 05:42 | both | lab floor | ~4 m 21 s | no | ✗ (bag only) | "Recommended path" — figure-8 / comfortable pace, sport + RL. git `2251000` |
+
+*(Message counts for `flat_walk_01`: 130 120 `/lowstate`, 77 270 `/sportmodestate`,
+128 590 `/lowcmd`, 2 231 `/web_teleop`; bag ≈ 325 MB. Joint-only — no `hs_*`
+height-scan columns, so the RViz camera displays stay empty on replay.)*
+
+### Replaying a run from the inventory
+
+**Watch it in RViz** — follow [§3](#3-replay-a-session-in-rviz); substitute the
+session dir from the table:
+
+```bash
+cd ~/Go2_RL_workflow/Go2RemoteConnection
+# (each terminal) source ROS 2 + overlay + viewer_env.sh — see §3
+# Terminal A:
+ros2 launch src/go2_remote_connection/recording/view_session.launch.py
+# Terminal B:
+ros2 bag play sessions/20260713T054223Z_flat_walk_01/bag --loop
+```
+
+**Turn it into AMP data** — a bag with no `dataset.parquet` yet (like
+`flat_walk_01` above) must first be exported ([§2](#2-export-to-parquet)), then
+folded into the reference motion by the AMP module's `build_amp_dataset.py`:
+
+```bash
+# 1) export (this ROS 2 Humble env — needs the unitree_ros2 message defs)
+python3 src/go2_remote_connection/recording/bag_to_dataset.py \
+    sessions/20260713T054223Z_flat_walk_01/bag \
+    --out sessions/20260713T054223Z_flat_walk_01/dataset.parquet --rate 50
+
+# 2) build the reference npz from every session's Parquet (env_isaaclab)
+cd ~/Go2_RL_workflow/training
+python amp/build_amp_dataset.py \
+    ~/Go2_RL_workflow/Go2RemoteConnection/sessions/*/dataset.parquet \
+    --out amp/data/amp_motion.npz
+```
+
+`build_amp_dataset.py` records a per-clip boundary (`starts`) for each Parquet, so
+combining several sessions never samples a transition across two recordings —
+prefer several clean short sessions over one long bag. See the AMP pipeline doc,
+[real_to_sim_imitation_learning.md](../../../../Doccuments/real_to_sim_imitation_learning.md),
+for how this data becomes a base policy.
 
 ## Before your first real record
 1. `ros2 topic list` must show `/lowstate` and `/sportmodestate` — confirms the

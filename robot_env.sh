@@ -45,6 +45,8 @@ export CYCLONEDDS_URI="<CycloneDDS><Domain><General><Interfaces><NetworkInterfac
 
 # 4. Reset the ros2 CLI daemon so `ros2 topic/node list` re-reads THIS config
 #    instead of a cached view from an earlier (mismatched) shell.
-ros2 daemon stop >/dev/null 2>&1 || true
+# Bounded so a wedged daemon or slow ros2-CLI entry-point scan can't hang the
+# source. If it times out the daemon still gets replaced on the next ros2 call.
+timeout 15 ros2 daemon stop >/dev/null 2>&1 || true
 
 echo "[robot_env] ROS_DOMAIN_ID=$ROS_DOMAIN_ID  RMW=$RMW_IMPLEMENTATION  UNITREE_IFACE=$UNITREE_IFACE  (daemon reset)"

@@ -29,7 +29,9 @@ export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterfac
 # robot overlay), `ros2 node list` / `ros2 topic echo` report a stale/empty
 # graph even though node-to-node data flows fine. Reset it so the next ros2
 # command restarts it under THIS config.
-ros2 daemon stop >/dev/null 2>&1 || true
+# Bounded so a wedged daemon or slow ros2-CLI entry-point scan can't hang the
+# source. If it times out the daemon still gets replaced on the next ros2 call.
+timeout 15 ros2 daemon stop >/dev/null 2>&1 || true
 
 if ip link show lo 2>/dev/null | grep -qw MULTICAST; then
   echo "[viewer_env] DDS -> loopback (lo) multicast, domain 0. Daemon reset. Robot NIC ignored."
