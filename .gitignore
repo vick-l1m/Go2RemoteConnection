@@ -18,4 +18,7 @@ __pycache__/
 .idea/
 
 # OS junk
-.DS_Storesessions/
+.DS_Store
+
+# Recorded sessions (large rosbags)
+sessions/
