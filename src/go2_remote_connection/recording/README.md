@@ -232,54 +232,10 @@ ros2 topic echo /joint_states --once  # 12 named joints with positions
 
 ## 4. Inventory of recorded runs
 
-Sessions recorded so far, under `sessions/` (i.e.
-`~/Go2_RL_workflow/Go2RemoteConnection/sessions/`). Each holds a `bag/` (raw,
-replayable ground truth) + `session_metadata.yaml` (drive mode, terrain, notes,
-git SHA, joint-order/gains contract). Keep this table updated as you record more —
-one row per session, so the AMP dataset glob stays legible.
-
-| Session dir | Date (UTC) | Mode | Terrain | Duration | Camera | Dataset built? | Notes |
-|---|---|---|---|---|---|---|---|
-| `20260713T054223Z_flat_walk_01` | 2026-07-13 05:42 | both | lab floor | ~4 m 21 s | no | ✗ (bag only) | "Recommended path" — figure-8 / comfortable pace, sport + RL. git `2251000` |
-
-*(Message counts for `flat_walk_01`: 130 120 `/lowstate`, 77 270 `/sportmodestate`,
-128 590 `/lowcmd`, 2 231 `/web_teleop`; bag ≈ 325 MB. Joint-only — no `hs_*`
-height-scan columns, so the RViz camera displays stay empty on replay.)*
-
-### Replaying a run from the inventory
-
-**Watch it in RViz** — follow [§3](#3-replay-a-session-in-rviz); substitute the
-session dir from the table:
-
-```bash
-cd ~/Go2_RL_workflow/Go2RemoteConnection
-# (each terminal) source ROS 2 + overlay + viewer_env.sh — see §3
-# Terminal A:
-ros2 launch src/go2_remote_connection/recording/view_session.launch.py
-# Terminal B:
-ros2 bag play sessions/20260713T054223Z_flat_walk_01/bag --loop
-```
-
-**Turn it into AMP data** — a bag with no `dataset.parquet` yet (like
-`flat_walk_01` above) must first be exported ([§2](#2-export-to-parquet)), then
-folded into the reference motion by the AMP module's `build_amp_dataset.py`:
-
-```bash
-# 1) export (this ROS 2 Humble env — needs the unitree_ros2 message defs)
-python3 src/go2_remote_connection/recording/bag_to_dataset.py \
-    sessions/20260713T054223Z_flat_walk_01/bag \
-    --out sessions/20260713T054223Z_flat_walk_01/dataset.parquet --rate 50
-
-# 2) build the reference npz from every session's Parquet (env_isaaclab)
-cd ~/Go2_RL_workflow/training
-python amp/build_amp_dataset.py \
-    ~/Go2_RL_workflow/Go2RemoteConnection/sessions/*/dataset.parquet \
-    --out amp/data/amp_motion.npz
-```
-
-`build_amp_dataset.py` records a per-clip boundary (`starts`) for each Parquet, so
-combining several sessions never samples a transition across two recordings —
-prefer several clean short sessions over one long bag. See the AMP pipeline doc,
+The catalogue of every recorded session — names, dates, file locations, exact
+replay commands, and AMP-export commands — now lives in
+[Doccuments/Imitation_Learning_Inventory.md](../../../../Doccuments/Imitation_Learning_Inventory.md).
+Add a row there whenever you record a new session. See the AMP pipeline doc,
 [real_to_sim_imitation_learning.md](../../../../Doccuments/real_to_sim_imitation_learning.md),
 for how this data becomes a base policy.
 

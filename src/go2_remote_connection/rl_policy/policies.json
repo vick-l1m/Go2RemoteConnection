@@ -38,6 +38,16 @@
       "path": "policies/flat_custom.onnx"
     },
     {
+      "id": "flat_amp",
+      "name": "Flat terrain (AMP imitation)",
+      "model": "AMP imitation-reward · unitree_go2_flat_amp · 2026-07-27_17-25-44 (style_weight 0.1)",
+      "type": "blind",
+      "obs_dim": 48,
+      "uses_heightmap": false,
+      "runnable": true,
+      "path": "policies/flat_amp.onnx"
+    },
+    {
       "id": "rough",
       "name": "Rough terrain (height-scan)",
       "model": "RSL-RL PPO · unitree_go2_rough",
