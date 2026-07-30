@@ -330,6 +330,36 @@ Author: Victor Lim
 
     .sectionLabel { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; color: var(--text-faint); text-transform: uppercase; margin-top: 2px; }
 
+    /* Collapsible section header (Gait options in the Movement component). */
+    .sectionToggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      flex: none;
+      padding: 7px 11px;
+      background: rgba(0, 0, 0, 0.18);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-faint);
+      text-align: left;
+    }
+    .sectionToggle:hover { color: var(--cyan); border-color: var(--line-2); box-shadow: none; }
+    .sectionToggle .chev { display: inline-block; font-size: 9px; transition: transform .18s ease; }
+    .sectionToggle.collapsed .chev { transform: rotate(-90deg); }
+    .sectionToggle .countPill {
+      margin-left: auto;
+      padding: 1px 8px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--line);
+      font-size: 9px;
+      letter-spacing: 0.06em;
+    }
+
     /* ---------------- custom actions ---------------- */
     .addCustomBtn {
       border-style: dashed;
@@ -557,8 +587,13 @@ Author: Victor Lim
                 <canvas id="joyMoveRight" class="joyCanvas"></canvas>
               </div>
             </div>
-            <div class="sectionLabel">Gait</div>
-            <div class="btnGrid">
+            <button class="sectionToggle" id="gaitToggle" onclick="toggleGait()"
+                    aria-expanded="true" aria-controls="gaitGrid">
+              <span class="chev">&#9662;</span>
+              <span>Gait options</span>
+              <span class="countPill" id="gaitCount"></span>
+            </button>
+            <div class="btnGrid" id="gaitGrid">
               <button onclick="postAction('economic_gait')">EconomicGait</button>
               <button onclick="postAction('trot_run')">TrotRun</button>
               <button onclick="postAction('switch_avoid')">AvoidMode</button>
@@ -1128,6 +1163,40 @@ Author: Victor Lim
     }
 
     /* =====================================================================
+       Gait options collapse (Movement component)
+       ===================================================================== */
+
+    const GAIT_KEY = "p2dingo_gait_open_v1";
+    let gaitOpen = true;
+
+    function loadGaitState() {
+      try {
+        const v = JSON.parse(localStorage.getItem(GAIT_KEY));
+        if (typeof v === "boolean") gaitOpen = v;
+      } catch (_) {}
+      const grid = document.getElementById("gaitGrid");
+      document.getElementById("gaitCount").textContent =
+        String(grid.querySelectorAll("button").length);
+      applyGaitState();
+    }
+
+    function applyGaitState() {
+      const grid = document.getElementById("gaitGrid");
+      const btn = document.getElementById("gaitToggle");
+      grid.style.display = gaitOpen ? "" : "none";     // "" restores the grid display
+      btn.classList.toggle("collapsed", !gaitOpen);
+      btn.setAttribute("aria-expanded", String(gaitOpen));
+      // Joysticks flex into the freed space; make their canvases re-measure.
+      window.dispatchEvent(new Event("resize"));
+    }
+
+    function toggleGait() {
+      gaitOpen = !gaitOpen;
+      localStorage.setItem(GAIT_KEY, JSON.stringify(gaitOpen));
+      applyGaitState();
+    }
+
+    /* =====================================================================
        Custom actions (visual only — no backend calls)
        ===================================================================== */
 
@@ -1230,6 +1299,7 @@ Author: Victor Lim
     window.addEventListener("DOMContentLoaded", async () => {
       loadLayout();
       wireCanvas();
+      loadGaitState();
       loadCustomActions();
 
       await Go2Shared.init({ defaultApi: window.location.origin, showAuthButtons: true, showNav: false });
