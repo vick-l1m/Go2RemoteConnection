@@ -1,16 +1,27 @@
 <!--
 P2Dingo_controller.html
 
-This is a standalone controller page for the Unitree P2Dingo robot, built on top of the
-Go2 remote connection framework. It provides teleoperation controls, action buttons, and camera streaming features.
-It contains functions:
-- Teleoperation via on-screen joysticks
-- Action commands for various robot behaviors
-- Posing and movement modes
-- Camera streaming with front camera and YOLO object detection options
-- Toggleable panels for terminal and camera views
+Public-facing controller page for the Unitree Go2 (P2Dingo deployment), styled to
+match www.p2agentx.com (dark #24272e, Montserrat, cyan #5aecf0 -> #1aa7ec accents).
 
-Version 1.2
+The page is a component canvas:
+- Components (Movement, Posing, Actions, Custom Actions, Terminal, Camera) can be
+  opened/closed from the top bar, dragged by their header, and resized from the
+  bottom-right handle. A 12-column snap grid reflows neighbours so nothing overlaps.
+- Layout persists to localStorage; "Reset layout" restores the default arrangement.
+- Below 820px the canvas becomes a vertical stack (drag header to reorder).
+- Custom Actions is visual-only: its buttons ("Return to base", "Begin mapping",
+  "Move to cell __", and any user-added ones) do not call the backend.
+
+UI-only revision of the original controller: every backend call (teleop, actions,
+modes, safety, camera/YOLO/terminal websockets) is unchanged. shared.js is reused
+for auth/HTTP/terminal; the joystick, STOP-confirm dialog and status display are
+re-implemented locally because the shared versions hardcode light-theme colors.
+
+No debugging output is shown (no API base, endpoints, frame counters); shared.js
+setStatus is overridden with a toast that drops the diagnostic detail string.
+
+Version 2.0
 Author: Victor Lim
 -->
 
@@ -19,9 +30,14 @@ Author: Victor Lim
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>P2Dingo Controller</title>
+  <meta name="theme-color" content="#24272e" />
+  <title>P2Dingo Controller | P2AgentX</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='%2324272e' stroke='%235aecf0' stroke-width='3'/%3E%3C/svg%3E" />
 
-  <link rel="stylesheet" href="/app/static/shared.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+
   <script src="/app/static/shared.js"></script>
 
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
@@ -29,232 +45,1163 @@ Author: Victor Lim
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
 
   <style>
-    .viewSection { margin-top: 12px; display: none; }
-    .viewSection.open { display: block; }
-    .camPanel { margin-top: 12px; border: 1px solid var(--soft-border); border-radius: var(--radius); overflow: hidden; background: #fff; }
-    .camHeader, .sectionHeader { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: var(--soft-2); border-bottom: 1px solid var(--soft-border); }
-    .camTitle, .sectionTitle { font-size: 14px; font-weight: 600; }
-    .camHint, .sectionHint { color: #777; }
-    .camViewport { width: 100%; aspect-ratio: 16 / 9; background: #000; overflow: hidden; }
-    #camImg { width: 100%; height: 100%; display: block; object-fit: contain; background: #000; }
-    @media (min-width: 1200px) { .camViewport { max-width: 920px; margin: 0 auto; } }
-    .topControls { align-items: center; flex-wrap: wrap; }
-    .toggleBtnOpen { outline: 2px solid rgba(0,0,0,0.08); }
-    .hiddenPanel { display: none; }
-    .modeBanner { margin-top: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .actionPanelNote { margin-top: 8px; color: #666; }
-    .modalOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: none; align-items: center; justify-content: center; z-index: 10000; }
-    .modalCard { width: min(420px, 92vw); background: #fff; border-radius: var(--radius); padding: 16px; border: 1px solid var(--border); }
+    :root {
+      --bg: #24272e;
+      --paper: #1a1d24;
+      --paper-2: #2a2e36;
+      --line: rgba(255, 255, 255, 0.08);
+      --line-2: rgba(255, 255, 255, 0.16);
+      --text: #ffffff;
+      --text-dim: rgba(255, 255, 255, 0.55);
+      --text-faint: rgba(255, 255, 255, 0.35);
+      --cyan: #5aecf0;
+      --cyan-2: #1aa7ec;
+      --cyan-soft: rgba(90, 236, 240, 0.12);
+      --cyan-glow: rgba(90, 236, 240, 0.3);
+      --red: #ff5a6a;
+      --red-soft: rgba(255, 90, 106, 0.12);
+      --amber: #f7ce46;
+      --radius: 12px;
+      --radius-pill: 30px;
+      --topbar-h: 58px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { height: 100%; }
+
+    body {
+      margin: 0;
+      background-color: var(--bg);
+      background-image:
+        radial-gradient(1100px 500px at 85% -10%, rgba(26, 167, 236, 0.08), transparent 60%),
+        radial-gradient(900px 420px at 0% 110%, rgba(90, 236, 240, 0.05), transparent 60%);
+      color: var(--text);
+      font-family: "Montserrat", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #ffffff0d; border-radius: 10px; }
+    ::-webkit-scrollbar-thumb { background: #ffffff1a; border-radius: 10px; }
+    ::-webkit-scrollbar-thumb:hover { background: #fff3; }
+    ::placeholder { color: #ffffff80 !important; opacity: 1; }
+    button:focus, input:focus { outline: none; }
+
+    button {
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+      background: var(--paper-2);
+      border: 1px solid var(--line-2);
+      border-radius: var(--radius);
+      padding: 9px 14px;
+      cursor: pointer;
+      transition: border-color .15s, background .15s, box-shadow .15s, transform .05s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    button:hover { border-color: var(--cyan); box-shadow: 0 0 12px rgba(90, 236, 240, 0.15); }
+    button:active { transform: scale(0.98); }
+    button:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
+
+    input[type="text"], input[type="password"] {
+      font-family: inherit;
+      font-size: 13px;
+      color: var(--text);
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--line-2);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+    }
+    input[type="text"]:focus, input[type="password"]:focus { border-color: var(--cyan); }
+
+    /* ---------------- top bar ---------------- */
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 500;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: var(--topbar-h);
+      padding: 8px 16px;
+      background: linear-gradient(180deg, rgba(26, 29, 36, 0.97), rgba(26, 29, 36, 0.88));
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--line);
+      flex-wrap: wrap;
+    }
+
+    .brand { display: flex; align-items: baseline; gap: 10px; margin-right: 8px; white-space: nowrap; }
+    .brandName {
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      background: linear-gradient(90deg, var(--cyan), var(--cyan-2));
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      text-shadow: 0 0 18px var(--cyan-glow);
+    }
+    .brandSub { font-size: 12px; font-weight: 400; color: var(--text-dim); letter-spacing: 0.02em; }
+
+    .chipRow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .chip {
+      font-size: 12px;
+      padding: 7px 13px;
+      border-radius: var(--radius-pill);
+      background: transparent;
+      border: 1px solid var(--line-2);
+      color: var(--text-dim);
+    }
+    .chip.on {
+      color: var(--cyan);
+      border-color: var(--cyan);
+      background: var(--cyan-soft);
+      box-shadow: 0 0 10px rgba(90, 236, 240, 0.12);
+    }
+
+    .topbarSpacer { flex: 1; }
+
+    .stopBtn {
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      padding: 10px 22px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--red);
+      background: var(--red-soft);
+      color: var(--red);
+    }
+    .stopBtn:hover { box-shadow: 0 0 14px rgba(255, 90, 106, 0.35); border-color: var(--red); }
+    .stopBtn.latched {
+      border-color: var(--cyan);
+      background: var(--cyan-soft);
+      color: var(--cyan);
+      animation: pulseResume 1.6s ease-in-out infinite;
+    }
+    @keyframes pulseResume {
+      0%, 100% { box-shadow: 0 0 6px rgba(90, 236, 240, 0.2); }
+      50% { box-shadow: 0 0 16px rgba(90, 236, 240, 0.45); }
+    }
+
+    .iconBtn {
+      width: 36px; height: 36px;
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 0;
+      border-radius: 50%;
+      background: transparent;
+      border: 1px solid var(--line-2);
+      color: var(--text-dim);
+      font-size: 15px;
+    }
+    .iconBtn:hover { color: var(--cyan); }
+
+    /* ---------------- canvas + components ---------------- */
+    .canvasWrap { padding: 14px; }
+    #canvas { position: relative; width: 100%; }
+
+    .comp {
+      position: absolute;
+      display: flex;
+      flex-direction: column;
+      background: linear-gradient(135deg, var(--paper-2) 0%, var(--paper) 100%);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      transition: top .18s ease, left .18s ease, width .18s ease, height .18s ease, box-shadow .18s, border-color .18s;
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
+    }
+    .comp.dragging, .comp.resizing {
+      transition: box-shadow .18s;
+      z-index: 400;
+      border-color: var(--cyan);
+      box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5), 0 0 18px rgba(90, 236, 240, 0.18);
+      opacity: 0.94;
+    }
+    .comp.hiddenComp { display: none; }
+
+    .compHeader {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      background: rgba(0, 0, 0, 0.18);
+      border-bottom: 1px solid var(--line);
+      cursor: grab;
+      user-select: none;
+      touch-action: none;
+      flex: none;
+    }
+    .compHeader:active { cursor: grabbing; }
+    .compTitle { font-size: 13px; font-weight: 600; letter-spacing: 0.03em; }
+    .compHeader .gripDots { color: var(--text-faint); font-size: 11px; letter-spacing: 2px; }
+
+    .modeChip {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      padding: 3px 10px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--line-2);
+      background: transparent;
+      color: var(--text-faint);
+      cursor: pointer;
+    }
+    .modeChip.live {
+      color: var(--cyan);
+      border-color: var(--cyan);
+      background: var(--cyan-soft);
+      text-shadow: 0 0 8px var(--cyan-glow);
+    }
+
+    .previewChip {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      padding: 3px 10px;
+      border-radius: var(--radius-pill);
+      border: 1px solid rgba(247, 206, 70, 0.4);
+      color: var(--amber);
+    }
+
+    .compSpacer { flex: 1; }
+
+    .closeBtn {
+      width: 24px; height: 24px;
+      padding: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+      border: none;
+      background: transparent;
+      color: var(--text-faint);
+      font-size: 15px;
+      line-height: 1;
+    }
+    .closeBtn:hover { color: var(--red); box-shadow: none; }
+
+    .compBody { flex: 1; min-height: 0; padding: 12px; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+
+    .resizeHandle {
+      position: absolute;
+      right: 0; bottom: 0;
+      width: 22px; height: 22px;
+      cursor: nwse-resize;
+      touch-action: none;
+    }
+    .resizeHandle::after {
+      content: "";
+      position: absolute;
+      right: 5px; bottom: 5px;
+      width: 9px; height: 9px;
+      border-right: 2px solid var(--text-faint);
+      border-bottom: 2px solid var(--text-faint);
+      border-radius: 1px;
+    }
+    .comp:hover .resizeHandle::after { border-color: var(--cyan); }
+
+    /* ---------------- joysticks ---------------- */
+    .joyRow { display: flex; gap: 10px; flex: 1; min-height: 150px; }
+    .joyBox { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .joyLabel { font-size: 10px; color: var(--text-faint); letter-spacing: 0.04em; text-align: center; margin-bottom: 4px; }
+    .joyCanvas {
+      flex: 1;
+      width: 100%;
+      min-height: 130px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background:
+        radial-gradient(circle at 50% 50%, rgba(90, 236, 240, 0.05), transparent 65%),
+        rgba(0, 0, 0, 0.2);
+      touch-action: none;
+    }
+
+    /* ---------------- button grids ---------------- */
+    .btnGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+    .btnGrid button { padding: 9px 8px; font-size: 12px; }
+    .btnGrid button.toggleOn {
+      border-color: var(--cyan);
+      color: var(--cyan);
+      background: var(--cyan-soft);
+    }
+    .btnGrid button.dangerBtn { border-color: rgba(255, 90, 106, 0.4); color: #ffb3bb; }
+    .btnGrid button.dangerBtn:hover { border-color: var(--red); box-shadow: 0 0 12px rgba(255, 90, 106, 0.2); }
+
+    .sectionLabel { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; color: var(--text-faint); text-transform: uppercase; margin-top: 2px; }
+
+    /* ---------------- custom actions ---------------- */
+    .addCustomBtn {
+      border-style: dashed;
+      color: var(--text-dim);
+      font-weight: 600;
+    }
+    .addCustomBtn:hover { color: var(--cyan); }
+    .customList { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+    .customBtn {
+      position: relative;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      min-height: 40px;
+      background: linear-gradient(135deg, rgba(90, 236, 240, 0.07), rgba(26, 167, 236, 0.05));
+      border: 1px solid var(--line-2);
+      border-radius: var(--radius);
+      padding: 8px 10px;
+      font-size: 12px; font-weight: 500;
+      cursor: pointer;
+      user-select: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .customBtn:hover { border-color: var(--cyan); }
+    .customBtn.flash { animation: customFlash .45s ease; }
+    @keyframes customFlash {
+      0% { box-shadow: 0 0 0 rgba(90, 236, 240, 0); }
+      35% { box-shadow: 0 0 18px rgba(90, 236, 240, 0.55); border-color: var(--cyan); }
+      100% { box-shadow: 0 0 0 rgba(90, 236, 240, 0); }
+    }
+    .customBtn .editLabel { min-width: 40px; outline: none; }
+    .customBtn .editLabel:empty::before { content: "New action…"; color: var(--text-faint); }
+    .customBtn .cellInput {
+      width: 52px;
+      padding: 4px 6px;
+      font-size: 12px;
+      text-align: center;
+      border-radius: 8px;
+    }
+    .customBtn .rmBtn {
+      position: absolute;
+      top: -7px; right: -7px;
+      width: 18px; height: 18px;
+      padding: 0;
+      display: none;
+      align-items: center; justify-content: center;
+      border-radius: 50%;
+      background: var(--paper);
+      border: 1px solid var(--line-2);
+      color: var(--text-dim);
+      font-size: 11px; line-height: 1;
+    }
+    .customBtn:hover .rmBtn { display: inline-flex; }
+    .customBtn .rmBtn:hover { color: var(--red); border-color: var(--red); box-shadow: none; }
+
+    /* ---------------- camera ---------------- */
+    .camViewport {
+      flex: 1;
+      min-height: 120px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      background: #000;
+      overflow: hidden;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #camImg { width: 100%; height: 100%; object-fit: contain; display: none; }
+    .camPlaceholder { color: var(--text-faint); font-size: 12px; letter-spacing: 0.05em; }
+    .camControls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; flex: none; }
+    .statusChip {
+      font-size: 11px;
+      padding: 4px 12px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--line);
+      color: var(--text-dim);
+    }
+    .statusChip.live { color: var(--cyan); border-color: rgba(90, 236, 240, 0.4); }
+
+    .switchLabel { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none; }
+    .switchLabel input { accent-color: var(--cyan); cursor: pointer; }
+
+    /* ---------------- terminal ---------------- */
+    .termBox { flex: 1; min-height: 100px; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--line); background: #0f0f0f; padding: 6px; }
+    .termControls { display: flex; gap: 8px; align-items: center; flex: none; }
+
+    /* ---------------- toast ---------------- */
+    #toast {
+      position: fixed;
+      left: 50%;
+      bottom: 22px;
+      transform: translateX(-50%) translateY(80px);
+      z-index: 900;
+      max-width: min(480px, 88vw);
+      padding: 11px 20px;
+      font-size: 13px;
+      background: var(--paper);
+      border: 1px solid var(--line-2);
+      border-left: 3px solid var(--cyan);
+      border-radius: var(--radius);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+      opacity: 0;
+      transition: transform .25s ease, opacity .25s ease;
+      pointer-events: none;
+    }
+    #toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+    #toast.bad { border-left-color: var(--red); }
+
+    /* ---------------- modals / login ---------------- */
+    .overlay {
+      position: fixed; inset: 0;
+      z-index: 1000;
+      display: none;
+      align-items: center; justify-content: center;
+      background: rgba(10, 12, 16, 0.72);
+      backdrop-filter: blur(6px);
+      padding: 20px;
+    }
+    .modalCard {
+      width: min(400px, 92vw);
+      background: linear-gradient(135deg, var(--paper-2) 0%, var(--paper) 100%);
+      border: 1px solid var(--line-2);
+      border-radius: var(--radius);
+      padding: 22px;
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+    }
+    .modalCard h2 { margin: 0 0 8px; font-size: 17px; font-weight: 600; }
+    .modalCard .modalText { font-size: 13px; color: var(--text-dim); margin-bottom: 16px; }
+    .modalRow { display: flex; gap: 10px; justify-content: flex-end; }
+    .confirmDangerBtn { border-color: var(--red); color: var(--red); background: var(--red-soft); font-weight: 600; }
+    .confirmDangerBtn:hover { box-shadow: 0 0 14px rgba(255, 90, 106, 0.3); border-color: var(--red); }
+
+    .loginCardBrand { margin-bottom: 14px; }
+    .loginForm { display: flex; flex-direction: column; gap: 10px; }
+    .unlockBtn {
+      background: linear-gradient(90deg, var(--cyan), var(--cyan-2));
+      border: none;
+      color: #0c1216;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+    .unlockBtn:hover { box-shadow: 0 0 18px rgba(90, 236, 240, 0.4); }
+    .loginMsg { font-size: 12px; color: var(--red); min-height: 16px; }
+
+    #appRoot.appLocked { filter: blur(3px); pointer-events: none; user-select: none; }
+
+    /* ---------------- mobile stack ---------------- */
+    @media (max-width: 820px) {
+      #canvas { display: flex; flex-direction: column; gap: 12px; }
+      .comp { position: static !important; width: 100% !important; height: auto !important; }
+      .comp .compBody { min-height: 140px; }
+      .comp[data-comp="movement"] .compBody, .comp[data-comp="posing"] .compBody { min-height: 250px; }
+      .comp[data-comp="camera"] .compBody { min-height: 260px; }
+      .comp[data-comp="terminal"] .compBody { min-height: 260px; }
+      .resizeHandle { display: none; }
+      .brandSub { display: none; }
+    }
   </style>
 </head>
 
 <body>
-  <div id="loginOverlay" class="loginOverlay">
-    <div class="loginCard">
-      <h2>Connect to P2Dingo</h2>
+  <!-- login overlay: ids kept for shared.js (loginOverlay/loginBaseUrl/loginToken/loginMsg).
+       The backend URL is intentionally hidden on this public page and pinned to the
+       page origin — visitors never see or set the API address. -->
+  <div id="loginOverlay" class="overlay">
+    <div class="modalCard">
+      <div class="loginCardBrand brand">
+        <span class="brandName">P2AgentX</span>
+        <span class="brandSub">P2Dingo Controller</span>
+      </div>
       <div class="loginForm">
-        <input id="loginBaseUrl" placeholder="https://p2dingo-control-backend.p2agentx.com" />
+        <input id="loginBaseUrl" type="hidden" />
         <input id="loginToken" placeholder="Password" type="password" />
-        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#333;">
+        <label class="switchLabel">
           <input id="showPw" type="checkbox" onclick="Go2Shared.togglePasswordVisibility()" />
           Show password
         </label>
-        <button id="unlockBtn" onclick="loginAndStart()">Unlock</button>
+        <button id="unlockBtn" class="unlockBtn" onclick="loginAndStart()">Unlock</button>
         <div id="loginMsg" class="loginMsg"></div>
-        <div class="loginTip">Default deployment uses the current page origin.</div>
       </div>
     </div>
   </div>
 
   <div id="appRoot">
-    <div class="card">
-      <h1>Unitree Go2 – P2Dingo Controller</h1>
+    <input id="baseUrl" type="hidden" />
 
-      <div class="row topControls">
-        <input id="baseUrl" placeholder="https://p2dingo-control-backend.p2agentx.com" />
-        <button onclick="Go2Shared.checkHealth()">Health</button>
-        <button onclick="postAction('stand')">Stand</button>
-        <button onclick="postAction('sit')">Sit</button>
-
-        <button id="btnModePosing" onclick="setMode('posing')">Posing</button>
-        <button id="btnModeActions" onclick="setMode('actions')">Actions</button>
-        <button id="btnModeMovement" onclick="setMode('movement')">Movement</button>
-
-        <button id="btnTerminalToggle" onclick="toggleTerminalPanel()">Terminal</button>
-        <button id="btnCameraToggle" onclick="toggleCameraPanel()">Camera</button>
-
-        <span id="modePill" class="pill">mode: movement</span>
-
-        <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
-        <button onclick="Go2Shared.logout()">Logout</button>
+    <div class="topbar">
+      <div class="brand">
+        <span class="brandName">P2AgentX</span>
+        <span class="brandSub">P2Dingo Controller</span>
       </div>
 
-      <div class="small hint">
-        UI host: <span id="uiHost" class="mono"></span><br />
-        API base: <span id="apiHost" class="mono"></span>
+      <div class="chipRow" id="chipRow">
+        <button class="chip" data-toggle="movement">Movement</button>
+        <button class="chip" data-toggle="posing">Posing</button>
+        <button class="chip" data-toggle="actions">Actions</button>
+        <button class="chip" data-toggle="custom">Custom Actions</button>
+        <button class="chip" data-toggle="camera">Camera</button>
+        <button class="chip" data-toggle="terminal">Terminal</button>
       </div>
 
-      <div class="modeBanner">
-        <span class="pill">Standalone P2Dingo controller</span>
-        <span class="pill">Backend uses current page origin by default</span>
-      </div>
+      <div class="topbarSpacer"></div>
 
-      <div class="joyRow">
-        <div class="joyBox">
-          <div id="joyLeftTitle" class="joyTitle">Left joystick: X=strafe, Y=fwd/back</div>
-          <canvas id="joyLeft" class="joyCanvas"></canvas>
-        </div>
-        <div class="joyBox">
-          <div id="joyRightTitle" class="joyTitle">Right joystick: X=turn (yaw)</div>
-          <canvas id="joyRight" class="joyCanvas"></canvas>
-        </div>
-      </div>
+      <button id="safetyToggleBtn" class="stopBtn" onclick="toggleSafety()">STOP</button>
+      <button class="iconBtn" title="Reset layout" onclick="resetLayout()">&#8634;</button>
+      <button class="iconBtn" id="logoutBtn" title="Log out" onclick="Go2Shared.logout()" style="display:none;">&#10162;</button>
+    </div>
 
-      <div id="modePanel" class="panel hiddenPanel">
-        <h2 id="modePanelTitle">Movement mode commands</h2>
-        <div id="movementPanel" class="modeSubPanel">
-          <div class="btnGrid">
-            <button onclick="postAction('economic_gait')">EconomicGait</button>
-            <button onclick="postAction('trot_run')">TrotRun</button>
-            <button onclick="postAction('switch_avoid')">SwitchAvoidMode</button>
-            <button onclick="postAction('cycle_speed')">SpeedLevel (cycle)</button>
-            <button onclick="postAction('freewalk')">FreeWalk</button>
+    <div class="canvasWrap">
+      <div id="canvas">
 
-            <button data-action="toggle_freebound" data-label="FreeBound" onclick="setToggleExclusive('toggle_freebound')">FreeBound</button>
-            <button data-action="toggle_freeavoid" data-label="FreeAvoid" onclick="setToggleExclusive('toggle_freeavoid')">FreeAvoid</button>
-            <button data-action="toggle_crossstep" data-label="CrossStep" onclick="setToggleExclusive('toggle_crossstep')">CrossStep</button>
-            <button data-action="toggle_freejump" data-label="FreeJump" onclick="setToggleExclusive('toggle_freejump')">FreeJump</button>
-            <button data-action="toggle_walkupright" data-label="WalkUpright" onclick="setToggleExclusive('toggle_walkupright')">WalkUpright</button>
-            <button data-action="toggle_handstand" data-label="HandStand" onclick="setToggleExclusive('toggle_handstand')">HandStand</button>
-            <button data-action="toggle_classicwalk" data-label="ClassicWalk" onclick="setToggleExclusive('toggle_classicwalk')">ClassicWalk</button>
-
-            <button onclick="postAction('stop_move')">StopMove</button>
-            <button onclick="postAction('static_walk')">StaticWalk</button>
+        <!-- ============ Movement joysticks ============ -->
+        <div class="comp" data-comp="movement">
+          <div class="compHeader">
+            <span class="gripDots">&#8942;&#8942;</span>
+            <span class="compTitle">Movement</span>
+            <button class="modeChip" data-modechip="movement" onclick="setMode('movement')">Activate</button>
+            <span class="compSpacer"></span>
+            <button class="closeBtn" data-close="movement" title="Close">&#10005;</button>
           </div>
-          <div class="small actionPanelNote">Movement mode uses the normal teleop joystick mapping.</div>
-        </div>
-
-        <div id="posingPanel" class="modeSubPanel" style="display:none;">
-          <div class="btnGrid">
-            <button onclick="postAction('damp')">Damp</button>
-            <button onclick="postAction('balance_stand')">BalanceStand</button>
-          </div>
-          <div class="small actionPanelNote">Posing mode changes the robot mode while keeping the same joystick layout as your movement controller page.</div>
-        </div>
-
-        <div id="actionsPanel" class="modeSubPanel" style="display:none;">
-          <div class="btnGrid">
-            <button onclick="postAction('sit_toggle')">Sit ↔ Stand (toggle)</button>
-            <button onclick="postAction('hello')">Hello</button>
-            <button onclick="postAction('stretch')">Stretch</button>
-            <button onclick="postAction('content')">Content</button>
-            <button onclick="postAction('heart')">Heart</button>
-            <button onclick="postAction('scrape')">Scrape</button>
-            <button onclick="postAction('front_jump')">FrontJump</button>
-
-            <button onclick="postDangerAction('front_pounce')">FrontPounce</button>
-            <button onclick="postDangerAction('front_flip')">FrontFlip</button>
-            <button onclick="postDangerAction('back_flip')">BackFlip</button>
-            <button onclick="postDangerAction('left_flip')">LeftFlip</button>
-
-            <button onclick="postAction('recovery')">RecoveryStand</button>
-          </div>
-          <div class="small actionPanelNote">This panel matches the actions section from the movement controller page.</div>
-        </div>
-      </div>
-
-      <div id="terminalSection" class="viewSection">
-        <div class="termGrid">
-          <div class="termPanel">
-            <div class="termHeader">
-              <div class="termTitle">Shell</div>
-              <div class="termHint" id="termStatus">Disconnected</div>
+          <div class="compBody">
+            <div class="joyRow">
+              <div class="joyBox">
+                <div class="joyLabel">Strafe / Forward</div>
+                <canvas id="joyMoveLeft" class="joyCanvas"></canvas>
+              </div>
+              <div class="joyBox">
+                <div class="joyLabel">Turn</div>
+                <canvas id="joyMoveRight" class="joyCanvas"></canvas>
+              </div>
             </div>
+            <div class="sectionLabel">Gait</div>
+            <div class="btnGrid">
+              <button onclick="postAction('economic_gait')">EconomicGait</button>
+              <button onclick="postAction('trot_run')">TrotRun</button>
+              <button onclick="postAction('switch_avoid')">AvoidMode</button>
+              <button onclick="postAction('cycle_speed')">SpeedLevel</button>
+              <button onclick="postAction('freewalk')">FreeWalk</button>
+              <button data-action="toggle_freebound" data-label="FreeBound" onclick="setToggleExclusive('toggle_freebound')">FreeBound</button>
+              <button data-action="toggle_freeavoid" data-label="FreeAvoid" onclick="setToggleExclusive('toggle_freeavoid')">FreeAvoid</button>
+              <button data-action="toggle_crossstep" data-label="CrossStep" onclick="setToggleExclusive('toggle_crossstep')">CrossStep</button>
+              <button data-action="toggle_freejump" data-label="FreeJump" onclick="setToggleExclusive('toggle_freejump')">FreeJump</button>
+              <button data-action="toggle_walkupright" data-label="WalkUpright" onclick="setToggleExclusive('toggle_walkupright')">WalkUpright</button>
+              <button data-action="toggle_handstand" data-label="HandStand" onclick="setToggleExclusive('toggle_handstand')">HandStand</button>
+              <button data-action="toggle_classicwalk" data-label="ClassicWalk" onclick="setToggleExclusive('toggle_classicwalk')">ClassicWalk</button>
+              <button onclick="postAction('stop_move')">StopMove</button>
+              <button onclick="postAction('static_walk')">StaticWalk</button>
+            </div>
+          </div>
+          <div class="resizeHandle"></div>
+        </div>
+
+        <!-- ============ Posing joysticks ============ -->
+        <div class="comp" data-comp="posing">
+          <div class="compHeader">
+            <span class="gripDots">&#8942;&#8942;</span>
+            <span class="compTitle">Posing</span>
+            <button class="modeChip" data-modechip="posing" onclick="setMode('posing')">Activate</button>
+            <span class="compSpacer"></span>
+            <button class="closeBtn" data-close="posing" title="Close">&#10005;</button>
+          </div>
+          <div class="compBody">
+            <div class="joyRow">
+              <div class="joyBox">
+                <div class="joyLabel">Lean / Pitch</div>
+                <canvas id="joyPoseLeft" class="joyCanvas"></canvas>
+              </div>
+              <div class="joyBox">
+                <div class="joyLabel">Yaw</div>
+                <canvas id="joyPoseRight" class="joyCanvas"></canvas>
+              </div>
+            </div>
+            <div class="btnGrid">
+              <button onclick="postAction('damp')">Damp</button>
+              <button onclick="postAction('balance_stand')">BalanceStand</button>
+            </div>
+          </div>
+          <div class="resizeHandle"></div>
+        </div>
+
+        <!-- ============ Actions ============ -->
+        <div class="comp" data-comp="actions">
+          <div class="compHeader">
+            <span class="gripDots">&#8942;&#8942;</span>
+            <span class="compTitle">Actions</span>
+            <button class="modeChip" data-modechip="actions" onclick="setMode('actions')">Activate</button>
+            <span class="compSpacer"></span>
+            <button class="closeBtn" data-close="actions" title="Close">&#10005;</button>
+          </div>
+          <div class="compBody">
+            <div class="btnGrid">
+              <button onclick="postAction('stand')">Stand</button>
+              <button onclick="postAction('sit')">Sit</button>
+              <button onclick="postAction('sit_toggle')">Sit &#8596; Stand</button>
+              <button onclick="postAction('hello')">Hello</button>
+              <button onclick="postAction('stretch')">Stretch</button>
+              <button onclick="postAction('content')">Content</button>
+              <button onclick="postAction('heart')">Heart</button>
+              <button onclick="postAction('scrape')">Scrape</button>
+              <button onclick="postAction('front_jump')">FrontJump</button>
+              <button onclick="postAction('recovery')">RecoveryStand</button>
+            </div>
+            <div class="sectionLabel">Advanced &mdash; needs clear space</div>
+            <div class="btnGrid">
+              <button class="dangerBtn" onclick="postDangerAction('front_pounce')">FrontPounce</button>
+              <button class="dangerBtn" onclick="postDangerAction('front_flip')">FrontFlip</button>
+              <button class="dangerBtn" onclick="postDangerAction('back_flip')">BackFlip</button>
+              <button class="dangerBtn" onclick="postDangerAction('left_flip')">LeftFlip</button>
+            </div>
+          </div>
+          <div class="resizeHandle"></div>
+        </div>
+
+        <!-- ============ Custom actions (visual only) ============ -->
+        <div class="comp" data-comp="custom">
+          <div class="compHeader">
+            <span class="gripDots">&#8942;&#8942;</span>
+            <span class="compTitle">Custom Actions</span>
+            <span class="previewChip">PREVIEW</span>
+            <span class="compSpacer"></span>
+            <button class="closeBtn" data-close="custom" title="Close">&#10005;</button>
+          </div>
+          <div class="compBody">
+            <button class="addCustomBtn" onclick="addCustomAction()">+ Add custom action</button>
+            <div class="customList" id="customList">
+              <div class="customBtn" data-fixed="1"><span>Return to base</span></div>
+              <div class="customBtn" data-fixed="1"><span>Begin mapping</span></div>
+              <div class="customBtn" data-fixed="1">
+                <span>Move to cell</span>
+                <input class="cellInput" type="text" maxlength="6" placeholder="__" />
+              </div>
+            </div>
+          </div>
+          <div class="resizeHandle"></div>
+        </div>
+
+        <!-- ============ Camera ============ -->
+        <div class="comp" data-comp="camera">
+          <div class="compHeader">
+            <span class="gripDots">&#8942;&#8942;</span>
+            <span class="compTitle">Camera</span>
+            <span class="statusChip" id="camHint">Idle</span>
+            <span class="compSpacer"></span>
+            <button class="closeBtn" data-close="camera" title="Close">&#10005;</button>
+          </div>
+          <div class="compBody">
+            <div class="camViewport">
+              <img id="camImg" alt="Front camera" />
+              <span class="camPlaceholder" id="camPlaceholder">Camera off</span>
+            </div>
+            <div class="camControls">
+              <button onclick="startFrontCameraMode()">Start stream</button>
+              <button onclick="stopAllVideoStreams()">Stop</button>
+              <label class="switchLabel">
+                <input id="yoloSwitch" type="checkbox" onchange="onYoloSwitch()" />
+                Object detection
+              </label>
+              <span class="statusChip" id="yoloHint" style="display:none;">Idle</span>
+            </div>
+          </div>
+          <div class="resizeHandle"></div>
+        </div>
+
+        <!-- ============ Terminal ============ -->
+        <div class="comp" data-comp="terminal">
+          <div class="compHeader">
+            <span class="gripDots">&#8942;&#8942;</span>
+            <span class="compTitle">Terminal</span>
+            <span class="statusChip" id="termStatus">Disconnected</span>
+            <span class="compSpacer"></span>
+            <button class="closeBtn" data-close="terminal" title="Close">&#10005;</button>
+          </div>
+          <div class="compBody">
             <div id="termBoxMain" class="termBox"></div>
-            <div class="row" style="padding:10px 12px 12px;">
-              <button onclick="startTerminal()">Start terminal</button>
-              <button onclick="stopTerminal()">Stop terminal</button>
+            <div class="termControls">
+              <button onclick="startTerminal()">Connect</button>
+              <button onclick="stopTerminal()">Disconnect</button>
             </div>
           </div>
-        </div>
-      </div>
-
-      <div id="cameraSection" class="viewSection">
-        <div class="camPanel">
-          <div class="camHeader">
-            <div class="camTitle">Front camera stream</div>
-            <div class="camHint small" id="camHint">Idle</div>
-          </div>
-
-          <div class="camViewport">
-            <img id="camImg" alt="Front camera" />
-          </div>
-
-          <div class="row" style="margin-top:10px; padding:0 12px 12px;">
-            <button onclick="startFrontCameraMode()">Start Stream</button>
-            <button onclick="stopAllVideoStreams()">Stop Stream</button>
-
-            <label class="pill" style="display:inline-flex; align-items:center; gap:8px;">
-              <input id="showYoloPanel" type="checkbox" onchange="toggleYoloPanel()" />
-              Show YOLO panel
-            </label>
-
-            <span class="pill">Frames: <span id="frameCount">0</span></span>
-            <span class="pill">Last: <span id="frameBytes">0</span> bytes</span>
-            <span class="pill">Mode: <span id="videoMode">front</span></span>
-          </div>
-
-          <div class="small" style="padding:0 12px 12px;">
-            Normal stream: <span class="mono">/ws/cam_front</span>
-          </div>
+          <div class="resizeHandle"></div>
         </div>
 
-        <div id="yoloPanel" class="camPanel" style="display:none;">
-          <div class="camHeader">
-            <div class="camTitle">YOLO stream</div>
-            <div class="camHint small" id="yoloHint">Idle</div>
-          </div>
+      </div>
+    </div>
 
-          <div style="padding:10px 12px 12px;">
-            <div class="row">
-              <button onclick="startYoloMode()">Start YOLO Stream</button>
-              <button onclick="stopYoloMode()">Stop YOLO Stream</button>
-            </div>
-
-            <div class="small" style="margin-top:10px;">
-              YOLO stream: <span class="mono">/ws/cam_yolo</span><br />
-              YOLO control API: <span class="mono">POST /yolo/start</span>, <span class="mono">POST /yolo/stop</span>
-            </div>
-          </div>
+    <!-- danger action confirm -->
+    <div id="dangerModal" class="overlay">
+      <div class="modalCard">
+        <h2>Are you sure?</h2>
+        <div id="dangerModalText" class="modalText">You are about to run a risky action.</div>
+        <div class="modalRow">
+          <button onclick="dangerModalCancel()">Cancel</button>
+          <button class="confirmDangerBtn" onclick="dangerModalConfirm()">Confirm</button>
         </div>
       </div>
+    </div>
 
-      <div id="dangerModal" class="modalOverlay">
-        <div class="modalCard">
-          <h2 style="margin:0 0 6px;">Are you sure?</h2>
-          <div id="dangerModalText" class="small" style="margin-bottom:12px;">
-            You are about to run a risky action.
-          </div>
-          <div class="row" style="justify-content:flex-end;">
-            <button onclick="dangerModalCancel()">Cancel</button>
-            <button class="danger" onclick="dangerModalConfirm()">Confirm</button>
-          </div>
+    <!-- STOP confirm (dark replacement for shared.js confirmStop) -->
+    <div id="stopModal" class="overlay">
+      <div class="modalCard">
+        <h2 style="color: var(--red);">Confirm STOP</h2>
+        <div class="modalText">
+          The robot's motors will go <b>damp</b> and it will settle to the ground.
+          It stays down until you press <b>RESUME</b>.
         </div>
-      </div>
-
-      <div class="status">
-        <div id="msg" class="small">Ready.</div>
-        <div id="detail" class="mono"></div>
-      </div>
-
-      <div class="small" style="margin-top:10px;">
-        STOP latches the system. Teleop and actions are blocked until RESUME. Camera streaming is paused while STOP is latched.
+        <div class="modalRow">
+          <button id="stopModalCancel">Cancel</button>
+          <button class="confirmDangerBtn" id="stopModalProceed">STOP</button>
+        </div>
       </div>
     </div>
   </div>
 
+  <div id="toast"></div>
+
   <script>
-    const COMPANY_DEFAULT_BASE = "https://p2dingo-control-backend.p2agentx.com";
+    /* =====================================================================
+       Public-page overrides of shared.js (page-scoped, shared.js untouched)
+       ===================================================================== */
+
+    // Status -> toast. Drops the `detail` argument (URLs / raw responses).
+    let toastTimer = null;
+    Go2Shared.setStatus = (message, ok = true) => {
+      if (!message) return;
+      const el = document.getElementById("toast");
+      el.textContent = message;
+      el.classList.toggle("bad", !ok);
+      el.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove("show"), 2800);
+    };
+
+    // Dark-themed STOP confirmation (shared.js version hardcodes a white card).
+    Go2Shared.confirmStop = () => new Promise((resolve) => {
+      const overlay = document.getElementById("stopModal");
+      const cancel = document.getElementById("stopModalCancel");
+      const proceed = document.getElementById("stopModalProceed");
+      const close = (r) => {
+        overlay.style.display = "none";
+        cancel.onclick = proceed.onclick = overlay.onclick = null;
+        document.removeEventListener("keydown", onKey);
+        resolve(r);
+      };
+      const onKey = (e) => { if (e.key === "Escape") close(false); };
+      cancel.onclick = () => close(false);
+      proceed.onclick = () => close(true);
+      overlay.onclick = (e) => { if (e.target === overlay) close(false); };
+      document.addEventListener("keydown", onKey);
+      overlay.style.display = "flex";
+      proceed.focus();
+    });
+
+    // Dark-themed joystick (same geometry/behaviour as Go2Shared.createJoystick,
+    // which hardcodes light-theme colors).
+    function createDarkJoystick(canvasId, onMove) {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return null;
+      const ctx = canvas.getContext("2d");
+      let active = false, cx = 0, cy = 0, knobX = 0, knobY = 0, radius = 0;
+
+      function resize() {
+        const rect = canvas.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        canvas.width = rect.width * window.devicePixelRatio;
+        canvas.height = rect.height * window.devicePixelRatio;
+        ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+        cx = rect.width / 2; cy = rect.height / 2;
+        radius = Math.min(rect.width, rect.height) * 0.34;
+        if (!active) { knobX = cx; knobY = cy; }
+        draw();
+      }
+
+      function draw() {
+        const rect = canvas.getBoundingClientRect();
+        ctx.clearRect(0, 0, rect.width, rect.height);
+        // crosshair
+        ctx.strokeStyle = "rgba(255,255,255,0.06)";
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(cx - radius, cy); ctx.lineTo(cx + radius, cy); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(cx, cy - radius); ctx.lineTo(cx, cy + radius); ctx.stroke();
+        // ring
+        ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = active ? "rgba(90,236,240,0.5)" : "rgba(255,255,255,0.18)";
+        ctx.lineWidth = 2; ctx.stroke();
+        // knob
+        ctx.save();
+        ctx.shadowColor = "rgba(90,236,240,0.6)";
+        ctx.shadowBlur = active ? 18 : 8;
+        ctx.beginPath(); ctx.arc(knobX, knobY, radius * 0.32, 0, Math.PI * 2);
+        const g = ctx.createLinearGradient(knobX - 10, knobY - 10, knobX + 10, knobY + 10);
+        g.addColorStop(0, "#5aecf0"); g.addColorStop(1, "#1aa7ec");
+        ctx.fillStyle = g; ctx.fill();
+        ctx.restore();
+      }
+
+      function updateFromEvent(clientX, clientY) {
+        const rect = canvas.getBoundingClientRect();
+        const dx = clientX - rect.left - cx, dy = clientY - rect.top - cy;
+        const dist = Math.hypot(dx, dy);
+        let nx = dx, ny = dy;
+        if (dist > radius) { nx = dx / dist * radius; ny = dy / dist * radius; }
+        knobX = cx + nx; knobY = cy + ny;
+        draw();
+        onMove(nx / radius, ny / radius, true);
+      }
+
+      function reset() { active = false; knobX = cx; knobY = cy; draw(); onMove(0, 0, false); }
+
+      canvas.addEventListener("pointerdown", (e) => {
+        active = true;
+        canvas.setPointerCapture(e.pointerId);
+        updateFromEvent(e.clientX, e.clientY);
+      });
+      canvas.addEventListener("pointermove", (e) => { if (active) updateFromEvent(e.clientX, e.clientY); });
+      canvas.addEventListener("pointerup", reset);
+      canvas.addEventListener("pointercancel", reset);
+      window.addEventListener("resize", resize);
+      resize();
+      return { resize, reset };
+    }
+
+    /* =====================================================================
+       Component canvas: 12-col snap grid, drag / resize / reflow / persist
+       ===================================================================== */
+
+    const GRID_COLS = 12;
+    const ROW_H = 74;
+    const GAP = 12;
+    const MOBILE_BP = 820;
+    const LAYOUT_KEY = "p2dingo_layout_v2";
+
+    // x/y/w/h in grid units; `mo` is the mobile stacking order (independent of
+    // the desktop position, so reordering on a phone never scrambles the
+    // desktop arrangement). `open` is the default visibility.
+    const DEFAULT_LAYOUT = {
+      movement: { x: 0, y: 0, w: 5, h: 7, minW: 4, minH: 5, mo: 0, open: true  },
+      camera:   { x: 5, y: 0, w: 7, h: 7, minW: 4, minH: 4, mo: 1, open: true  },
+      actions:  { x: 0, y: 7, w: 7, h: 5, minW: 4, minH: 3, mo: 2, open: true  },
+      custom:   { x: 7, y: 7, w: 5, h: 5, minW: 3, minH: 3, mo: 3, open: true  },
+      posing:   { x: 0, y: 12, w: 5, h: 6, minW: 4, minH: 4, mo: 4, open: false },
+      terminal: { x: 5, y: 12, w: 7, h: 6, minW: 4, minH: 4, mo: 5, open: false },
+    };
+
+    let layout = {};
+    const canvasEl = () => document.getElementById("canvas");
+    const compEl = (id) => document.querySelector(`.comp[data-comp="${id}"]`);
+    const isMobile = () => window.innerWidth <= MOBILE_BP;
+
+    function loadLayout() {
+      layout = JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
+      try {
+        const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}");
+        for (const id in layout) {
+          if (saved[id]) {
+            const s = saved[id];
+            if (Number.isFinite(s.x)) layout[id].x = Math.max(0, Math.min(GRID_COLS - 1, s.x | 0));
+            if (Number.isFinite(s.y)) layout[id].y = Math.max(0, s.y | 0);
+            if (Number.isFinite(s.w)) layout[id].w = Math.max(layout[id].minW, Math.min(GRID_COLS, s.w | 0));
+            if (Number.isFinite(s.h)) layout[id].h = Math.max(layout[id].minH, s.h | 0);
+            if (Number.isFinite(s.mo)) layout[id].mo = s.mo | 0;
+            if (typeof s.open === "boolean") layout[id].open = s.open;
+            layout[id].x = Math.min(layout[id].x, GRID_COLS - layout[id].w);
+          }
+        }
+      } catch (_) {}
+      compactAll();
+    }
+
+    function saveLayout() {
+      const out = {};
+      for (const id in layout) {
+        const { x, y, w, h, mo, open } = layout[id];
+        out[id] = { x, y, w, h, mo, open };
+      }
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(out));
+      localStorage.setItem(CUSTOM_KEY, JSON.stringify(customActions));
+    }
+
+    function resetLayout() {
+      localStorage.removeItem(LAYOUT_KEY);
+      loadLayout();
+      renderAll();
+      Go2Shared.setStatus("Layout reset");
+    }
+
+    const openIds = () => Object.keys(layout).filter((id) => layout[id].open);
+
+    function collide(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    // Push every open item that overlaps `item` below it (recursively).
+    function resolveCollisions(item, itemId) {
+      const others = openIds().filter((id) => id !== itemId).sort((a, b) => layout[a].y - layout[b].y);
+      for (const id of others) {
+        if (collide(layout[itemId], layout[id])) {
+          layout[id].y = layout[itemId].y + layout[itemId].h;
+          resolveCollisions(layout[id], id);
+        }
+      }
+    }
+
+    // Float items up into gaps (stable top-to-bottom order).
+    function compactAll() {
+      const ids = openIds().sort((a, b) => layout[a].y - layout[b].y || layout[a].x - layout[b].x);
+      for (const id of ids) {
+        const it = layout[id];
+        while (it.y > 0) {
+          it.y -= 1;
+          const hit = ids.some((o) => o !== id && collide(it, layout[o]));
+          if (hit) { it.y += 1; break; }
+        }
+      }
+    }
+
+    function colWidth() {
+      return (canvasEl().clientWidth - GAP * (GRID_COLS - 1)) / GRID_COLS;
+    }
+
+    function renderAll() {
+      const cw = colWidth();
+      let maxBottom = 0;
+      for (const id in layout) {
+        const it = layout[id];
+        const el = compEl(id);
+        el.classList.toggle("hiddenComp", !it.open);
+        const chip = document.querySelector(`.chip[data-toggle="${id}"]`);
+        if (chip) chip.classList.toggle("on", it.open);
+        if (!it.open) continue;
+        if (!isMobile()) {
+          el.style.left = `${it.x * (cw + GAP)}px`;
+          el.style.top = `${it.y * (ROW_H + GAP)}px`;
+          el.style.width = `${it.w * cw + (it.w - 1) * GAP}px`;
+          el.style.height = `${it.h * ROW_H + (it.h - 1) * GAP}px`;
+        } else {
+          el.style.order = String(it.mo);
+        }
+        maxBottom = Math.max(maxBottom, (it.y + it.h) * (ROW_H + GAP));
+      }
+      canvasEl().style.height = isMobile() ? "auto" : `${maxBottom}px`;
+      // Canvases and xterm need re-measuring after geometry changes.
+      window.dispatchEvent(new Event("resize"));
+    }
+
+    function setOpen(id, open) {
+      const it = layout[id];
+      if (it.open === open) return;
+      it.open = open;
+      if (open && !isMobile()) {
+        // Re-enter at the bottom, then float up into the first gap.
+        it.y = Math.max(0, ...openIds().filter((o) => o !== id).map((o) => layout[o].y + layout[o].h));
+      }
+      if (!open) onComponentClosed(id);
+      compactAll();
+      renderAll();
+      saveLayout();
+    }
+
+    /* ------------ drag + resize (desktop), reorder (mobile) ------------ */
+
+    let drag = null;
+
+    function beginDrag(id, e) {
+      const el = compEl(id);
+      const rect = el.getBoundingClientRect();
+      drag = {
+        id,
+        kind: "move",
+        offX: e.clientX - rect.left,
+        offY: e.clientY - rect.top,
+      };
+      el.classList.add("dragging");
+    }
+
+    function beginResize(id, e) {
+      drag = { id, kind: "resize" };
+      compEl(id).classList.add("resizing");
+      e.stopPropagation();
+    }
+
+    function onDragMove(e) {
+      if (!drag) return;
+      const it = layout[drag.id];
+      const cRect = canvasEl().getBoundingClientRect();
+      const cw = colWidth();
+
+      if (isMobile()) {
+        if (drag.kind !== "move") return;
+        // Reorder the mobile stack only (`mo`); desktop x/y stay untouched.
+        const ids = openIds().sort((a, b) => layout[a].mo - layout[b].mo);
+        for (const other of ids) {
+          if (other === drag.id) continue;
+          const r = compEl(other).getBoundingClientRect();
+          if (e.clientY > r.top && e.clientY < r.bottom) {
+            const mine = ids.indexOf(drag.id), theirs = ids.indexOf(other);
+            ids.splice(mine, 1);
+            ids.splice(theirs, 0, drag.id);
+            ids.forEach((oid, i) => { layout[oid].mo = i; });
+            renderAll();
+            break;
+          }
+        }
+        return;
+      }
+
+      if (drag.kind === "move") {
+        const px = e.clientX - cRect.left - drag.offX;
+        const py = e.clientY - cRect.top - drag.offY;
+        const nx = Math.max(0, Math.min(GRID_COLS - it.w, Math.round(px / (cw + GAP))));
+        const ny = Math.max(0, Math.round(py / (ROW_H + GAP)));
+        if (nx !== it.x || ny !== it.y) {
+          it.x = nx; it.y = ny;
+          resolveCollisions(it, drag.id);
+          compactWhileDragging(drag.id);
+          renderAll();
+        }
+      } else {
+        const px = e.clientX - cRect.left - it.x * (cw + GAP);
+        const py = e.clientY - cRect.top - it.y * (ROW_H + GAP);
+        const nw = Math.max(it.minW, Math.min(GRID_COLS - it.x, Math.round(px / (cw + GAP))));
+        const nh = Math.max(it.minH, Math.round(py / (ROW_H + GAP)));
+        if (nw !== it.w || nh !== it.h) {
+          it.w = nw; it.h = nh;
+          resolveCollisions(it, drag.id);
+          compactWhileDragging(drag.id);
+          renderAll();
+        }
+      }
+    }
+
+    // Compact everything except the item in hand (so it stays under the cursor).
+    function compactWhileDragging(heldId) {
+      const ids = openIds().filter((id) => id !== heldId)
+        .sort((a, b) => layout[a].y - layout[b].y || layout[a].x - layout[b].x);
+      for (const id of ids) {
+        const it = layout[id];
+        while (it.y > 0) {
+          it.y -= 1;
+          const hit = collide(it, layout[heldId]) ||
+            ids.some((o) => o !== id && collide(it, layout[o]));
+          if (hit) { it.y += 1; break; }
+        }
+      }
+    }
+
+    function endDrag() {
+      if (!drag) return;
+      compEl(drag.id).classList.remove("dragging", "resizing");
+      drag = null;
+      compactAll();
+      renderAll();
+      saveLayout();
+    }
+
+    function wireCanvas() {
+      for (const id in DEFAULT_LAYOUT) {
+        const el = compEl(id);
+        el.querySelector(".compHeader").addEventListener("pointerdown", (e) => {
+          if (e.target.closest("button")) return;   // header buttons still clickable
+          beginDrag(id, e);
+          e.preventDefault();
+        });
+        const rh = el.querySelector(".resizeHandle");
+        if (rh) rh.addEventListener("pointerdown", (e) => { beginResize(id, e); e.preventDefault(); });
+        el.querySelector(`[data-close="${id}"]`).addEventListener("click", () => setOpen(id, false));
+      }
+      document.querySelectorAll(".chip[data-toggle]").forEach((chip) => {
+        chip.addEventListener("click", () => {
+          const id = chip.getAttribute("data-toggle");
+          setOpen(id, !layout[id].open);
+        });
+      });
+      window.addEventListener("pointermove", onDragMove);
+      window.addEventListener("pointerup", endDrag);
+      window.addEventListener("pointercancel", endDrag);
+
+      let lastMobile = isMobile();
+      window.addEventListener("resize", () => {
+        if (isMobile() !== lastMobile) { lastMobile = isMobile(); compactAll(); }
+        if (!drag) renderAll();
+      });
+    }
+
+    // renderAll() dispatches a window resize event (so canvases/xterm re-measure),
+    // and the resize listener above calls renderAll(). Guard against recursion.
+    let rendering = false;
+    {
+      const orig = renderAll;
+      renderAll = (...a) => {
+        if (rendering) return;
+        rendering = true;
+        try { orig(...a); } finally { rendering = false; }
+      };
+    }
+
+    // Streams/terminal stop when their component closes.
+    function onComponentClosed(id) {
+      if (id === "camera") stopAllVideoStreams();
+      if (id === "terminal") stopTerminal();
+    }
+
+    /* =====================================================================
+       Custom actions (visual only — no backend calls)
+       ===================================================================== */
+
+    const CUSTOM_KEY = "p2dingo_custom_actions_v1";
+    let customActions = [];   // user-added labels
+
+    function loadCustomActions() {
+      try { customActions = JSON.parse(localStorage.getItem(CUSTOM_KEY) || "[]"); } catch (_) { customActions = []; }
+      if (!Array.isArray(customActions)) customActions = [];
+      customActions.forEach((label, i) => renderCustomBtn(label, i));
+    }
+
+    function renderCustomBtn(label, index) {
+      const list = document.getElementById("customList");
+      const div = document.createElement("div");
+      div.className = "customBtn";
+      div.dataset.index = String(index);
+
+      const span = document.createElement("span");
+      span.className = "editLabel";
+      span.contentEditable = "true";
+      span.spellcheck = false;
+      span.textContent = label;
+      span.addEventListener("pointerdown", (e) => e.stopPropagation());
+      span.addEventListener("input", () => {
+        customActions[Number(div.dataset.index)] = span.textContent.trim();
+        saveLayout();
+      });
+      span.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); span.blur(); } });
+
+      const rm = document.createElement("button");
+      rm.className = "rmBtn";
+      rm.innerHTML = "&#10005;";
+      rm.title = "Remove";
+      rm.addEventListener("click", (e) => {
+        e.stopPropagation();
+        customActions.splice(Number(div.dataset.index), 1);
+        saveLayout();
+        rebuildCustomList();
+      });
+
+      div.appendChild(span);
+      div.appendChild(rm);
+      wireCustomPress(div);
+      list.appendChild(div);
+      return { div, span };
+    }
+
+    function rebuildCustomList() {
+      const list = document.getElementById("customList");
+      list.querySelectorAll('.customBtn:not([data-fixed])').forEach((el) => el.remove());
+      customActions.forEach((label, i) => renderCustomBtn(label, i));
+    }
+
+    function addCustomAction() {
+      customActions.push("");
+      saveLayout();
+      const { span } = renderCustomBtn("", customActions.length - 1);
+      span.focus();
+    }
+
+    // Visual-only press feedback.
+    function wireCustomPress(el) {
+      el.addEventListener("click", (e) => {
+        if (e.target.closest("input, .rmBtn, .editLabel")) return;
+        el.classList.remove("flash");
+        void el.offsetWidth;   // restart the animation
+        el.classList.add("flash");
+      });
+    }
+
+    /* =====================================================================
+       Robot control — identical backend calls to the previous revision
+       ===================================================================== */
 
     let stopLatched = false;
     let safetyBusy = false;
@@ -264,81 +1211,64 @@ Author: Victor Lim
     const MAX_LIN = 0.6;
     const MAX_ANG = 1.2;
     const SEND_HZ = 20;
-    const SEND_PERIOD_MS = Math.floor(1000 / SEND_HZ);
 
     const TOGGLES = [
-      "toggle_freebound",
-      "toggle_freeavoid",
-      "toggle_crossstep",
-      "toggle_freejump",
-      "toggle_walkupright",
-      "toggle_handstand",
-      "toggle_classicwalk"
+      "toggle_freebound", "toggle_freeavoid", "toggle_crossstep", "toggle_freejump",
+      "toggle_walkupright", "toggle_handstand", "toggle_classicwalk",
     ];
-    const toggleState = Object.fromEntries(TOGGLES.map(a => [a, false]));
+    const toggleState = Object.fromEntries(TOGGLES.map((a) => [a, false]));
     const DANGER_ACTIONS = new Set(["front_flip", "back_flip", "left_flip", "front_pounce"]);
 
-    let terminalOpen = false;
-    let cameraOpen = false;
     let termBundle = null;
-
     let ACTIVE_VIDEO_MODE = "front";
-    let CAM_WS = null;
-    let camKeepalive = null;
-    let YOLO_VIDEO_WS = null;
-    let yoloVideoKeepalive = null;
+    let CAM_WS = null, camKeepalive = null;
+    let YOLO_VIDEO_WS = null, yoloVideoKeepalive = null;
     let lastBlobUrl = "";
-    let frames = 0;
 
-    const dangerModal = {
-      action: null,
-      open(action) {
-        this.action = action;
-        const overlay = document.getElementById("dangerModal");
-        const text = document.getElementById("dangerModalText");
-        const label = action.replaceAll("_", " ").replace(/\b\w/g, c => c.toUpperCase());
-        text.textContent = `You are about to run: ${label}. This can be unsafe if the area isn’t clear.`;
-        overlay.style.display = "flex";
-      },
-      close() {
-        this.action = null;
-        document.getElementById("dangerModal").style.display = "none";
-      }
-    };
+    /* ---------------- boot ---------------- */
 
     window.addEventListener("DOMContentLoaded", async () => {
-      const defaultApi = (window.location.origin && /^https?:/i.test(window.location.origin))
-        ? window.location.origin
-        : COMPANY_DEFAULT_BASE;
+      loadLayout();
+      wireCanvas();
+      loadCustomActions();
 
-      // Disable shared multi-page navbar injection for this standalone page.
-      Go2Shared.injectNavBar = () => {};
-      Go2Shared.highlightActivePage = () => {};
+      await Go2Shared.init({ defaultApi: window.location.origin, showAuthButtons: true, showNav: false });
 
-      await Go2Shared.init({ defaultApi, showAuthButtons: true });
+      // Public page: the backend is always the page origin. Overrides any stale
+      // saved base (e.g. a dev machine's :8000) without showing a URL field.
+      Go2Shared.state.API_BASE = window.location.origin;
+      localStorage.setItem("go2_api_base", window.location.origin);
+      document.getElementById("baseUrl").value = window.location.origin;
+      document.getElementById("loginBaseUrl").value = window.location.origin;
+      await Go2Shared.fetchConfigMaybe();
+      Go2Shared.updateAuthUi();
 
-      const baseInput = document.getElementById("baseUrl");
-      const loginBase = document.getElementById("loginBaseUrl");
-
-      if (baseInput && (!baseInput.value || baseInput.value.includes("localhost") || baseInput.value.includes(":8000"))) {
-        baseInput.value = Go2Shared.state.API_BASE || defaultApi;
-      }
-      if (loginBase && !loginBase.value.trim()) {
-        loginBase.value = Go2Shared.state.API_BASE || defaultApi;
-      }
-
-      document.getElementById("uiHost").textContent = window.location.origin;
-      document.getElementById("apiHost").textContent = Go2Shared.apiBase();
+      document.getElementById("logoutBtn").style.display =
+        Go2Shared.state.AUTH_ENABLED ? "inline-flex" : "none";
 
       updateModeUI();
+      renderAll();
       setTimeout(refreshSafetyStatus, 200);
 
-      Go2Shared.createJoystick("joyLeft", (x, y, active) => {
+      // Movement joysticks: standard teleop mapping.
+      createDarkJoystick("joyMoveLeft", (x, y, active) => {
+        if (!ensureModeForJoy("movement")) return;
         latest.lx = active ? x : 0;
         latest.ly = active ? y : 0;
       });
+      createDarkJoystick("joyMoveRight", (x, _y, active) => {
+        if (!ensureModeForJoy("movement")) return;
+        latest.rx = active ? x : 0;
+      });
 
-      Go2Shared.createJoystick("joyRight", (x, y, active) => {
+      // Posing joysticks: same teleop channel, robot interprets it in posing mode.
+      createDarkJoystick("joyPoseLeft", (x, y, active) => {
+        if (!ensureModeForJoy("posing")) return;
+        latest.lx = active ? x : 0;
+        latest.ly = active ? y : 0;
+      });
+      createDarkJoystick("joyPoseRight", (x, _y, active) => {
+        if (!ensureModeForJoy("posing")) return;
         latest.rx = active ? x : 0;
       });
 
@@ -347,15 +1277,26 @@ Author: Victor Lim
         const eps = 0.01;
         if (Math.abs(latest.lx) < eps && Math.abs(latest.ly) < eps && Math.abs(latest.rx) < eps) return;
         sendTeleop(latest.lx, latest.ly, latest.rx);
-      }, SEND_PERIOD_MS);
+      }, Math.floor(1000 / SEND_HZ));
     });
+
+    // Grabbing a joystick that belongs to an inactive mode switches to that mode
+    // first (one POST, same as pressing its Activate chip); stick input is
+    // ignored until the switch confirms.
+    let modeSwitchBusy = false;
+    function ensureModeForJoy(mode) {
+      if (currentMode === mode) return true;
+      if (!modeSwitchBusy) {
+        modeSwitchBusy = true;
+        setMode(mode).finally(() => { modeSwitchBusy = false; });
+      }
+      return false;
+    }
 
     async function loginAndStart() {
       const ok = await Go2Shared.login();
-      document.getElementById("apiHost").textContent = Go2Shared.apiBase();
       await refreshSafetyStatus();
       if (!ok) return;
-      if (terminalOpen) startTerminal();
     }
 
     function authWsSuffix() {
@@ -363,13 +1304,13 @@ Author: Victor Lim
       return (Go2Shared.state.AUTH_ENABLED && token) ? `?token=${token}` : "";
     }
 
+    /* ---------------- safety ---------------- */
+
     function setSafetyButton(latched) {
       stopLatched = !!latched;
       const btn = document.getElementById("safetyToggleBtn");
-      if (!btn) return;
       btn.textContent = stopLatched ? "RESUME" : "STOP";
-      btn.classList.toggle("danger", !stopLatched);
-      btn.classList.toggle("activeMode", stopLatched);
+      btn.classList.toggle("latched", stopLatched);
       btn.disabled = safetyBusy;
     }
 
@@ -381,39 +1322,32 @@ Author: Victor Lim
           const data = JSON.parse(r.text);
           setSafetyButton(!!data.stop_latched);
           Go2Shared.state.COMMS_ENABLED = !stopLatched;
-        } catch {}
+        } catch (_) {}
       }
       return r;
     }
 
     async function toggleSafety() {
       if (!Go2Shared.ensureLoggedIn() || safetyBusy) return;
-      if (!stopLatched && !(await Go2Shared.confirmStop())) return;   // confirm before damping
+      if (!stopLatched && !(await Go2Shared.confirmStop())) return;
       safetyBusy = true;
       setSafetyButton(stopLatched);
 
       try {
         if (!stopLatched) {
           const r = await Go2Shared.httpPost("/safety/stop", null, { bypassCommsGate: true });
-          if (!r.ok) {
-            Go2Shared.setStatus(`STOP failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
-            return;
-          }
+          if (!r.ok) { Go2Shared.setStatus(`STOP failed (${r.status})`, false); return; }
           Go2Shared.state.COMMS_ENABLED = false;
           setSafetyButton(true);
           stopAllVideoStreams();
-          setCamHint("STOP latched: camera paused");
-          setYoloHint("STOP latched");
-          Go2Shared.setStatus("STOP latched 🔒", true, `URL: ${r.url}\n${r.text}`);
+          setCamHint("Paused");
+          Go2Shared.setStatus("STOP latched — robot damped 🔒");
         } else {
           const r = await Go2Shared.httpPost("/safety/resume", null, { bypassCommsGate: true });
-          if (!r.ok) {
-            Go2Shared.setStatus(`RESUME failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
-            return;
-          }
+          if (!r.ok) { Go2Shared.setStatus(`RESUME failed (${r.status})`, false); return; }
           Go2Shared.state.COMMS_ENABLED = true;
           setSafetyButton(false);
-          Go2Shared.setStatus("RESUME ✅", true, `URL: ${r.url}\n${r.text}`);
+          Go2Shared.setStatus("Resumed ✅");
         }
       } finally {
         safetyBusy = false;
@@ -421,63 +1355,62 @@ Author: Victor Lim
       }
     }
 
+    /* ---------------- modes + actions ---------------- */
+
     function updateModeUI() {
-      const titles = {
-        movement: { left: "Left joystick: X=strafe, Y=fwd/back", right: "Right joystick: X=turn (yaw)", panel: "Movement mode commands" },
-        posing: { left: "Left joystick: X=strafe, Y=fwd/back", right: "Right joystick: X=turn (yaw)", panel: "Posing mode commands" },
-        actions: { left: "Left joystick: X=strafe, Y=fwd/back", right: "Right joystick: X=turn (yaw)", panel: "Actions mode commands" }
-      };
-
-      document.getElementById("modePill").textContent = `mode: ${currentMode}`;
-      document.getElementById("btnModeMovement").classList.toggle("activeMode", currentMode === "movement");
-      document.getElementById("btnModePosing").classList.toggle("activeMode", currentMode === "posing");
-      document.getElementById("btnModeActions").classList.toggle("activeMode", currentMode === "actions");
-      document.getElementById("joyLeftTitle").textContent = titles[currentMode].left;
-      document.getElementById("joyRightTitle").textContent = titles[currentMode].right;
-      document.getElementById("modePanelTitle").textContent = titles[currentMode].panel;
-      document.getElementById("movementPanel").style.display = currentMode === "movement" ? "block" : "none";
-      document.getElementById("posingPanel").style.display = currentMode === "posing" ? "block" : "none";
-      document.getElementById("actionsPanel").style.display = currentMode === "actions" ? "block" : "none";
-
-      const modePanel = document.getElementById("modePanel");
-      modePanel.style.display = currentMode === "actions" || currentMode === "posing" ? "block" : "none";
+      document.querySelectorAll(".modeChip").forEach((chip) => {
+        const mode = chip.getAttribute("data-modechip");
+        const live = mode === currentMode;
+        chip.classList.toggle("live", live);
+        chip.textContent = live ? "ACTIVE" : "Activate";
+      });
     }
 
     async function setMode(m) {
       if (!Go2Shared.ensureLoggedIn()) return;
       if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
-        Go2Shared.setStatus("STOP latched 🔒", false, "Press RESUME to enable commands.");
+        Go2Shared.setStatus("STOP latched — press RESUME first", false);
         return;
       }
-
       const map = { movement: "mode_movement", posing: "mode_posing", actions: "mode_actions" };
       const r = await Go2Shared.httpPost(`/actions/${map[m]}`);
-      if (!r.ok) {
-        Go2Shared.setStatus(`Mode set failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
-        return;
-      }
-
+      if (!r.ok) { Go2Shared.setStatus(`Mode change failed (${r.status})`, false); return; }
       currentMode = m;
       updateModeUI();
-      Go2Shared.setStatus(`Mode: ${m} ✅`, true);
+      Go2Shared.setStatus(`${m[0].toUpperCase()}${m.slice(1)} mode ✅`);
     }
 
     async function postAction(action) {
       if (!Go2Shared.ensureLoggedIn()) return;
       if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
-        Go2Shared.setStatus("STOP latched 🔒", false, "No actions until RESUME.");
+        Go2Shared.setStatus("STOP latched — press RESUME first", false);
         return;
       }
-
       const r = await Go2Shared.httpPost(`/actions/${action}`);
-      Go2Shared.setStatus(r.ok ? `${action} ✅` : `${action} failed (HTTP ${r.status})`, r.ok, `URL: ${r.url}\n${r.text}`);
+      const label = action.replaceAll("_", " ");
+      Go2Shared.setStatus(r.ok ? `${label} ✅` : `${label} failed (${r.status})`, r.ok);
     }
+
+    const dangerModal = {
+      action: null,
+      open(action) {
+        this.action = action;
+        const label = action.replaceAll("_", " ").replace(/\b\w/g, (c) => c.toUpperCase());
+        document.getElementById("dangerModalText").textContent =
+          `You are about to run: ${label}. This can be unsafe if the area isn't clear.`;
+        document.getElementById("dangerModal").style.display = "flex";
+      },
+      close() {
+        this.action = null;
+        document.getElementById("dangerModal").style.display = "none";
+      },
+    };
 
     async function postDangerAction(action) {
       if (!DANGER_ACTIONS.has(action)) return postAction(action);
       if (!Go2Shared.ensureLoggedIn()) return;
       if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
-        Go2Shared.setStatus("STOP latched 🔒", false, "Press RESUME to enable commands.");
+        Go2Shared.setStatus("STOP latched — press RESUME first", false);
         return;
       }
       dangerModal.open(action);
@@ -488,26 +1421,21 @@ Author: Victor Lim
     async function dangerModalConfirm() {
       const action = dangerModal.action;
       dangerModal.close();
-      if (!action) return;
-      await postAction(action);
+      if (action) await postAction(action);
     }
 
     document.addEventListener("click", (e) => {
       const overlay = document.getElementById("dangerModal");
-      if (overlay && overlay.style.display !== "none" && e.target === overlay) {
-        dangerModal.close();
-      }
+      if (overlay.style.display === "flex" && e.target === overlay) dangerModal.close();
     });
+    window.addEventListener("keydown", (e) => { if (e.key === "Escape") dangerModal.close(); });
 
-    window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") dangerModal.close();
-    });
+    /* ---------------- exclusive gait toggles ---------------- */
 
     function setToggleBtn(action, on) {
       const btn = document.querySelector(`[data-action="${action}"]`);
       if (!btn) return;
-      const label = btn.getAttribute("data-label");
-      btn.textContent = label + (on ? " ✅" : "");
+      btn.textContent = btn.getAttribute("data-label") + (on ? " ✓" : "");
       btn.classList.toggle("toggleOn", !!on);
     }
 
@@ -521,7 +1449,7 @@ Author: Victor Lim
     async function setToggleExclusive(target) {
       if (!Go2Shared.ensureLoggedIn()) return;
       if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
-        Go2Shared.setStatus("STOP latched 🔒", false, "Press RESUME to enable commands.");
+        Go2Shared.setStatus("STOP latched — press RESUME first", false);
         return;
       }
 
@@ -529,40 +1457,33 @@ Author: Victor Lim
       try {
         if (toggleState[target]) {
           const r = await Go2Shared.httpPost(`/actions/${target}`);
-          if (!r.ok) {
-            Go2Shared.setStatus(`${target} failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
-            return;
-          }
+          if (!r.ok) { Go2Shared.setStatus(`${target.replace("toggle_", "")} failed (${r.status})`, false); return; }
           toggleState[target] = false;
           setToggleBtn(target, false);
-          Go2Shared.setStatus(`${target.replace("toggle_", "")} DISABLED ✅`, true);
+          Go2Shared.setStatus(`${target.replace("toggle_", "")} off`);
           return;
         }
 
         for (const a of TOGGLES) {
           if (a !== target && toggleState[a]) {
             const rOff = await Go2Shared.httpPost(`/actions/${a}`);
-            if (!rOff.ok) {
-              Go2Shared.setStatus(`Failed disabling ${a} (HTTP ${rOff.status})`, false, `URL: ${rOff.url}\n${rOff.text}`);
-              return;
-            }
+            if (!rOff.ok) { Go2Shared.setStatus(`Couldn't disable ${a.replace("toggle_", "")} (${rOff.status})`, false); return; }
             toggleState[a] = false;
             setToggleBtn(a, false);
           }
         }
 
         const rOn = await Go2Shared.httpPost(`/actions/${target}`);
-        if (!rOn.ok) {
-          Go2Shared.setStatus(`${target} failed (HTTP ${rOn.status})`, false, `URL: ${rOn.url}\n${rOn.text}`);
-          return;
-        }
+        if (!rOn.ok) { Go2Shared.setStatus(`${target.replace("toggle_", "")} failed (${rOn.status})`, false); return; }
         toggleState[target] = true;
         setToggleBtn(target, true);
-        Go2Shared.setStatus(`${target.replace("toggle_", "")} ENABLED ✅`, true);
+        Go2Shared.setStatus(`${target.replace("toggle_", "")} on ✅`);
       } finally {
         setAllToggleButtonsEnabled(true);
       }
     }
+
+    /* ---------------- teleop ---------------- */
 
     function mapToCmd(lx, ly, rx) {
       return { linear_x: (-ly) * MAX_LIN, linear_y: (lx) * MAX_LIN, angular_z: (rx) * MAX_ANG };
@@ -571,34 +1492,19 @@ Author: Victor Lim
     async function sendTeleop(lx, ly, rx) {
       if (!Go2Shared.ensureLoggedIn() || !Go2Shared.state.COMMS_ENABLED || stopLatched) return;
       const r = await Go2Shared.httpPost("/teleop", mapToCmd(lx, ly, rx));
-      if (!r.ok) {
-        Go2Shared.setStatus(`Teleop failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
-      }
+      if (!r.ok) Go2Shared.setStatus(`Teleop failed (${r.status})`, false);
     }
 
-    function toggleTerminalPanel() {
-      terminalOpen = !terminalOpen;
-      const section = document.getElementById("terminalSection");
-      const btn = document.getElementById("btnTerminalToggle");
-      section.classList.toggle("open", terminalOpen);
-      btn.classList.toggle("activeMode", terminalOpen);
-      btn.classList.toggle("toggleBtnOpen", terminalOpen);
-
-      if (terminalOpen) {
-        if (Go2Shared.ensureLoggedIn()) startTerminal();
-      } else {
-        stopTerminal();
-      }
-    }
+    /* ---------------- terminal ---------------- */
 
     function startTerminal() {
       stopTerminal();
+      if (!Go2Shared.ensureLoggedIn()) return;
 
       const TerminalCtor = window.Terminal;
       const FitAddonCtor = window.FitAddon && window.FitAddon.FitAddon;
-
       if (!TerminalCtor || !FitAddonCtor) {
-        Go2Shared.setStatus("xterm.js failed to load", false);
+        Go2Shared.setStatus("Terminal failed to load", false);
         return;
       }
 
@@ -608,85 +1514,60 @@ Author: Victor Lim
         TerminalCtor,
         FitAddonCtor,
       });
-
-      Go2Shared.setStatus("Terminal connecting...", true);
     }
 
     function stopTerminal() {
-      if (termBundle && typeof termBundle.close === "function") {
-        termBundle.close();
-      }
+      if (termBundle && typeof termBundle.close === "function") termBundle.close();
       termBundle = null;
       const termStatus = document.getElementById("termStatus");
-      if (termStatus) termStatus.textContent = "Disconnected";
+      if (termStatus) { termStatus.textContent = "Disconnected"; termStatus.classList.remove("live"); }
       const termBox = document.getElementById("termBoxMain");
-      if (termBox && !terminalOpen) termBox.innerHTML = "";
+      if (termBox && !layout.terminal.open) termBox.innerHTML = "";
     }
 
-    function toggleCameraPanel() {
-      cameraOpen = !cameraOpen;
-      const section = document.getElementById("cameraSection");
-      const btn = document.getElementById("btnCameraToggle");
-      section.classList.toggle("open", cameraOpen);
-      btn.classList.toggle("activeMode", cameraOpen);
-      btn.classList.toggle("toggleBtnOpen", cameraOpen);
+    // Reflect the shared terminal status text into the chip styling.
+    new MutationObserver(() => {
+      const el = document.getElementById("termStatus");
+      if (el) el.classList.toggle("live", el.textContent === "Connected");
+    }).observe(document.body, { subtree: true, childList: true, characterData: true });
 
-      if (!cameraOpen) {
-        stopAllVideoStreams();
-        const cb = document.getElementById("showYoloPanel");
-        if (cb) cb.checked = false;
-        toggleYoloPanel();
-      }
-    }
+    /* ---------------- camera + object detection ---------------- */
 
     function setCamHint(t) {
       const el = document.getElementById("camHint");
-      if (el) el.textContent = t;
+      el.textContent = t;
+      el.classList.toggle("live", /live/i.test(t));
     }
 
     function setYoloHint(t) {
       const el = document.getElementById("yoloHint");
-      if (el) el.textContent = t;
+      el.textContent = t;
+      el.classList.toggle("live", /live/i.test(t));
     }
 
-    function setVideoModeLabel(mode) {
-      ACTIVE_VIDEO_MODE = mode;
-      const el = document.getElementById("videoMode");
-      if (el) el.textContent = mode;
+    function showCamImage(show) {
+      document.getElementById("camImg").style.display = show ? "block" : "none";
+      document.getElementById("camPlaceholder").style.display = show ? "none" : "inline";
     }
 
-    function resetFrameCounters() {
-      frames = 0;
-      document.getElementById("frameCount").textContent = "0";
-      document.getElementById("frameBytes").textContent = "0";
-    }
-
-    function applyFrameBytes(u8) {
-      const bytes = u8.length;
-      frames++;
-      document.getElementById("frameCount").textContent = String(frames);
-      document.getElementById("frameBytes").textContent = String(bytes);
-
+    function applyFrame(u8) {
       const blob = new Blob([u8], { type: "image/jpeg" });
       const url = URL.createObjectURL(blob);
       if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
       lastBlobUrl = url;
-      document.getElementById("camImg").src = url;
-    }
-
-    function toggleYoloPanel() {
-      const show = document.getElementById("showYoloPanel")?.checked;
-      document.getElementById("yoloPanel").style.display = show ? "block" : "none";
+      const img = document.getElementById("camImg");
+      img.src = url;
+      showCamImage(true);
     }
 
     function stopFrontStreamOnly() {
-      try { if (CAM_WS) CAM_WS.close(); } catch {}
+      try { if (CAM_WS) CAM_WS.close(); } catch (_) {}
       CAM_WS = null;
       if (camKeepalive) { clearInterval(camKeepalive); camKeepalive = null; }
     }
 
     function stopYoloVideoOnly() {
-      try { if (YOLO_VIDEO_WS) YOLO_VIDEO_WS.close(); } catch {}
+      try { if (YOLO_VIDEO_WS) YOLO_VIDEO_WS.close(); } catch (_) {}
       YOLO_VIDEO_WS = null;
       if (yoloVideoKeepalive) { clearInterval(yoloVideoKeepalive); yoloVideoKeepalive = null; }
     }
@@ -694,159 +1575,116 @@ Author: Victor Lim
     function stopAllVideoStreams() {
       stopFrontStreamOnly();
       stopYoloVideoOnly();
-
-      if (lastBlobUrl) {
-        URL.revokeObjectURL(lastBlobUrl);
-        lastBlobUrl = "";
-      }
-
+      if (lastBlobUrl) { URL.revokeObjectURL(lastBlobUrl); lastBlobUrl = ""; }
       const img = document.getElementById("camImg");
-      if (img) img.removeAttribute("src");
-
-      setVideoModeLabel("off");
-      setCamHint(stopLatched ? "STOP latched: camera paused" : "Idle");
-      setYoloHint(stopLatched ? "STOP latched" : "Idle");
+      img.removeAttribute("src");
+      showCamImage(false);
+      ACTIVE_VIDEO_MODE = "off";
+      setCamHint(stopLatched ? "Paused" : "Idle");
+      setYoloHint("Idle");
     }
 
     function startFrontCameraMode() {
-      if (!cameraOpen) {
-        cameraOpen = true;
-        document.getElementById("cameraSection").classList.add("open");
-        document.getElementById("btnCameraToggle").classList.add("activeMode", "toggleBtnOpen");
-      }
-
+      if (!layout.camera.open) setOpen("camera", true);
       if (!Go2Shared.ensureLoggedIn()) return;
-      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
-        setCamHint("STOP latched: camera paused");
-        return;
-      }
+      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) { setCamHint("Paused"); return; }
 
       stopYoloVideoOnly();
       stopFrontStreamOnly();
-      resetFrameCounters();
+      ACTIVE_VIDEO_MODE = "front";
+      setCamHint("Connecting…");
 
-      setVideoModeLabel("front");
-      setCamHint("Connecting front stream...");
-      setYoloHint("Idle");
-
-      const wsUrl = `${Go2Shared.apiWsBase()}/ws/cam_front${authWsSuffix()}`;
-      CAM_WS = new WebSocket(wsUrl);
+      CAM_WS = new WebSocket(`${Go2Shared.apiWsBase()}/ws/cam_front${authWsSuffix()}`);
       CAM_WS.binaryType = "arraybuffer";
 
       CAM_WS.onopen = () => {
-        setCamHint("Front stream live ✅");
+        setCamHint("Live");
         camKeepalive = setInterval(() => {
-          if (CAM_WS && CAM_WS.readyState === WebSocket.OPEN) {
-            try { CAM_WS.send("ping"); } catch {}
-          }
+          if (CAM_WS && CAM_WS.readyState === WebSocket.OPEN) { try { CAM_WS.send("ping"); } catch (_) {} }
         }, 10000);
       };
-
       CAM_WS.onmessage = async (ev) => {
         if (ACTIVE_VIDEO_MODE !== "front") return;
         if (!Go2Shared.state.COMMS_ENABLED || stopLatched) return;
         if (typeof ev.data === "string") return;
-
         let u8;
         if (ev.data instanceof ArrayBuffer) u8 = new Uint8Array(ev.data);
         else if (ev.data instanceof Blob) u8 = new Uint8Array(await ev.data.arrayBuffer());
         else return;
-
-        applyFrameBytes(u8);
+        applyFrame(u8);
       };
-
       CAM_WS.onclose = () => {
         if (camKeepalive) { clearInterval(camKeepalive); camKeepalive = null; }
         CAM_WS = null;
-        if (ACTIVE_VIDEO_MODE === "front") {
-          setCamHint(stopLatched ? "STOP latched: camera paused" : "Front stream disconnected");
-        }
+        if (ACTIVE_VIDEO_MODE === "front") setCamHint(stopLatched ? "Paused" : "Disconnected");
       };
+      CAM_WS.onerror = () => { if (ACTIVE_VIDEO_MODE === "front") setCamHint("Stream error"); };
+    }
 
-      CAM_WS.onerror = () => {
-        if (ACTIVE_VIDEO_MODE === "front") setCamHint("Front stream WS error");
-      };
+    function onYoloSwitch() {
+      const on = document.getElementById("yoloSwitch").checked;
+      document.getElementById("yoloHint").style.display = on ? "inline" : "none";
+      if (on) startYoloMode();
+      else stopYoloMode();
     }
 
     async function startYoloMode() {
       if (!Go2Shared.ensureLoggedIn()) return;
-      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) {
-        setYoloHint("STOP latched");
-        return;
-      }
+      if (!Go2Shared.state.COMMS_ENABLED || stopLatched) { setYoloHint("Paused"); return; }
 
-      setYoloHint("Starting YOLO process...");
+      setYoloHint("Starting…");
       const startResp = await Go2Shared.httpPost("/yolo/start");
       if (!startResp.ok) {
-        setYoloHint(`Start failed (${startResp.status})`);
-        Go2Shared.setStatus("YOLO start failed", false, `URL: ${startResp.url}\n${startResp.text}`);
+        setYoloHint("Failed");
+        Go2Shared.setStatus("Object detection failed to start", false);
+        document.getElementById("yoloSwitch").checked = false;
         return;
       }
 
       stopFrontStreamOnly();
       stopYoloVideoOnly();
-      resetFrameCounters();
+      ACTIVE_VIDEO_MODE = "yolo";
+      setCamHint("Live");
+      setYoloHint("Connecting…");
 
-      setVideoModeLabel("yolo");
-      setCamHint("YOLO stream active");
-      setYoloHint("Connecting YOLO stream...");
-
-      const wsUrl = `${Go2Shared.apiWsBase()}/ws/cam_yolo${authWsSuffix()}`;
-      YOLO_VIDEO_WS = new WebSocket(wsUrl);
+      YOLO_VIDEO_WS = new WebSocket(`${Go2Shared.apiWsBase()}/ws/cam_yolo${authWsSuffix()}`);
       YOLO_VIDEO_WS.binaryType = "arraybuffer";
 
       YOLO_VIDEO_WS.onopen = () => {
-        setYoloHint("YOLO stream live ✅");
+        setYoloHint("Live");
         yoloVideoKeepalive = setInterval(() => {
-          if (YOLO_VIDEO_WS && YOLO_VIDEO_WS.readyState === WebSocket.OPEN) {
-            try { YOLO_VIDEO_WS.send("ping"); } catch {}
-          }
+          if (YOLO_VIDEO_WS && YOLO_VIDEO_WS.readyState === WebSocket.OPEN) { try { YOLO_VIDEO_WS.send("ping"); } catch (_) {} }
         }, 10000);
       };
-
       YOLO_VIDEO_WS.onmessage = async (ev) => {
         if (ACTIVE_VIDEO_MODE !== "yolo") return;
         if (!Go2Shared.state.COMMS_ENABLED || stopLatched) return;
         if (typeof ev.data === "string") return;
-
         let u8;
         if (ev.data instanceof ArrayBuffer) u8 = new Uint8Array(ev.data);
         else if (ev.data instanceof Blob) u8 = new Uint8Array(await ev.data.arrayBuffer());
         else return;
-
-        applyFrameBytes(u8);
+        applyFrame(u8);
       };
-
-      YOLO_VIDEO_WS.onclose = async () => {
+      YOLO_VIDEO_WS.onclose = () => {
         if (yoloVideoKeepalive) { clearInterval(yoloVideoKeepalive); yoloVideoKeepalive = null; }
         YOLO_VIDEO_WS = null;
-
         if (ACTIVE_VIDEO_MODE === "yolo" && !stopLatched) {
-          setYoloHint("YOLO stream disconnected");
+          setYoloHint("Disconnected");
           startFrontCameraMode();
         }
       };
-
-      YOLO_VIDEO_WS.onerror = () => {
-        if (ACTIVE_VIDEO_MODE === "yolo") setYoloHint("YOLO stream WS error");
-      };
+      YOLO_VIDEO_WS.onerror = () => { if (ACTIVE_VIDEO_MODE === "yolo") setYoloHint("Stream error"); };
     }
 
     async function stopYoloMode() {
       stopYoloVideoOnly();
-
       const r = await Go2Shared.httpPost("/yolo/stop", null, { bypassCommsGate: true });
-      if (!r.ok) {
-        setYoloHint(`Stop failed (${r.status})`);
-        Go2Shared.setStatus("YOLO stop failed", false, `URL: ${r.url}\n${r.text}`);
-      } else {
-        setYoloHint("YOLO stopped");
-      }
-
-      if (!stopLatched && Go2Shared.state.COMMS_ENABLED && cameraOpen) {
+      setYoloHint(r.ok ? "Idle" : "Stop failed");
+      if (!stopLatched && Go2Shared.state.COMMS_ENABLED && layout.camera.open && ACTIVE_VIDEO_MODE === "yolo") {
         startFrontCameraMode();
-      } else {
-        setVideoModeLabel("off");
+      } else if (ACTIVE_VIDEO_MODE === "yolo") {
+        ACTIVE_VIDEO_MODE = "off";
       }
     }
   </script>
