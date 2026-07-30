@@ -12,6 +12,8 @@ _colcon_build/
 __pycache__/
 *.pyc
 *.pyo
+.venv/
+venv/
 
 # Editor junk
 .vscode/
@@ -22,3 +24,6 @@ __pycache__/
 
 # Recorded sessions (large rosbags)
 sessions/
+
+# Gateway: per-deployment identity->role map (copy allowlist.example.json)
+gateway/allowlist.json

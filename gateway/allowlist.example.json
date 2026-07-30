@@ -1,0 +1,8 @@
+{
+  "roles": {
+    "you@example.com": "admin",
+    "teammate@example.com": "driver",
+    "observer@example.com": "viewer"
+  },
+  "default_role": null
+}
