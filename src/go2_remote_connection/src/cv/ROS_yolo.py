@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
+import json
 import os
 
 import cv2
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CompressedImage
+from std_msgs.msg import String
 from cv_bridge import CvBridge
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy, qos_profile_sensor_data
 from ament_index_python.packages import get_package_share_directory
 
 import yolo
+import apriltag_detector
 
 
 class YOLONode(Node):
@@ -18,9 +21,16 @@ class YOLONode(Node):
 
         self.declare_parameter("image_topic", "/front_camera/image_raw")
         self.declare_parameter("jpeg_quality", 70)
+        self.declare_parameter(
+            "apriltag_families", ",".join(apriltag_detector.DEFAULT_FAMILIES)
+        )
 
         self.image_topic = self.get_parameter("image_topic").value
         self.jpeg_quality = int(self.get_parameter("jpeg_quality").value)
+
+        families = apriltag_detector.set_families(
+            self.get_parameter("apriltag_families").value
+        )
 
         self.bridge = CvBridge()
 
@@ -50,19 +60,54 @@ class YOLONode(Node):
             stream_qos,
         )
 
+        self.detections_pub = self.create_publisher(
+            String,
+            "/yolo/detections",
+            10,
+        )
+
         self.timer = self.create_timer(0.2, self.timer_callback)
 
         self.get_logger().info(f"YOLO node subscribed to {self.image_topic}")
         self.get_logger().info(f"YOLO compressed output: /web/yolo_cam/compressed")
         self.get_logger().info(f"YOLO JPEG quality: {self.jpeg_quality}")
+        self.get_logger().info(f"AprilTag families: {families}")
 
     def image_callback(self, msg):
         image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
 
         detections = yolo.detection(image)
+        apriltags = apriltag_detector.detect(image)
+
         yolo.draw_detections(image, detections)
+        apriltag_detector.draw_apriltags(image, apriltags)
 
         stamp = self.get_clock().now().to_msg()
+
+        payload = {
+            "t": "detections",
+            "stamp": {"sec": int(stamp.sec), "nanosec": int(stamp.nanosec)},
+            "yolo": [
+                {
+                    "label": d["label"],
+                    "confidence": round(float(d["confidence"]), 3),
+                    "coords": [int(c) for c in d["coords"]],
+                }
+                for d in detections
+            ],
+            "apriltags": [
+                {
+                    "family": t["family"],
+                    "id": t["id"],
+                    "coords": t["coords"],
+                    "center": t["center"],
+                }
+                for t in apriltags
+            ],
+        }
+        detections_msg = String()
+        detections_msg.data = json.dumps(payload)
+        self.detections_pub.publish(detections_msg)
 
         # Publish raw annotated image only if someone wants it
         if self.raw_pub.get_subscription_count() > 0:
