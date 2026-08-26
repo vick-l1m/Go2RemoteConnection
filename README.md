@@ -2,6 +2,27 @@
 
 Creating a web access interface to connect to Go2 functions.
 
+## Package layout
+
+Two ROS 2 packages, split by whether the code talks to the robot:
+
+| Package | Contains | Needs the Unitree SDK? |
+|---|---|---|
+| `go2_remote_controller` | Web teleop bridge, sport-mode client, RL policy runtime, FastAPI dashboard, camera/YOLO services | **Yes** — builds on the Jetson / robot dev machine |
+| `go2_remote_viz` | Bag recording, session replay in RViz, dataset export for imitation learning, 2D occupancy map | **No** — builds and runs on any ROS 2 machine |
+
+The split exists so that reviewing a recorded run does not require the robot's
+SDK, or the robot. `go2_remote_viz` replays sessions against the `go2_description`
+package from the main repo, which is the single source of truth for the robot
+model — this package deliberately keeps no second copy of the URDF.
+
+```bash
+# Replay a recorded session (needs go2_description on the ament path)
+ros2 launch go2_remote_viz view_session.launch.py
+ros2 bag play sessions/<UTCdate>_<name>/bag --loop   # in another terminal
+```
+
+
 ## FastAPI backend (prototype)
 
 This project runs a small FastAPI server on the Unitree Go2 (or a machine with the same ROS 2/Unitree environment)
@@ -26,7 +47,7 @@ On the Go2 (or the device running the server)
 # Install dependancies
 sudo apt update
 sudo apt install ros-humble-map-msgs
-cd ~/Go2_RL_workflow/Go2RemoteConnection/src/go2_remote_connection
+cd ~/Go2_RL_workflow/Go2RemoteConnection/src/go2_remote_controller
 pip install -r requirements.txt
 
 
@@ -35,7 +56,7 @@ sudo apt install -y \
   ros-humble-cv-bridge \
   ros-humble-image-transport \
   ros-humble-sensor-msgs
-cd ~/Go2_RL_workflow/Go2RemoteConnection/src/go2_remote_connection/src/cv/model
+cd ~/Go2_RL_workflow/Go2RemoteConnection/src/go2_remote_controller/src/cv/model
 python3 model_download.py
 
 # Setup the workspace
@@ -191,7 +212,7 @@ python3 -m http.server 8081
 ```
 **The Ros2 bridge to run Go2 commands**
 ```bash
-ros2 run go2_remote_connection web_teleop_bridge
+ros2 run go2_remote_controller web_teleop_bridge
 ```
 The script does the following:
   - Source ROS 2 Foxy

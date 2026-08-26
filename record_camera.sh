@@ -58,7 +58,7 @@ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 
 # ---- topic set (shared source of truth) ------------------------------------
-source "$WS_DIR/src/go2_remote_connection/recording/topics.sh"
+source "$WS_DIR/src/go2_remote_viz/recording/topics.sh"
 TOPICS="$CAMERA_TOPICS $EXTRA_TOPICS"
 
 # ---- output dir + metadata -------------------------------------------------

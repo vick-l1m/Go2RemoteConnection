@@ -5,13 +5,13 @@ set -eo pipefail
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # If the script is in workspace root:
-if [ -d "$WS_DIR/src/go2_remote_connection" ]; then
-  PKG_DIR="$WS_DIR/src/go2_remote_connection"
-# If the script is inside the package (e.g. .../src/go2_remote_connection):
+if [ -d "$WS_DIR/src/go2_remote_controller" ]; then
+  PKG_DIR="$WS_DIR/src/go2_remote_controller"
+# If the script is inside the package (e.g. .../src/go2_remote_controller):
 elif [ -d "$WS_DIR/app" ] && [ -d "$WS_DIR/src" ]; then
   PKG_DIR="$WS_DIR"
 else
-  echo "[run_all] ❌ Can't locate go2_remote_connection package from $WS_DIR"
+  echo "[run_all] ❌ Can't locate go2_remote_controller package from $WS_DIR"
   exit 1
 fi
 
@@ -146,7 +146,7 @@ for overlay in "$WS_DIR/install/setup.bash" "$HOME/go2_ws/Go2RemoteConnection/in
   fi
 done
 if [ "$OVERLAY_SOURCED" -eq 0 ]; then
-  echo "[run_all] WARNING: no go2_remote_connection overlay found (did you colcon build?)"
+  echo "[run_all] WARNING: no go2_remote_controller overlay found (did you colcon build?)"
 fi
 
 set -u
@@ -190,8 +190,8 @@ fi
 # Go2_RL_workflow project and as a standalone Go2RemoteConnection repo, wherever
 # it is cloned -- no hard-coded ~/go2_ws path.
 # To force the RL nodes to run from a DIFFERENT checkout, set GO2_WS_DIR to that
-# repo root (the dir containing src/go2_remote_connection) before launching.
-PKG_NAME="go2_remote_connection"
+# repo root (the dir containing src/go2_remote_controller) before launching.
+PKG_NAME="go2_remote_controller"
 if [ -n "${GO2_WS_DIR:-}" ]; then
   RL_PKG_DIR="$GO2_WS_DIR/src/$PKG_NAME"
 else
@@ -260,14 +260,14 @@ done
 
 kill_conflicting_nodes() {
   echo "[run_all] Killing conflicting motion nodes (if any)..."
-  pkill -f "ros2 run go2_remote_connection web_teleop_bridge" || true
-  pkill -f "ros2 run go2_remote_connection web_advanced_bridge" || true
-  pkill -f "ros2 run go2_remote_connection advanced_gamepad_controller_web" || true
-  pkill -f "go2_remote_connection.*web_teleop_bridge" || true
-  pkill -f "go2_remote_connection.*web_advanced_bridge" || true
-  pkill -f "go2_remote_connection.*advanced_gamepad_controller_web" || true
-  pkill -f "ros2 run go2_remote_connection web_bridge" || true
-  pkill -f "go2_remote_connection.*web_bridge" || true
+  pkill -f "ros2 run go2_remote_controller web_teleop_bridge" || true
+  pkill -f "ros2 run go2_remote_controller web_advanced_bridge" || true
+  pkill -f "ros2 run go2_remote_controller advanced_gamepad_controller_web" || true
+  pkill -f "go2_remote_controller.*web_teleop_bridge" || true
+  pkill -f "go2_remote_controller.*web_advanced_bridge" || true
+  pkill -f "go2_remote_controller.*advanced_gamepad_controller_web" || true
+  pkill -f "ros2 run go2_remote_controller web_bridge" || true
+  pkill -f "go2_remote_controller.*web_bridge" || true
   sleep 0.3
 }
 
@@ -275,12 +275,12 @@ kill_conflicting_nodes
 
 if [ "$SPORT_READY" -eq 1 ]; then
   echo "[run_all] Starting web_bridge (for the joystick UI)"
-  ros2 run go2_remote_connection web_bridge > /tmp/web_bridge.log 2>&1 &
+  ros2 run go2_remote_controller web_bridge > /tmp/web_bridge.log 2>&1 &
   WEB_BRIDGE_PID=$!
   register_pid "$WEB_BRIDGE_PID" "web_bridge" "/tmp/web_bridge.log"
 
   echo "[run_all] Starting move_forward_meters_node ..."
-  ros2 run go2_remote_connection move_forward_meters_node > /tmp/move_forward_meters.log 2>&1 &
+  ros2 run go2_remote_controller move_forward_meters_node > /tmp/move_forward_meters.log 2>&1 &
   MOVE_PID=$!
   register_pid "$MOVE_PID" "move_forward_meters_node" "/tmp/move_forward_meters.log"
 

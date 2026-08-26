@@ -5,13 +5,13 @@ set -eo pipefail
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # If the script is in workspace root:
-if [ -d "$WS_DIR/src/go2_remote_connection" ]; then
-  PKG_DIR="$WS_DIR/src/go2_remote_connection"
-# If the script is inside the package (e.g. .../src/go2_remote_connection):
+if [ -d "$WS_DIR/src/go2_remote_controller" ]; then
+  PKG_DIR="$WS_DIR/src/go2_remote_controller"
+# If the script is inside the package (e.g. .../src/go2_remote_controller):
 elif [ -d "$WS_DIR/app" ] && [ -d "$WS_DIR/src" ]; then
   PKG_DIR="$WS_DIR"
 else
-  echo "[run_all] ❌ Can't locate go2_remote_connection package from $WS_DIR"
+  echo "[run_all] ❌ Can't locate go2_remote_controller package from $WS_DIR"
   exit 1
 fi
 
@@ -150,7 +150,7 @@ for overlay in "$WS_DIR/install/setup.bash" "$HOME/go2_ws/Go2RemoteConnection/in
   fi
 done
 if [ "$OVERLAY_SOURCED" -eq 0 ]; then
-  echo "[run_all] WARNING: no go2_remote_connection overlay found (did you colcon build?)"
+  echo "[run_all] WARNING: no go2_remote_controller overlay found (did you colcon build?)"
 fi
 
 set -u
@@ -171,7 +171,7 @@ echo "[run_all] 🔓 Auth disabled (sim mode)"
 # 0a) Start L1 -> /map2d
 # ----------------------------
 echo "[run_all] Starting flatten_l1_data (L1 -> /map2d)..."
-ros2 run go2_remote_connection flatten_l1_data \
+ros2 run go2_remote_viz flatten_l1_data \
   --ros-args \
   -p cloud_topic:=/utlidar/cloud_base \
   -p map2d_topic:=/map2d \
@@ -206,12 +206,12 @@ ok_or_die "FastAPI" "$API_PID" "/tmp/go2_fastapi.log"
 
 kill_conflicting_nodes() {
   echo "[run_all] Killing conflicting motion nodes (if any)..."
-  pkill -f "ros2 run go2_remote_connection web_teleop_bridge_sim" || true
-  pkill -f "go2_remote_connection.*web_teleop_bridge_sim" || true
-  pkill -f "ros2 run go2_remote_connection web_teleop_bridge" || true
-  pkill -f "go2_remote_connection.*web_teleop_bridge" || true
-  pkill -f "ros2 run go2_remote_connection web_bridge" || true
-  pkill -f "go2_remote_connection.*web_bridge" || true
+  pkill -f "ros2 run go2_remote_controller web_teleop_bridge_sim" || true
+  pkill -f "go2_remote_controller.*web_teleop_bridge_sim" || true
+  pkill -f "ros2 run go2_remote_controller web_teleop_bridge" || true
+  pkill -f "go2_remote_controller.*web_teleop_bridge" || true
+  pkill -f "ros2 run go2_remote_controller web_bridge" || true
+  pkill -f "go2_remote_controller.*web_bridge" || true
   sleep 0.3
 }
 
@@ -226,11 +226,11 @@ if [ "$MODE" = "terminal" ]; then
   echo "[run_all] Terminal mode: skipping motion nodes ✅"
 else
   echo "[run_all] Starting web_teleop_bridge_sim..."
-  SIM_BRIDGE_BIN="$WS_DIR/install/go2_remote_connection/lib/go2_remote_connection/web_teleop_bridge_sim"
+  SIM_BRIDGE_BIN="$WS_DIR/install/go2_remote_controller/lib/go2_remote_controller/web_teleop_bridge_sim"
   if [ -x "$SIM_BRIDGE_BIN" ]; then
     "$SIM_BRIDGE_BIN" --ros-args -p robot_index:=0 > /tmp/web_teleop_bridge_sim.log 2>&1 &
   else
-    ros2 run go2_remote_connection web_teleop_bridge_sim --ros-args -p robot_index:=0 \
+    ros2 run go2_remote_controller web_teleop_bridge_sim --ros-args -p robot_index:=0 \
       > /tmp/web_teleop_bridge_sim.log 2>&1 &
   fi
   SIM_BRIDGE_PID=$!

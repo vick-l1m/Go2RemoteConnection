@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>go2_remote_viz</name>
+  <version>0.0.1</version>
+  <description>Recording, replay and visualisation for the physical Go2: bag capture, session replay in RViz, dataset export for imitation learning, and the 2D occupancy map from the L1 lidar. Split out from go2_remote_connection specifically so it carries NO Unitree SDK dependency — reviewing a recorded run should not require the robot's SDK, or the robot.</description>
+
+  <maintainer email="z5482422@gmail.com">Victor</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>map_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_sensor_msgs</depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>rosbag2</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <!-- The robot model comes from the main repo's workspace. See the note in
+       recording/view_session.launch.py: build go2_description alongside this
+       package, or point GO2_DESCRIPTION_SHARE at its share directory. -->
+  <exec_depend>go2_description</exec_depend>
+
+  <!-- Reading lowstate from a bag needs the message definitions, but NOT the SDK. -->
+  <exec_depend>unitree_go</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

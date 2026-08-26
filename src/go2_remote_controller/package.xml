@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>go2_remote_controller</name>
+  <version>0.0.1</version>
+  <description>Everything that commands the physical Go2: the web teleop bridge, the Unitree sport-mode client, the RL policy runtime, and the FastAPI dashboard. Depends on the Unitree SDK, so it only builds where that SDK is present (the Jetson / the robot's dev machine). Split out from the former go2_remote_connection package so that recording and replay tooling — which needs none of this — can be built and run on a laptop.</description>
+
+  <maintainer email="z5482422@gmail.com">Victor</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nlohmann_json</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+
+  <!-- Real robot only: these come from the Unitree ROS2 SDK overlay. -->
+  <depend>unitree_api</depend>
+  <depend>unitree_go</depend>
+
+  <exec_depend>rclpy</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -20,7 +20,7 @@
 # Output: sessions/<UTCdate>_<name>/  containing the bag + session_metadata.yaml
 #
 # Post-process to a Parquet dataset with:
-#   python3 src/go2_remote_connection/recording/bag_to_dataset.py \
+#   python3 src/go2_remote_viz/recording/bag_to_dataset.py \
 #       sessions/<...>/bag  --out sessions/<...>/dataset.parquet
 set -eo pipefail
 
@@ -72,7 +72,7 @@ export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 # ---- topic set -------------------------------------------------------------
 # Shared topic sets (JOINT_STATE_TOPICS, WEB_TOPICS, CAMERA_TOPICS) — single
 # source of truth in recording/topics.sh.
-source "$WS_DIR/src/go2_remote_connection/recording/topics.sh"
+source "$WS_DIR/src/go2_remote_viz/recording/topics.sh"
 STATE_TOPICS="$JOINT_STATE_TOPICS"
 TOPICS="$STATE_TOPICS $WEB_TOPICS $EXTRA_TOPICS"
 if [ "$WITH_CAMERA" = "1" ]; then
