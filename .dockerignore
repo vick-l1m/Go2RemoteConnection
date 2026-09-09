@@ -1,0 +1,29 @@
+# Used when this repo is a named build context for docker/robot/Dockerfile in the
+# parent Go2_RL_workflow repo (--build-context robot=Go2RemoteConnection), so the
+# whole submodule -- not just src/ -- can be copied in for its launcher scripts.
+# Mirrors .gitignore, plus host-arch colcon artifacts that would conflict with the
+# image's own build.
+build/
+install/
+log/
+*/build/
+*/install/
+*/log/
+
+__pycache__/
+*.pyc
+*.pyo
+
+.vscode/
+.idea/
+.DS_Store
+
+# 2.6 GB of recorded rosbags -- never belongs in an image.
+sessions/
+
+.git
+
+# Marks this submodule for the OUTER Go2_RL_workflow colcon workspace to skip.
+# Inside this image, GO2_WS *is* its own colcon workspace and must not inherit that:
+# colcon build run from a directory containing COLCON_IGNORE builds nothing at all.
+COLCON_IGNORE
