@@ -11,15 +11,62 @@ Full design + rationale: `Go2_RL_workflow/sim_to_real_deployment_plan.md`.
 > in hand. This build uses the un-retrained 48-dim policy with `base_lin_vel`
 > fed zeros — expect a rougher gait than sim. It validates the *pipeline*.
 
+
+## The deployment contract (`deploy.yaml`)
+
+Every policy here needs a `deploy.yaml` beside its `.onnx`. Training writes it from the
+live Isaac Lab env (`training/go2_training/utils/export_deploy_cfg.py`), and
+`go2_rl_policy_node.py` reads it for:
+
+| value | was |
+|---|---|
+| action scale | `ACTION_SCALE = 0.25`, hand-typed |
+| kp / kd | `KP, KD = 25.0, 0.5`, hand-typed |
+| control rate | `CONTROL_DT = 0.02`, hand-typed |
+| default joint pose | `Q_DEFAULT_BY_NAME`, hand-transcribed from `env.yaml` |
+| observation layout | guessed from the onnx width (`obs_dim == 48`) |
+
+**A policy without a `deploy.yaml` is refused, not run on the fallbacks.** Those values
+share one failure mode: when they are wrong nothing errors, the robot simply walks
+badly, and the policy gets blamed. Refusing is the point.
+
+Loading is per-policy, so a hot-swap from the web dropdown swaps the contract too. On
+load the node checks the onnx input width against the contract's observation total and
+rejects the pair if they disagree — that catches an `.onnx` and a `deploy.yaml` from
+different runs, which is otherwise invisible.
+
+`deploy_contract.py` here is a **byte-identical mirror** of
+`src/go2_rl/go2_rl/deploy_contract.py` in the parent workspace. The RL launcher runs
+this node as raw Python from the source tree and never sources that overlay (this repo
+is deployable standalone), so the reader has to exist twice. Edit the parent copy and
+copy it across; the parent's `test_deploy_contract.py` fails if they drift.
+
+### Promoting a policy
+
+```bash
+RUN=<Go2_RL_workflow>/training/logs/rsl_rl/<experiment>/<timestamp>
+cp "$RUN"/exported/policy.onnx  policies/<id>.onnx
+cp "$RUN"/params/deploy.yaml    policies/<id>.deploy.yaml   # or a per-policy subdir
+```
+
+The reader looks for `deploy.yaml` beside the policy, then in a `params/` subdirectory.
+Keeping one policy per directory is the least error-prone layout.
+
 ## Files
 
 | File | What |
 |------|------|
-| `go2_rl_policy_node.py` | the controller (pure `unitree_sdk2py`, **no rclpy**): `rt/lowstate` → 48-dim obs → `policy.onnx` → `rt/lowcmd` @ 50 Hz, plus sport-service handover and safety fallbacks. Talks to the bridge over localhost UDP. |
+| `go2_rl_policy_node.py` | the controller (pure `unitree_sdk2py`, **no rclpy**): `rt/lowstate` → obs → `policy.onnx` → `rt/lowcmd`, plus sport-service handover and safety fallbacks. Talks to the bridge over localhost UDP. Observation layout, rate and gains come from the active policy's `deploy.yaml`. |
 | `go2_rl_bridge_node.py` | the ROS↔UDP bridge (pure rclpy, **no SDK**): forwards `/web_teleop`, `/web_control_mode`, `/web_estop` to the controller and republishes its heartbeat / un-gate signals. |
 | `policy.onnx` | exported flat policy (copy of `logs/rsl_rl/unitree_go2_flat/<ts>/exported/policy.onnx`) |
-| `joint_names.json` | Isaac-Lab joint order — **verify before ground tests** |
-| `dump_isaac_joint_order.py` | run in the Isaac Lab env to regenerate `joint_names.json` from the real env |
+| `deploy_contract.py` | reads a policy's `deploy.yaml`. Byte-identical mirror of `src/go2_rl/go2_rl/deploy_contract.py` upstream — edit there, copy here. |
+| `joint_names.json` | Isaac Lab joint order. Superseded by `deploy.yaml`'s `joint_ids_map` for policies exported since the contract landed; still read for older ones — **verify before ground tests** |
+
+> `dump_isaac_joint_order.py` moved to the parent workspace
+> (`training/scripts/dump_isaac_joint_order.py`). It imports Isaac Lab, which does not
+> exist on the arm64 Jetson this package deploys to, so it had no business here. Run it
+> in `env_isaaclab`; `--check-contract <policy_dir>` verifies a `deploy.yaml`'s
+> `joint_ids_map` against a live articulation.
 
 ### Why two processes?
 

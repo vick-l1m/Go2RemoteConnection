@@ -110,10 +110,19 @@ Q_DEFAULT_BY_NAME = {
     "FL_calf": -1.5, "FR_calf": -1.5, "RL_calf": -1.5, "RR_calf": -1.5,
 }
 
-# Deployment contract (from env.yaml / agent.yaml).
+# Deployment contract.
+#
+# These were hand-transcribed from env.yaml / agent.yaml. They are now superseded at
+# runtime by each policy's own deploy.yaml, which training writes from the live env
+# (see deploy_contract.py). A policy without a deploy.yaml is refused rather than run
+# on the values below -- every one of them fails silently when wrong: the robot walks,
+# badly, and the policy gets blamed.
+#
+# CONTROL_DT is still used for the control loop's nominal period before any policy is
+# loaded (stand-up ramp, damping); the active contract overrides it once loaded.
 CONTROL_DT = 0.02      # 50 Hz policy rate (sim dt 0.005 * decimation 4)
-ACTION_SCALE = 0.25
-KP, KD = 25.0, 0.5     # trained actuator gains
+ACTION_SCALE = 0.25    # fallback only -- see self.action_scale
+KP, KD = 25.0, 0.5     # fallback only -- see self.kp / self.kd
 RAMP_KP, RAMP_KD = 40.0, 4.0   # firmer during the stand-up ramp
 RAMP_TIME = 2.0        # s, measured pose -> default pose
 DISENGAGE_HOLD = 1.0   # s, PD-hold default before handing back to sport
@@ -166,6 +175,9 @@ class _StdLogger:
 
     def error(self, m):
         self._l.error(m)
+
+
+from deploy_contract import DeployContract, DeployContractError  # noqa: E402
 
 
 def projected_gravity(quat_wxyz):
@@ -235,8 +247,15 @@ class Go2RLPolicyController:
         self.isaac_joints = isaac_joints
         self.isaac_from_sdk = [SDK_JOINTS.index(n) for n in isaac_joints]   # lowstate -> obs order
         self.sdk_from_isaac = [isaac_joints.index(n) for n in SDK_JOINTS]   # action  -> lowcmd order
+        # Provisional: every one of these is replaced by the active policy's
+        # deploy.yaml in _load_policy_file(). They exist so the stand-up ramp and the
+        # damping path have sane values before any policy is loaded.
         self.q_default_isaac = np.array([Q_DEFAULT_BY_NAME[n] for n in isaac_joints], np.float32)
         self.q_default_sdk = np.array([Q_DEFAULT_BY_NAME[n] for n in SDK_JOINTS], np.float32)
+        self.contract = None
+        self.action_scale = ACTION_SCALE
+        self.kp, self.kd = KP, KD
+        self.include_base_lin_vel = True
 
         # ---- policy registry + initial policy ----------------------------
         # The onnx is hot-swappable at runtime (only while idle) so the operator can
@@ -252,7 +271,17 @@ class Go2RLPolicyController:
         start_entry = self.policies.get(self.default_policy_id) if self.default_policy_id else None
         if start_entry is None or not self._load_policy_entry(start_entry):
             # No usable registry default -> fall back to the bare --policy file.
-            self._load_policy_file(args.policy)
+            # Let this raise: starting with no policy, or with one whose deployment
+            # contract is missing, is not something to recover from quietly.
+            try:
+                self._load_policy_file(args.policy)
+            except DeployContractError as e:
+                self.get_logger().error(
+                    f"Cannot start: {e}\n"
+                    "Every runnable policy needs a deploy.yaml beside its .onnx. Re-export "
+                    "it from a training run made with a current training/scripts/train.py."
+                )
+                raise
             self.active_policy_id = self.default_policy_id
         self.get_logger().info(
             f"active_policy={self.active_policy_id} obs_dim={self.obs_dim} "
@@ -401,13 +430,49 @@ class Go2RLPolicyController:
         return p
 
     def _load_policy_file(self, path):
-        """Build a fresh ORT session and swap it in. Assigns only after a successful
-        build so a bad file never leaves us with a half-loaded session. Raises on error."""
+        """Build a fresh ORT session + its deployment contract and swap both in.
+
+        Assigns only after everything is built, so a bad file never leaves a
+        half-loaded session. Raises on error -- including a missing deploy.yaml, which
+        is treated as "this policy cannot be run", not "run it on defaults".
+        """
+        path = pathlib.Path(path)
+        contract = DeployContract.load(str(path.parent))
+
         sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        onnx_dim = int(sess.get_inputs()[0].shape[1])
+        if onnx_dim != contract.obs_dim:
+            raise DeployContractError(
+                f"{path.name}: onnx expects {onnx_dim} observations but "
+                f"{contract.source} describes {contract.obs_dim} "
+                f"({' + '.join(f'{t}:{contract.obs_widths[t]}' for t in contract.obs_terms)}). "
+                "The contract and the exported policy are from different runs."
+            )
+
+        # The joint order the contract was exported under must match the order this
+        # node builds observations in, or every joint is fed the wrong number.
+        if contract.joint_ids_map is not None and len(contract.joint_ids_map) != len(self.isaac_joints):
+            raise DeployContractError(
+                f"{contract.source}: joint_ids_map has {len(contract.joint_ids_map)} entries, "
+                f"this node maps {len(self.isaac_joints)} joints"
+            )
+        if len(contract.default_joint_pos) != len(self.isaac_joints):
+            raise DeployContractError(
+                f"{contract.source}: default_joint_pos has {len(contract.default_joint_pos)} "
+                f"entries, expected {len(self.isaac_joints)}"
+            )
+
         with self._policy_lock:
             self.session = sess
             self.in_name = sess.get_inputs()[0].name
-            self.obs_dim = int(sess.get_inputs()[0].shape[1])
+            self.obs_dim = onnx_dim
+            self.contract = contract
+            self.action_scale = contract.action_scale
+            self.kp, self.kd = contract.kp, contract.kd
+            self.include_base_lin_vel = contract.include_base_lin_vel
+            # default_joint_pos is recorded in Isaac order, same as our obs vector
+            self.q_default_isaac = np.asarray(contract.default_joint_pos, np.float32)
+            self.q_default_sdk = self.q_default_isaac[self.sdk_from_isaac]
 
     def _load_policy_entry(self, entry):
         """Load the onnx described by a registry entry. Returns True on success and
@@ -426,12 +491,16 @@ class Go2RLPolicyController:
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"policy '{pid}' failed to load ({e}); keeping previous policy")
             return False
+        # policies.json's obs_dim is hand-maintained; deploy.yaml is generated. Keep
+        # reporting a mismatch so the registry gets corrected, but the contract wins.
         exp = entry.get("obs_dim")
         if exp is not None and int(exp) != self.obs_dim:
             self.get_logger().warn(
-                f"policy '{pid}' onnx obs_dim {self.obs_dim} != registry {exp}")
+                f"policy '{pid}' onnx obs_dim {self.obs_dim} != policies.json {exp} "
+                "(stale registry entry -- the onnx and its deploy.yaml agree)")
         self.active_policy_id = pid
-        self.get_logger().info(f"loaded policy '{pid}' from {path} (obs_dim={self.obs_dim})")
+        self.get_logger().info(
+            f"loaded policy '{pid}' from {path} — {self.contract!r}")
         return True
 
     def _set_policy(self, pid):
@@ -793,7 +862,7 @@ class Go2RLPolicyController:
                     return
                 self._policy_step()
             elif phase == DISENGAGE:
-                self._publish(self.q_default_sdk, KP, KD)
+                self._publish(self.q_default_sdk, self.kp, self.kd)
             elif phase == RECOVER:
                 return                            # sport svc (being) restored; do not drive
         except Exception as e:               # noqa: BLE001 - never let the loop die mid-flight
@@ -823,9 +892,9 @@ class Go2RLPolicyController:
             return
         with self._lock:
             self.last_action = action.astype(np.float32)
-        q_target_isaac = self.q_default_isaac + ACTION_SCALE * action
+        q_target_isaac = self.q_default_isaac + self.action_scale * action
         q_target_sdk = q_target_isaac[self.sdk_from_isaac]
-        self._publish(q_target_sdk, KP, KD)
+        self._publish(q_target_sdk, self.kp, self.kd)
 
     def _flip_detected(self):
         """True once the robot has been inverted *and settled* for FLIP_DEBOUNCE.
@@ -866,7 +935,11 @@ class Go2RLPolicyController:
             last_a = self.last_action.copy()
         lin_vel = np.zeros(3, np.float32)    # lin_vel_mode == "zero"
         parts = []
-        if self.obs_dim == 48:               # 48-dim policy includes base_lin_vel
+        # Which terms are present is recorded in the contract. Inferring it from the
+        # observation width used to work only because 48 happened to mean "has
+        # base_lin_vel"; a 45-dim policy plus any other 3-wide term would have been
+        # built wrong, silently.
+        if self.include_base_lin_vel:
             parts.append(lin_vel)
         parts += [gyro, proj_g, cmd, q_isaac - self.q_default_isaac, dq_isaac, last_a]
         return np.concatenate(parts).astype(np.float32)

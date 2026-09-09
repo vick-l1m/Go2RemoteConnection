@@ -22,8 +22,14 @@ set +u   # ROS setup files reference unbound vars; disable nounset while sourcin
 #    types exist in this shell (deserialising /lowstate etc. needs them).
 [ -f /opt/ros/humble/setup.bash ] && source /opt/ros/humble/setup.bash
 [ -f "$HOME/unitree_ros2/install/setup.bash" ] && source "$HOME/unitree_ros2/install/setup.bash"
-[ -f "$HOME/Go2_RL_workflow/go2_rl_workflow/install/setup.bash" ] \
-    && source "$HOME/Go2_RL_workflow/go2_rl_workflow/install/setup.bash"
+# The repository root IS the colcon workspace since the Aug-2026 restructure; the
+# old go2_rl_workflow/ subdirectory no longer exists. Try both so an older checkout
+# on the robot still works.
+for _ws in "$HOME/Go2_RL_workflow/install/setup.bash" \
+           "$HOME/Go2_RL_workflow/go2_rl_workflow/install/setup.bash"; do
+  [ -f "$_ws" ] && source "$_ws" && break
+done
+unset _ws
 
 # 2. DDS domain + vendor — MUST match the robot stack, or discovery fails.
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"

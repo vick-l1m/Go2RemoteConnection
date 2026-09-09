@@ -7,20 +7,28 @@
     "  name           human label shown in the dropdown",
     "  model          checkpoint / training run description (2nd dropdown column)",
     "  type           'blind' (proprioceptive only) or 'camera' (needs a height scan)",
-    "  obs_dim        expected observation width; the node validates the loaded onnx",
+    "  obs_dim        expected observation width; reported if it disagrees with the onnx",
     "  uses_heightmap true if the obs includes the 187-ray height scan",
     "  runnable       false if it cannot run through the current RL launcher",
     "                 (camera/height-scan policies need the perception pipeline,",
     "                  which this launcher does not start -- see realsense_d435i_plan.md)",
     "  path           onnx path, relative to rl_policy/ (or absolute)",
-    "The backend also reports a computed 'available' flag (whether the file exists)."
+    "The backend also reports a computed 'available' flag (whether the file exists).",
+    "",
+    "EVERY policy now needs a deploy.yaml BESIDE ITS .onnx. Training writes it from the",
+    "live env (training/go2_training/utils/export_deploy_cfg.py); the node reads it for",
+    "action scale, kp/kd, control rate, the default pose and the observation layout.",
+    "A policy without one is refused, not run on this file's values -- those are",
+    "hand-typed, and every one of them fails silently when wrong.",
+    "The fields above are now descriptive (they drive the dropdown and are cross-checked",
+    "against the contract); deploy.yaml is authoritative."
   ],
   "default": "flat",
   "policies": [
     {
       "id": "flat",
       "name": "Flat terrain (baseline)",
-      "model": "RSL-RL PPO · Isaac-Velocity-Flat-Unitree-Go2-v0",
+      "model": "RSL-RL PPO \u00b7 Isaac-Velocity-Flat-Unitree-Go2-v0",
       "type": "blind",
       "obs_dim": 48,
       "uses_heightmap": false,
@@ -30,7 +38,7 @@
     {
       "id": "flat_custom",
       "name": "Flat terrain (custom reward)",
-      "model": "RSL-RL PPO · unitree_go2_flat_custom",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_flat_custom",
       "type": "blind",
       "obs_dim": 48,
       "uses_heightmap": false,
@@ -40,7 +48,7 @@
     {
       "id": "flat_amp",
       "name": "Flat terrain (AMP imitation)",
-      "model": "AMP imitation-reward · unitree_go2_flat_amp · 2026-07-27_17-25-44 (style_weight 0.1)",
+      "model": "AMP imitation-reward \u00b7 unitree_go2_flat_amp \u00b7 2026-07-27_17-25-44 (style_weight 0.1)",
       "type": "blind",
       "obs_dim": 48,
       "uses_heightmap": false,
@@ -50,7 +58,7 @@
     {
       "id": "rough",
       "name": "Rough terrain (height-scan)",
-      "model": "RSL-RL PPO · unitree_go2_rough",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_rough",
       "type": "camera",
       "obs_dim": 235,
       "uses_heightmap": true,
@@ -60,7 +68,7 @@
     {
       "id": "rough_camera",
       "name": "Rough terrain (D435i camera)",
-      "model": "RSL-RL PPO · unitree_go2_rough_camera",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_rough_camera",
       "type": "camera",
       "obs_dim": 235,
       "uses_heightmap": true,
