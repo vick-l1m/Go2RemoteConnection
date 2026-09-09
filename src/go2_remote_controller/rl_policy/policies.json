@@ -23,7 +23,7 @@
     "The fields above are now descriptive (they drive the dropdown and are cross-checked",
     "against the contract); deploy.yaml is authoritative."
   ],
-  "default": "flat",
+  "default": "unitree_go2_velocity_2026-09-09",
   "policies": [
     {
       "id": "flat",
