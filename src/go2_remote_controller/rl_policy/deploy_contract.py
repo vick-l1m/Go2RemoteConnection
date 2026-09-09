@@ -47,6 +47,7 @@ KNOWN_OBS_TERMS = (
     "joint_vel_rel",
     "last_action",
     "height_scan",
+    "gait_phase",
 )
 
 
@@ -90,6 +91,38 @@ class DeployContract:
     @property
     def uses_height_scan(self) -> bool:
         return "height_scan" in self.obs_terms
+
+    @property
+    def uses_gait_phase(self) -> bool:
+        return "gait_phase" in self.obs_terms
+
+    @property
+    def gait_phase_period(self) -> float | None:
+        """Seconds per full gait cycle, or None when the policy has no gait_phase.
+
+        The period is the policy's clock: the (sin, cos) pair it was trained against
+        advances at ``step_dt / period`` per control step, so a wrong period phase-shifts
+        every gait-conditioned action without changing the observation width. Recorded
+        under the term's own ``params`` by the exporter -- refuse a contract that declares
+        the term without one rather than substituting a default.
+        """
+        if not self.uses_gait_phase:
+            return None
+        params = self._d["observations"]["gait_phase"].get("params") or {}
+        period = params.get("period")
+        if period is None:
+            raise DeployContractError(
+                f"{self.source}: observation 'gait_phase' has no params.period. "
+                "The period is what the (sin, cos) clock is scaled by; running without it "
+                "would phase-shift every action the policy takes."
+            )
+        period = float(period)
+        if period <= 0.0:
+            raise DeployContractError(
+                f"{self.source}: observation 'gait_phase' has params.period={period}, "
+                "which must be positive"
+            )
+        return period
 
     def _uniform_gain(self, values, what: str) -> float:
         """Collapse a per-joint gain list to the single value the nodes command.

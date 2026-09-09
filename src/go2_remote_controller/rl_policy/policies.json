@@ -80,7 +80,7 @@
       "name": "Unitree go2-velocity (ported contract)",
       "model": "RSL-RL PPO \u00b7 unitree_go2_velocity \u00b7 2026-09-09_02-32-33 (1500 iterations)",
       "type": "blind",
-      "obs_dim": 45,
+      "obs_dim": 47,
       "uses_heightmap": false,
       "runnable": true,
       "path": "policies/unitree_go2_velocity_2026-09-09/policy.onnx"

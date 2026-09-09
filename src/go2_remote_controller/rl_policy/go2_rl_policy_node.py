@@ -256,6 +256,11 @@ class Go2RLPolicyController:
         self.action_scale = ACTION_SCALE
         self.kp, self.kd = KP, KD
         self.include_base_lin_vel = True
+        # Replaced by the active policy's contract in _load_policy_file(); None means the
+        # policy carries no gait_phase term and the clock is never read.
+        self.gait_phase_period = None
+        self.gait_phase_dt = CONTROL_DT
+        self.gait_phase = 0.0
 
         # ---- policy registry + initial policy ----------------------------
         # The onnx is hot-swappable at runtime (only while idle) so the operator can
@@ -470,6 +475,12 @@ class Go2RLPolicyController:
             self.action_scale = contract.action_scale
             self.kp, self.kd = contract.kp, contract.kd
             self.include_base_lin_vel = contract.include_base_lin_vel
+            # Gait clock, for policies trained with a gait_phase observation. Swapping
+            # policies restarts it: a new policy's cycle has nothing to do with where the
+            # previous one happened to be.
+            self.gait_phase_period = contract.gait_phase_period
+            self.gait_phase_dt = contract.step_dt
+            self.gait_phase = 0.0
             # default_joint_pos is recorded in Isaac order, same as our obs vector
             self.q_default_isaac = np.asarray(contract.default_joint_pos, np.float32)
             self.q_default_sdk = self.q_default_isaac[self.sdk_from_isaac]
@@ -638,6 +649,7 @@ class Go2RLPolicyController:
         with self._lock:
             self.start_pos_sdk = self._read_q_sdk()
             self.last_action = np.zeros(12, np.float32)
+            self.gait_phase = 0.0        # fresh episode: restart the gait clock
             self.ramp_t = 0.0
             self.phase = ENGAGE              # control loop now ramps -> RL_RUN
 
@@ -706,6 +718,7 @@ class Go2RLPolicyController:
         with self._lock:
             self.start_pos_sdk = self._read_q_sdk()
             self.last_action = np.zeros(12, np.float32)
+            self.gait_phase = 0.0        # fresh episode: restart the gait clock
             self.ramp_t = 0.0
             self.phase = ENGAGE          # control loop ramps -> RL_RUN
 
@@ -942,7 +955,24 @@ class Go2RLPolicyController:
         if self.include_base_lin_vel:
             parts.append(lin_vel)
         parts += [gyro, proj_g, cmd, q_isaac - self.q_default_isaac, dq_isaac, last_a]
+        if self.gait_phase_period is not None:
+            parts.append(self._advance_gait_phase())
         return np.concatenate(parts).astype(np.float32)
+
+    def _advance_gait_phase(self):
+        """(sin, cos) of the gait clock, advanced one control step.
+
+        Ported from ``REGISTER_OBSERVATION(gait_phase)`` in unitree_rl_lab's own deploy
+        stack (deploy/include/isaaclab/envs/mdp/observations/observations.h), which is the
+        reference for what a gait-conditioned policy expects on hardware. An accumulator,
+        not the training side's ``episode_length_buf * step_dt``: there is no episode
+        counter here, and the two agree while this is called once per control step. Like
+        upstream it advances *before* emitting, so the first sample sits one step in
+        rather than at phase 0, and _engage() zeroes it the way the C++ env's reset() does.
+        """
+        self.gait_phase = (self.gait_phase + self.gait_phase_dt / self.gait_phase_period) % 1.0
+        angle = self.gait_phase * 2.0 * np.pi
+        return np.array([np.sin(angle), np.cos(angle)], np.float32)
 
     # ------------------------------------------------------------------ #
     # Low-level command helpers

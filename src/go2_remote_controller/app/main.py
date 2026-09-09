@@ -13,6 +13,8 @@ Author: Victor Lim
 """
 
 import os
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Depends, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -65,7 +67,24 @@ def require_token_if_enabled(authorization: str | None = Header(default=None)) -
         raise HTTPException(status_code=403, detail="Invalid token")
 
 
-app = FastAPI(title="Go2 Remote Actions")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup/shutdown hooks.
+
+    Uses the lifespan API rather than ``app.add_event_handler("startup", ...)``: the
+    latter is gone in FastAPI 1.x (which drops the deprecated Starlette event handlers),
+    so an unpinned ``pip install fastapi`` in the container gets a FastAPI that raises
+    AttributeError at import. lifespan works on both, so this file no longer depends on
+    which FastAPI the environment happens to have.
+    """
+    await on_startup()
+    try:
+        yield
+    finally:
+        await on_shutdown()
+
+
+app = FastAPI(title="Go2 Remote Actions", lifespan=lifespan)
 
 HERE = os.path.dirname(__file__)
 STATIC_DIR = os.path.join(HERE, "static")
@@ -128,9 +147,6 @@ app.add_middleware(
     ],
     max_age=86400,
 )
-
-app.add_event_handler("startup", on_startup)
-app.add_event_handler("shutdown", on_shutdown)
 
 app.include_router(health_router)
 app.include_router(config_router)
