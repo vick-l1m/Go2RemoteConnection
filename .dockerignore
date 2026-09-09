@@ -1,8 +1,12 @@
-# Used when this repo is a named build context for docker/robot/Dockerfile in the
-# parent Go2_RL_workflow repo (--build-context robot=Go2RemoteConnection), so the
-# whole submodule -- not just src/ -- can be copied in for its launcher scripts.
-# Mirrors .gitignore, plus host-arch colcon artifacts that would conflict with the
-# image's own build.
+# NOT actually relied on right now -- verified that buildx does not honour a
+# .dockerignore for a named --build-context (docker/robot/Dockerfile's
+# `--build-context robot=Go2RemoteConnection`) in the version this project builds
+# with: a `COPY --from=robot . dest/` transferred this whole submodule, sessions/
+# included, ignoring every rule below. The actual exclusion mechanism is the
+# explicit file list in that Dockerfile's COPY instructions -- BuildKit only
+# transfers what a COPY instruction names. Kept here as documentation of intent
+# (and in case a future buildx version fixes named-context .dockerignore support),
+# not as something to depend on.
 build/
 install/
 log/
