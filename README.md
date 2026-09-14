@@ -61,9 +61,21 @@ python3 model_download.py
 
 # Setup the workspace
 cd ~/Go2_RL_workflow/Go2RemoteConnection
-colcon build
+colcon build --base-paths src
 source install/setup.bash
 ```
+
+`--base-paths src` is required, not optional, when this repo lives nested under
+`~/Go2_RL_workflow` (the canonical path — see the main repo's `CLAUDE.md`). This
+directory carries its own `COLCON_IGNORE` so the *outer* `~/Go2_RL_workflow` root
+workspace build skips it — but colcon also honours that marker when this directory
+is itself the build's base path (the default, bare `colcon build`), silently
+discovering **zero packages** rather than erroring. `ros2 run go2_remote_controller
+...` then fails with `Package 'go2_remote_controller' not found` even though the
+build "succeeded" and `install/setup.bash` sourced cleanly. Pointing colcon at
+`src/` directly sidesteps the check on this directory without touching the tracked
+marker (so it survives a `git pull`) and without affecting the outer workspace's
+own build.
 
 ### 1.2. Launch the backend and ros2 node
 Make the command runnable and launch:
