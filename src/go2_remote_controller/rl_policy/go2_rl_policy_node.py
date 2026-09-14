@@ -49,9 +49,18 @@ Control mode handover:
                   Detected from body-frame gravity + a low-angular-velocity gate.
 
 DEPLOYMENT CONTRACT (must match training -- see sim_to_real_deployment_plan.md):
-    rate 50 Hz; q_target = q_default + 0.25*action; kp=25, kd=0.5;
-    obs = [base_lin_vel(3), base_ang_vel(3), proj_gravity(3), cmd(3),
-           q-q_default(12), dq(12), last_action(12)]  (48 dims, no normalization).
+    Every value comes from the active policy's deploy.yaml (see deploy_contract.py):
+    control rate, q_target = q_default + action_scale*action, kp/kd, the observation
+    term list *and each term's scale and clip*, and the command envelope.
+
+    Observation scales are NOT optional. Stock Isaac Lab's Go2 velocity task sets no
+    scales, so the first 48-dim policies ran correctly on raw sensor values and this
+    file used to say "no normalization". The unitree_rl_lab-derived tasks
+    (go2-velocity, go2-tap, flat-dr) carry scale=0.2 on base_ang_vel and scale=0.05 on
+    joint_vel_rel; feeding those raw puts the gyro 5x and the joint velocity 20x
+    outside the training distribution, the actions saturate, and the motors fault out.
+    _apply_obs_transform() is the clip->scale step unitree_rl_lab's C++ deploy does in
+    ObservationTermCfg::add(); do not remove it.
 
 base_lin_vel (obs 0:3) is NOT observable in low-level mode; with the un-retrained
 48-dim policy it is fed zeros (``--lin-vel-mode zero``). Expect a rougher gait
@@ -130,6 +139,23 @@ CMD_TIMEOUT = 0.5      # s, deadman on the joystick command
 CMD_CLIP = 1.0         # training command range +/-1
 DAMP_KD = 3.0          # damping fallback (soft collapse) on fault
 BRIDGE_TIMEOUT = 1.0   # s, deadman on the ROS bridge link (heartbeat/ping/teleop)
+
+# Action guard. A correctly-fed policy outputs |a| of roughly 1-2.5 here; the exported
+# onnx is the policy *mean* and is unbounded, and deploy.yaml's action clip is +-100,
+# so nothing downstream limits it. ACTION_CLIP caps a single step at a 1.25 rad offset
+# from the default pose (0.25 * 5.0). Sustained clipping is not an aggressive gait, it
+# is a wrong observation -- a contract mismatch measured at |a|=28 on flat-dr -- so
+# after ACTION_SAT_STEPS consecutive clipped steps the node stops driving instead of
+# grinding the motors into a fault.
+ACTION_CLIP = 5.0
+ACTION_SAT_STEPS = 25  # 0.5 s at 50 Hz
+
+# Orientation guard. Training terminates the episode at 0.8 rad of tilt, so past that
+# the policy is extrapolating; unitree_rl_lab's C++ deploy drops to Passive at 1.0 rad
+# (isaaclab::mdp::bad_orientation). Unlike the flip detector below this does not wait
+# for the robot to settle -- the point is to stop driving *during* the fall.
+TILT_ABORT_RAD = 1.0
+TILT_ABORT_DEBOUNCE = 0.2   # s, must hold continuously (rejects one noisy IMU frame)
 
 # Flip auto-recovery (RL_RUN only). Body-frame gravity z is -1 upright and flips to
 # +1 inverted (see projected_gravity); fire only once the robot has *settled* upside
@@ -256,6 +282,17 @@ class Go2RLPolicyController:
         self.action_scale = ACTION_SCALE
         self.kp, self.kd = KP, KD
         self.include_base_lin_vel = True
+        # Observation layout + per-term transforms. All replaced by the active policy's
+        # deploy.yaml in _load_policy_file(); these provisional values describe the stock
+        # 48-dim Isaac Lab layout, which is unscaled and unclipped.
+        self.obs_terms = ["base_lin_vel", "base_ang_vel", "projected_gravity",
+                          "velocity_commands", "joint_pos_rel", "joint_vel_rel", "last_action"]
+        self.obs_scales = {}
+        self.obs_clips = {}
+        # Per-axis command envelope (lin_vel_x, lin_vel_y, ang_vel_z). The contract's
+        # ranges replace these; CMD_CLIP is only the no-contract fallback.
+        self.cmd_lo = np.full(3, -CMD_CLIP, np.float32)
+        self.cmd_hi = np.full(3, CMD_CLIP, np.float32)
         # Replaced by the active policy's contract in _load_policy_file(); None means the
         # policy carries no gait_phase term and the clock is never read.
         self.gait_phase_period = None
@@ -310,6 +347,8 @@ class Go2RLPolicyController:
         self._flip_pending = False             # set by the loop, consumed by the worker
         self._flip_since = None                # monotonic t when inversion first held
         self._flip_cooldown_until = 0.0        # suppress re-trigger after a recovery
+        self._tilt_since = None                # monotonic t when excess tilt first held
+        self._sat_steps = 0                    # consecutive steps with a clipped action
         # STOP-always-wins plumbing. _sport_owns tracks who currently holds the
         # motors so ESTOP/RESUME damp/stand through the right controller. _abort_recover
         # is raised by STOP to tear down an in-flight flip recovery; _estop_pending asks
@@ -475,6 +514,22 @@ class Go2RLPolicyController:
             self.action_scale = contract.action_scale
             self.kp, self.kd = contract.kp, contract.kd
             self.include_base_lin_vel = contract.include_base_lin_vel
+            # Observation layout and the per-term clip/scale training applied. Without
+            # these the vector is the right width and the wrong magnitude, which is the
+            # one failure this whole contract exists to prevent.
+            self.obs_terms = list(contract.obs_terms)
+            self.obs_scales = dict(contract.obs_scales)
+            self.obs_clips = dict(contract.obs_clips)
+            ranges = contract.command_ranges
+            if ranges is not None:
+                self.cmd_lo = np.asarray(ranges[0], np.float32)
+                self.cmd_hi = np.asarray(ranges[1], np.float32)
+            else:
+                self.get_logger().warn(
+                    f"{contract.source}: no commands.base_velocity.ranges; clamping the "
+                    f"joystick to +-{CMD_CLIP} on every axis instead")
+                self.cmd_lo = np.full(3, -CMD_CLIP, np.float32)
+                self.cmd_hi = np.full(3, CMD_CLIP, np.float32)
             # Gait clock, for policies trained with a gait_phase observation. Swapping
             # policies restarts it: a new policy's cycle has nothing to do with where the
             # previous one happened to be.
@@ -651,6 +706,8 @@ class Go2RLPolicyController:
             self.last_action = np.zeros(12, np.float32)
             self.gait_phase = 0.0        # fresh episode: restart the gait clock
             self.ramp_t = 0.0
+            self._sat_steps = 0          # and fresh guards, so a previous run's
+            self._tilt_since = None      # saturation/tilt history cannot trip this one
             self.phase = ENGAGE              # control loop now ramps -> RL_RUN
 
     def _disengage(self):
@@ -720,6 +777,8 @@ class Go2RLPolicyController:
             self.last_action = np.zeros(12, np.float32)
             self.gait_phase = 0.0        # fresh episode: restart the gait clock
             self.ramp_t = 0.0
+            self._sat_steps = 0          # and fresh guards, so a previous run's
+            self._tilt_since = None      # saturation/tilt history cannot trip this one
             self.phase = ENGAGE          # control loop ramps -> RL_RUN
 
     def _recover_flip(self):
@@ -865,9 +924,11 @@ class Go2RLPolicyController:
             elif phase == ENGAGE:
                 self._ramp_step()
             elif phase == RL_RUN:
-                if self.flip_recovery and self._flip_detected():
+                tilted = self._tilt_abort_detected()
+                if self.flip_recovery and (tilted or self._flip_detected()):
                     self.get_logger().warn(
-                        "flip detected (robot inverted and settled); starting auto-recovery")
+                        "tilt past the trained envelope; starting auto-recovery" if tilted
+                        else "flip detected (robot inverted and settled); starting auto-recovery")
                     with self._lock:
                         self.phase = RECOVER      # stop driving lowcmd this instant
                         self._flip_pending = True
@@ -903,11 +964,59 @@ class Go2RLPolicyController:
             self.get_logger().error("non-finite action; damping")
             self._damp()
             return
+        peak = float(np.abs(action).max())
+        if peak > ACTION_CLIP:
+            self._sat_steps += 1
+            if self._sat_steps == 1 or self._sat_steps % 10 == 0:
+                self.get_logger().warn(
+                    f"action saturating (|a|max={peak:.1f} > {ACTION_CLIP}); clipping "
+                    f"[{self._sat_steps} step(s)]")
+            if self._sat_steps >= ACTION_SAT_STEPS:
+                self.get_logger().error(
+                    f"action saturated for {self._sat_steps} steps (|a|max={peak:.1f}); "
+                    "ESTOP. This is what a wrong observation looks like, not a hot gait -- "
+                    f"check the obs layout/scales against {getattr(self.contract, 'source', '?')}")
+                with self._lock:
+                    self.phase = ESTOP
+                self._damp()
+                return
+            action = np.clip(action, -ACTION_CLIP, ACTION_CLIP)
+        else:
+            self._sat_steps = 0
         with self._lock:
             self.last_action = action.astype(np.float32)
         q_target_isaac = self.q_default_isaac + self.action_scale * action
         q_target_sdk = q_target_isaac[self.sdk_from_isaac]
         self._publish(q_target_sdk, self.kp, self.kd)
+
+    def _tilt_abort_detected(self):
+        """True while the base has been tilted past TILT_ABORT_RAD for the debounce.
+
+        The complement of _flip_detected(): that one waits for the robot to come to rest
+        upside down, so during a fall -- exactly when driving the motors does the damage
+        -- it never fires. This fires *during* the fall, at the angle unitree_rl_lab's
+        C++ deploy drops to Passive (isaaclab::mdp::bad_orientation, 1.0 rad), which is
+        already past the 0.8 rad the training env terminates an episode at. Beyond that
+        the policy is extrapolating, so handing the robot to the sport service to stand
+        itself up beats letting it keep commanding joints.
+
+        Shares the flip cooldown so a recovery is not re-triggered by its own motion.
+        Called only from RL_RUN, where low_state is guaranteed non-None.
+        """
+        if self._now() < self._flip_cooldown_until:
+            self._tilt_since = None
+            return False
+        proj_g = projected_gravity(self.low_state.imu_state.quaternion)
+        # |proj_g| is 1, so -proj_g[2] is cos(tilt from upright); clamp for acos safety.
+        tilt = float(np.arccos(np.clip(-proj_g[2], -1.0, 1.0)))
+        if tilt <= TILT_ABORT_RAD:
+            self._tilt_since = None
+            return False
+        now = self._now()
+        if self._tilt_since is None:
+            self._tilt_since = now
+            return False
+        return (now - self._tilt_since) >= TILT_ABORT_DEBOUNCE
 
     def _flip_detected(self):
         """True once the robot has been inverted *and settled* for FLIP_DEBOUNCE.
@@ -934,29 +1043,61 @@ class Go2RLPolicyController:
             return False
         return (now - self._flip_since) >= FLIP_DEBOUNCE
 
+    def _apply_obs_transform(self, name, values):
+        """Clip then scale one observation term, exactly as training did.
+
+        Isaac Lab's ObservationManager applies noise -> clip -> scale, and
+        unitree_rl_lab's C++ deploy repeats the clip -> scale half on the robot
+        (ObservationTermCfg::add). There is no noise on hardware, so this is the whole
+        transform. Both halves come from the policy's own deploy.yaml; a term the
+        contract left unscaled/unclipped is passed straight through, which is why the
+        stock 48-dim policies are unaffected by this step.
+        """
+        clip = self.obs_clips.get(name)
+        if clip is not None:
+            values = np.clip(values, clip[0], clip[1])
+        scale = self.obs_scales.get(name)
+        if scale is not None:
+            values = values * np.asarray(scale, np.float32)
+        return np.asarray(values, np.float32)
+
+    def _clip_cmd(self, cmd):
+        """Clamp the joystick to the per-axis envelope the command was sampled from.
+
+        The Go2 tasks train on +-1.0 in x and yaw but only +-0.4 laterally, so the old
+        symmetric +-CMD_CLIP handed a full-stick strafe 2.5x outside anything the policy
+        had seen. Mirrors the per-axis std::clamp in the C++ velocity_commands term.
+        """
+        return np.clip(cmd, self.cmd_lo, self.cmd_hi).astype(np.float32)
+
     def _build_obs(self):
         ls = self.low_state
         q_sdk = np.array([ls.motor_state[i].q for i in range(12)], np.float32)
         dq_sdk = np.array([ls.motor_state[i].dq for i in range(12)], np.float32)
         q_isaac = q_sdk[self.isaac_from_sdk]
         dq_isaac = dq_sdk[self.isaac_from_sdk]
-        gyro = np.array(ls.imu_state.gyroscope, np.float32)
-        proj_g = projected_gravity(ls.imu_state.quaternion)
         with self._lock:
             timed_out = (self._now() - self.last_cmd_t) > CMD_TIMEOUT
-            cmd = np.zeros(3, np.float32) if timed_out else np.clip(self.cmd, -CMD_CLIP, CMD_CLIP)
+            cmd = np.zeros(3, np.float32) if timed_out else self._clip_cmd(self.cmd)
             last_a = self.last_action.copy()
-        lin_vel = np.zeros(3, np.float32)    # lin_vel_mode == "zero"
+        # Keyed by term name and emitted in the contract's own order, rather than
+        # positionally: which terms are present *and in what order* is recorded in
+        # deploy.yaml, and a reordered observation is well-formed and silently wrong.
+        raw = {
+            "base_lin_vel": np.zeros(3, np.float32),   # lin_vel_mode == "zero"
+            "base_ang_vel": np.asarray(ls.imu_state.gyroscope, np.float32),
+            "projected_gravity": projected_gravity(ls.imu_state.quaternion),
+            "velocity_commands": cmd,
+            "joint_pos_rel": q_isaac - self.q_default_isaac,
+            "joint_vel_rel": dq_isaac,
+            "last_action": last_a,
+        }
         parts = []
-        # Which terms are present is recorded in the contract. Inferring it from the
-        # observation width used to work only because 48 happened to mean "has
-        # base_lin_vel"; a 45-dim policy plus any other 3-wide term would have been
-        # built wrong, silently.
-        if self.include_base_lin_vel:
-            parts.append(lin_vel)
-        parts += [gyro, proj_g, cmd, q_isaac - self.q_default_isaac, dq_isaac, last_a]
-        if self.gait_phase_period is not None:
-            parts.append(self._advance_gait_phase())
+        for name in self.obs_terms:
+            # gait_phase is a clock, not a sensor: advance it exactly once per control
+            # step, and only when the contract says the policy carries it.
+            value = self._advance_gait_phase() if name == "gait_phase" else raw[name]
+            parts.append(self._apply_obs_transform(name, value))
         return np.concatenate(parts).astype(np.float32)
 
     def _advance_gait_phase(self):

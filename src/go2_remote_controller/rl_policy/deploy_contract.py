@@ -12,6 +12,18 @@ badly, and you go looking at the policy. Defaulting them is what makes that fail
 mode possible, so a policy without a contract is treated as unloadable rather than
 loaded on assumptions.
 
+**Per-term observation scales are part of that list.** Stock Isaac Lab's Go2 velocity
+task leaves every observation term unscaled, so the first 48-dim policies deployed
+correctly from raw sensor values and both nodes were written assuming "no
+normalization". The ``unitree_rl_lab``-derived tasks (``go2-velocity``, ``go2-tap``,
+``flat-dr``) do not: they carry ``scale=0.2`` on ``base_ang_vel`` and ``scale=0.05``
+on ``joint_vel_rel``. Feeding those policies raw gyro and raw joint velocity puts the
+observation 5x and 20x outside anything training ever showed them, and the actions
+saturate — measured at ``|a|=28`` (a 7 rad joint-target offset) on ``flat-dr`` at
+trotting joint speeds. So the scales are exposed here (:attr:`DeployContract.obs_scales`)
+and applied by the builders, exactly as unitree_rl_lab's own C++ deploy stack does in
+``ObservationTermCfg::add()``.
+
 Dependency-free by design (``yaml`` + stdlib): imported by ``rl_policy_node`` here
 and by ``Go2RemoteConnection``'s real-robot node, neither of which has Isaac Lab.
 
@@ -124,6 +136,36 @@ class DeployContract:
             )
         return period
 
+    @property
+    def command_ranges(self) -> tuple[list[float], list[float]] | None:
+        """Per-axis ``(lows, highs)`` for (lin_vel_x, lin_vel_y, ang_vel_z), or None.
+
+        The envelope the velocity command was *sampled from* in training, so it is also
+        the envelope the joystick has to be clamped to. The Go2 tasks use +-1.0 on x and
+        yaw but only +-0.4 laterally, so a single symmetric clip hands the policy a
+        full-stick strafe 2.5x outside anything it ever saw. unitree_rl_lab's C++ deploy
+        clamps each axis against exactly this node (``velocity_commands`` in
+        ``observations.h``); this is the Python side of that.
+
+        None when the contract records no ``base_velocity`` command, so the caller keeps
+        whatever fallback it had rather than inventing an envelope.
+        """
+        ranges = ((self._d.get("commands") or {}).get("base_velocity") or {}).get("ranges")
+        if not ranges:
+            return None
+        lows: list[float] = []
+        highs: list[float] = []
+        for axis in ("lin_vel_x", "lin_vel_y", "ang_vel_z"):
+            pair = ranges.get(axis)
+            if pair is None or len(pair) != 2:
+                raise DeployContractError(
+                    f"{self.source}: commands.base_velocity.ranges.{axis} must be a "
+                    f"[min, max] pair, got {pair!r}"
+                )
+            lows.append(float(pair[0]))
+            highs.append(float(pair[1]))
+        return lows, highs
+
     def _uniform_gain(self, values, what: str) -> float:
         """Collapse a per-joint gain list to the single value the nodes command.
 
@@ -206,13 +248,33 @@ class DeployContract:
             )
 
         self.obs_widths: dict[str, int] = {}
+        self.obs_scales: dict[str, list[float] | None] = {}
+        self.obs_clips: dict[str, tuple[float, float] | None] = {}
         for name in self.obs_terms:
             term = obs[name]
             scale = term.get("scale")
             if scale is None:
                 raise DeployContractError(f"{self.source}: observation {name!r} has no scale (cannot infer width)")
-            width = len(scale) if isinstance(scale, (list, tuple)) else 1
-            self.obs_widths[name] = width * int(term.get("history_length", 1) or 1)
+            scale = [float(s) for s in scale] if isinstance(scale, (list, tuple)) else [float(scale)]
+
+            self.obs_widths[name] = len(scale) * int(term.get("history_length", 1) or 1)
+
+            # None means identity, and the builders then skip the multiply entirely --
+            # which keeps the stock-Isaac-Lab policies (every scale 1.0, because that
+            # task sets no scales at all) byte-identical to how they ran before scales
+            # were honoured here.
+            self.obs_scales[name] = None if all(s == 1.0 for s in scale) else scale
+
+            clip = term.get("clip")
+            if clip is None:
+                self.obs_clips[name] = None
+            elif len(clip) == 2:
+                self.obs_clips[name] = (float(clip[0]), float(clip[1]))
+            else:
+                raise DeployContractError(
+                    f"{self.source}: observation {name!r} has clip={clip!r}; Isaac Lab "
+                    "clips a whole term with one (min, max) pair"
+                )
 
         self.obs_dim: int = sum(self.obs_widths.values())
 
@@ -267,7 +329,9 @@ class DeployContract:
         return out
 
     def __repr__(self) -> str:
+        scaled = [t for t, s in self.obs_scales.items() if s is not None]
         return (
             f"<DeployContract {self.obs_dim}-dim obs {self.obs_terms}, "
-            f"{self.control_rate:g} Hz, action_scale={self.action_scale:g}, src={self.source}>"
+            f"{self.control_rate:g} Hz, action_scale={self.action_scale:g}, "
+            f"obs_scaled={scaled or 'none'}, src={self.source}>"
         )
