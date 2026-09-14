@@ -134,6 +134,7 @@ ACTION_SCALE = 0.25    # fallback only -- see self.action_scale
 KP, KD = 25.0, 0.5     # fallback only -- see self.kp / self.kd
 RAMP_KP, RAMP_KD = 40.0, 4.0   # firmer during the stand-up ramp
 RAMP_TIME = 2.0        # s, measured pose -> default pose
+BLEND_TIME = 0.3       # s, policy authority + gains fade in at the ENGAGE -> RL_RUN handover
 DISENGAGE_HOLD = 1.0   # s, PD-hold default before handing back to sport
 CMD_TIMEOUT = 0.5      # s, deadman on the joystick command
 CMD_CLIP = 1.0         # training command range +/-1
@@ -343,6 +344,7 @@ class Go2RLPolicyController:
         self._prev_sport_mode = "normal"       # sport mode to restore on disengage (set at release)
         self.start_pos_sdk = self.q_default_sdk.copy()
         self.ramp_t = 0.0
+        self.blend_t = 0.0                     # policy-authority fade-in, see _blend_alpha()
         self._recover_pending = False
         self._flip_pending = False             # set by the loop, consumed by the worker
         self._flip_since = None                # monotonic t when inversion first held
@@ -951,7 +953,39 @@ class Go2RLPolicyController:
         if alpha >= 1.0:
             with self._lock:
                 self.phase = RL_RUN
-            self.get_logger().info("RL_RUN: policy active")
+                self.blend_t = 0.0           # fade the policy in from here
+            self.get_logger().info(
+                f"RL_RUN: policy active (fading in over {BLEND_TIME:g} s)")
+
+    def _blend_alpha(self):
+        """Policy authority in [0, 1], faded in over BLEND_TIME at the handover.
+
+        _ramp_step leaves the robot static at q_default under stiff gains
+        (RAMP_KP/RAMP_KD = 40/4). Entering RL_RUN used to change two things in the same
+        control step: the target jumped to the policy's first action -- a real move,
+        measured at 13.5 deg on the worst joint for flat-dr, because q_default is the
+        action *origin* and not a pose the policy was ever rewarded for holding -- and
+        the gains dropped to the trained 25/0.5, an 8x cut in damping. Stepping both at
+        once is what makes the handover snap. This fades them in together instead.
+
+        Smoothstep, not linear: zero slope at both ends, so neither the start of the
+        blend nor its completion is itself a corner.
+
+        Attenuating the *action* is exactly an interpolation of the joint target,
+        because q_default is the offset the action is added to::
+
+            q_def + s*(alpha*a)  ==  (1 - alpha)*q_def + alpha*(q_def + s*a)
+
+        so there is one knob rather than two that can disagree.
+        """
+        if self.blend_t >= BLEND_TIME:
+            return 1.0
+        self.blend_t += CONTROL_DT           # the control thread's own period
+        if self.blend_t >= BLEND_TIME:
+            self.get_logger().info("RL_RUN: policy at full authority")
+            return 1.0
+        u = self.blend_t / BLEND_TIME
+        return float(u * u * (3.0 - 2.0 * u))
 
     def _policy_step(self):
         obs = self._build_obs()
@@ -983,11 +1017,21 @@ class Go2RLPolicyController:
             action = np.clip(action, -ACTION_CLIP, ACTION_CLIP)
         else:
             self._sat_steps = 0
+        # Fade-in only; the guards above ran on the *raw* action, so a saturating
+        # policy is caught from the first step rather than being masked by a small alpha.
+        alpha = self._blend_alpha()
+        action = alpha * action
+        # Feed back what was actually commanded, not what the policy asked for. In
+        # training last_action is the action that was applied, and keeping that invariant
+        # through the blend is what stops the policy reacting to a move it never made.
         with self._lock:
             self.last_action = action.astype(np.float32)
         q_target_isaac = self.q_default_isaac + self.action_scale * action
         q_target_sdk = q_target_isaac[self.sdk_from_isaac]
-        self._publish(q_target_sdk, self.kp, self.kd)
+        # Gains ride the same curve, RAMP_KP/KD -> the trained kp/kd.
+        self._publish(q_target_sdk,
+                      RAMP_KP + alpha * (self.kp - RAMP_KP),
+                      RAMP_KD + alpha * (self.kd - RAMP_KD))
 
     def _tilt_abort_detected(self):
         """True while the base has been tilted past TILT_ABORT_RAD for the debounce.
