@@ -452,8 +452,17 @@ class Go2RLPolicyController:
         self.low_state = msg
 
     def _set_teleop(self, vx, vy, wz):
+        # The joystick UI's raw lateral/yaw axes do not match the body-frame
+        # convention training used (Isaac Lab standard: +x forward, +y LEFT,
+        # +yaw counter-clockwise/left -- see go2_velocity_env_cfg.py's
+        # UniformLevelVelocityCommandCfg). web_bridge.cpp already negates the
+        # same two axes ("VY_SCALE * -vy", "VYAW_SCALE * -vyaw") before handing
+        # them to SportClient.Move() for exactly this reason; do the same here
+        # so `velocity_commands` matches what the policy was trained against.
+        # vx needs no correction -- forward/back agrees in both conventions,
+        # which is why only left/right and yaw were ever reported as flipped.
         with self._lock:
-            self.cmd = np.array([vx, vy, wz], np.float32)
+            self.cmd = np.array([vx, -vy, -wz], np.float32)
             self.last_cmd_t = self._now()
 
     def _set_mode(self, mode):
