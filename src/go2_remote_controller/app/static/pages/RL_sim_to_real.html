@@ -276,6 +276,8 @@ Author: Victor Lim
         latest.ry = active ? y : 0;
       });
 
+      Go2Shared.createSpeedLimitControls("speedLimitControls");
+
       if (teleopTimer) clearInterval(teleopTimer);
       teleopTimer = setInterval(sendTeleop, 120);
     }
@@ -285,9 +287,9 @@ Author: Victor Lim
       if (!Go2Shared.state.COMMS_ENABLED) return;
 
       const cmd = {
-        linear_x: -latest.ly * 1.5,
-        linear_y: latest.lx * 1.5,
-        angular_z: latest.rx * 1.5,
+        linear_x: -latest.ly * Go2Shared.state.MAX_LIN_X,
+        linear_y: latest.lx * Go2Shared.state.MAX_LIN_Y,
+        angular_z: latest.rx * Go2Shared.state.MAX_ANG,
       };
 
       const r = await Go2Shared.httpPost("/teleop", cmd);
@@ -364,6 +366,11 @@ Author: Victor Lim
           <div class="joyTitle">Turn</div>
           <canvas id="joyRight" class="joyCanvas"></canvas>
         </div>
+      </div>
+
+      <div id="speedLimitsPanel" class="panel">
+        <h2>Speed Limits</h2>
+        <div id="speedLimitControls"></div>
       </div>
 
       <div class="status">

@@ -161,6 +161,11 @@ Author: Victor Lim
         </div>
       </div>
 
+      <div id="speedLimitsPanel" class="panel">
+        <h2>Speed Limits</h2>
+        <div id="speedLimitControls"></div>
+      </div>
+
       <div class="status">
         <div id="msg" class="small">Ready.</div>
         <div id="detail" class="mono"></div>
@@ -177,8 +182,6 @@ Author: Victor Lim
     let safetyBusy = false;
 
     let latest = { lx: 0, ly: 0, rx: 0 };
-    const MAX_LIN = 1.5;
-    const MAX_ANG = 1.5;
     const SEND_HZ = 20;
     const SEND_PERIOD_MS = Math.floor(1000 / SEND_HZ);
 
@@ -213,6 +216,8 @@ Author: Victor Lim
       Go2Shared.createJoystick("joyRight", (x, y, active) => {
         latest.rx = active ? x : 0;
       });
+
+      Go2Shared.createSpeedLimitControls("speedLimitControls");
 
       window.setInterval(() => {
         if (!Go2Shared.ensureLoggedIn() || !Go2Shared.state.COMMS_ENABLED || stopLatched) return;
@@ -532,9 +537,9 @@ Author: Victor Lim
 
     function mapToCmd(lx, ly, rx) {
       return {
-        linear_x: (-ly) * MAX_LIN,
-        linear_y: (lx) * MAX_LIN,
-        angular_z: (rx) * MAX_ANG
+        linear_x: (-ly) * Go2Shared.state.MAX_LIN_X,
+        linear_y: (lx) * Go2Shared.state.MAX_LIN_Y,
+        angular_z: (rx) * Go2Shared.state.MAX_ANG
       };
     }
 

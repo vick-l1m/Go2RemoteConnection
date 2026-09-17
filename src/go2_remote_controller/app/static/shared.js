@@ -24,7 +24,21 @@ window.Go2Shared = {
     AUTH_ENABLED: true,
     COMMS_ENABLED: true,
     SHOW_AUTH_BUTTONS: true,
+    MAX_LIN_X: 1.5,
+    MAX_LIN_Y: 1.5,
+    MAX_ANG: 1.5,
   },
+
+  // Speed-limit sliders: shared spec so every joystick page renders/persists
+  // the same three controls instead of each duplicating its own constants.
+  SPEED_LIMIT_SPECS: [
+    { stateKey: "MAX_LIN_X", storageKey: "go2_max_lin_x", id: "speedLimitLinX", label: "Forward / Back" },
+    { stateKey: "MAX_LIN_Y", storageKey: "go2_max_lin_y", id: "speedLimitLinY", label: "Left / Right" },
+    { stateKey: "MAX_ANG", storageKey: "go2_max_ang", id: "speedLimitAng", label: "Yaw" },
+  ],
+  SPEED_LIMIT_MIN: 0.1,
+  SPEED_LIMIT_MAX: 3.0,
+  SPEED_LIMIT_STEP: 0.05,
 
   async init(opts = {}) {
     const defaultApi = opts.defaultApi ?? window.location.origin;
@@ -36,6 +50,7 @@ window.Go2Shared = {
     const savedBase = localStorage.getItem("go2_api_base") || defaultApi || "";
     this.state.API_BASE = this.normalizeBase(savedBase);
     this.state.AUTH_TOKEN = localStorage.getItem("go2_auth_token") || "";
+    this.loadSpeedLimits();
 
     if (this.state.API_BASE) {
       localStorage.setItem("go2_api_base", this.state.API_BASE);
@@ -630,5 +645,51 @@ window.Go2Shared = {
         window.removeEventListener("resize", resize);
       },
     };
+  },
+
+  loadSpeedLimits() {
+    for (const spec of this.SPEED_LIMIT_SPECS) {
+      const v = parseFloat(localStorage.getItem(spec.storageKey));
+      if (Number.isFinite(v) && v >= this.SPEED_LIMIT_MIN && v <= this.SPEED_LIMIT_MAX) {
+        this.state[spec.stateKey] = v;
+      }
+    }
+  },
+
+  // Renders the three max-speed sliders (fwd/back, left/right, yaw) into
+  // `containerId` and wires them to Go2Shared.state + localStorage, so every
+  // joystick page reads the current limit live from Go2Shared.state.<key>.
+  createSpeedLimitControls(containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) {
+      this.setStatus(`Missing speed limit container: ${containerId}`, false);
+      return null;
+    }
+
+    const min = this.SPEED_LIMIT_MIN;
+    const max = this.SPEED_LIMIT_MAX;
+    const step = this.SPEED_LIMIT_STEP;
+
+    container.innerHTML = this.SPEED_LIMIT_SPECS.map((spec) => `
+      <div class="row speedRow">
+        <label for="${spec.id}" class="speedLabel">${spec.label}</label>
+        <input type="range" id="${spec.id}" class="speedSlider"
+               min="${min}" max="${max}" step="${step}" value="${this.state[spec.stateKey]}" />
+        <span id="${spec.id}Val" class="mono speedValue">${this.state[spec.stateKey].toFixed(2)} m/s</span>
+      </div>
+    `).join("");
+
+    for (const spec of this.SPEED_LIMIT_SPECS) {
+      const input = document.getElementById(spec.id);
+      const valEl = document.getElementById(`${spec.id}Val`);
+      input.addEventListener("input", () => {
+        const v = parseFloat(input.value);
+        this.state[spec.stateKey] = v;
+        valEl.textContent = `${v.toFixed(2)} m/s`;
+        localStorage.setItem(spec.storageKey, String(v));
+      });
+    }
+
+    return { specs: this.SPEED_LIMIT_SPECS };
   },
 };

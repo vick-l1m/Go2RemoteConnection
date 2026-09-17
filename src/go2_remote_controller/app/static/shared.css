@@ -114,6 +114,17 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   gap: 10px;
 }
 
+/* Speed-limit sliders */
+.speedRow { flex-wrap: nowrap; }
+.speedLabel { min-width: 130px; font-size: 13px; color: #333; }
+.speedSlider { flex: 1; min-width: 100px; padding: 0; }
+.speedValue { min-width: 68px; text-align: right; white-space: nowrap; }
+
+@media (max-width: 560px) {
+  .speedRow { flex-wrap: wrap; }
+  .speedLabel { min-width: 100%; }
+}
+
 /* Status box */
 .status {
   margin-top: 12px;
