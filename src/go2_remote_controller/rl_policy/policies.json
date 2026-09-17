@@ -165,6 +165,26 @@
       "uses_heightmap": false,
       "runnable": true,
       "path": "policies/unitree_go2_flat_dr_omni_amp_2026-09-17/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_flat_dr_omni_amp_style01",
+      "name": "Flat DR Omni + AMP (style 0.1)",
+      "model": "RSL-RL PPO + AMP \u00b7 unitree_go2_flat_dr_omni_amp \u00b7 2026-09-17_23-39-28 (style_weight 0.1, 2000 iters)",
+      "type": "blind",
+      "obs_dim": 45,
+      "uses_heightmap": false,
+      "runnable": true,
+      "path": "policies/unitree_go2_flat_dr_omni_amp_style01/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_flat_dr_omni_amp_style02",
+      "name": "Flat DR Omni + AMP (style 0.2)",
+      "model": "RSL-RL PPO + AMP \u00b7 unitree_go2_flat_dr_omni_amp \u00b7 2026-09-17_21-03-28 (style_weight 0.2, 2000 iters)",
+      "type": "blind",
+      "obs_dim": 45,
+      "uses_heightmap": false,
+      "runnable": true,
+      "path": "policies/unitree_go2_flat_dr_omni_amp_style02/policy.onnx"
     }
   ]
 }
