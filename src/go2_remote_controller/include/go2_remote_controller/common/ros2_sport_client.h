@@ -333,7 +333,8 @@ public:
   /*
    * @brief SwitchAvoidMode
    * @api: 2058
-   * @param flag: true to enable, false to disable
+   * No bool argument: this cycles/toggles the avoid mode on the firmware
+   * side with a single bare request, it does not take an enable/disable flag.
    */
   void SwitchAvoidMode(unitree_api::msg::Request &req);
 };

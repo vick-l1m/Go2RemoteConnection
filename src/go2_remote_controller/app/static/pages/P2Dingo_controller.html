@@ -114,11 +114,11 @@ Author: Victor Lim
         <h2 id="modePanelTitle">Movement mode commands</h2>
         <div id="movementPanel" class="modeSubPanel">
           <div class="btnGrid">
-            <button onclick="postAction('economic_gait')">EconomicGait</button>
-            <button onclick="postAction('trot_run')">TrotRun</button>
+            <button onclick="selectEconomicGait()">EconomicGait</button>
+            <button data-gait="trot_run" data-label="TrotRun" onclick="toggleBaseGait('trot_run')">TrotRun</button>
             <button onclick="postAction('switch_avoid')">SwitchAvoidMode</button>
             <button onclick="postAction('cycle_speed')">SpeedLevel (cycle)</button>
-            <button onclick="postAction('freewalk')">FreeWalk</button>
+            <button data-gait="freewalk" data-label="FreeWalk" onclick="toggleBaseGait('freewalk')">FreeWalk</button>
 
             <button data-action="toggle_freebound" data-label="FreeBound" onclick="setToggleExclusive('toggle_freebound')">FreeBound</button>
             <button data-action="toggle_freeavoid" data-label="FreeAvoid" onclick="setToggleExclusive('toggle_freeavoid')">FreeAvoid</button>
@@ -129,7 +129,7 @@ Author: Victor Lim
             <button data-action="toggle_classicwalk" data-label="ClassicWalk" onclick="setToggleExclusive('toggle_classicwalk')">ClassicWalk</button>
 
             <button onclick="postAction('stop_move')">StopMove</button>
-            <button onclick="postAction('static_walk')">StaticWalk</button>
+            <button data-gait="static_walk" data-label="StaticWalk" onclick="toggleBaseGait('static_walk')">StaticWalk</button>
           </div>
           <div class="small actionPanelNote">Movement mode uses the normal teleop joystick mapping.</div>
         </div>
@@ -261,8 +261,8 @@ Author: Victor Lim
     let currentMode = "movement";
 
     let latest = { lx: 0, ly: 0, rx: 0 };
-    const MAX_LIN = 0.6;
-    const MAX_ANG = 1.2;
+    const MAX_LIN = 1.5;
+    const MAX_ANG = 1.5;
     const SEND_HZ = 20;
     const SEND_PERIOD_MS = Math.floor(1000 / SEND_HZ);
 
@@ -276,6 +276,10 @@ Author: Victor Lim
       "toggle_classicwalk"
     ];
     const toggleState = Object.fromEntries(TOGGLES.map(a => [a, false]));
+
+    // Mutually-exclusive base gaits: only one (or none, i.e. EconomicGait) active at a time.
+    let activeBaseGait = null; // one of "static_walk"/"trot_run"/"freewalk", or null
+
     const DANGER_ACTIONS = new Set(["front_flip", "back_flip", "left_flip", "front_pounce"]);
 
     let terminalOpen = false;
@@ -561,6 +565,47 @@ Author: Victor Lim
         Go2Shared.setStatus(`${target.replace("toggle_", "")} ENABLED ✅`, true);
       } finally {
         setAllToggleButtonsEnabled(true);
+      }
+    }
+
+    function setBaseGaitBtn(gait, on) {
+      const btn = document.querySelector(`[data-gait="${gait}"]`);
+      if (!btn) return;
+      const label = btn.getAttribute("data-label");
+      btn.textContent = label + (on ? " ✅" : "");
+      btn.classList.toggle("toggleOn", !!on);
+    }
+
+    // static_walk/trot_run/freewalk: mutually-exclusive toggles that persist
+    // server-side (survive joystick idle/StopMove) until clicked again.
+    async function toggleBaseGait(gait) {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      if (!Go2Shared.state.COMMS_ENABLED) {
+        Go2Shared.setStatus("STOP latched 🔒", false, "Press RESUME to enable commands.");
+        return;
+      }
+
+      const r = await Go2Shared.httpPost(`/actions/${gait}`);
+      if (!r.ok) {
+        Go2Shared.setStatus(`${gait} failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
+        return;
+      }
+
+      const turningOff = activeBaseGait === gait;
+      if (activeBaseGait) setBaseGaitBtn(activeBaseGait, false);
+      activeBaseGait = turningOff ? null : gait;
+      if (activeBaseGait) setBaseGaitBtn(activeBaseGait, true);
+
+      Go2Shared.setStatus(`${gait} ${turningOff ? "DISABLED" : "ENABLED"} ✅`, true);
+    }
+
+    // EconomicGait is the baseline (not itself a persistent toggle) — selecting it
+    // clears whichever base gait toggle was active.
+    async function selectEconomicGait() {
+      await postAction("economic_gait");
+      if (activeBaseGait) {
+        setBaseGaitBtn(activeBaseGait, false);
+        activeBaseGait = null;
       }
     }
 

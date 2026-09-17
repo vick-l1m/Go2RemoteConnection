@@ -68,6 +68,12 @@ private:
   enum class Mode { MOVEMENT, POSING, ACTIONS };
   Mode mode_{Mode::MOVEMENT};
 
+  // Base gait: mutually-exclusive, no on/off flag at the SDK level (unlike
+  // FreeBound/ClassicWalk/etc, which take a bool). ECONOMIC is the baseline/
+  // "none selected" state.
+  enum class BaseGait { ECONOMIC, STATIC_WALK, TROT_RUN, FREE_WALK };
+  BaseGait base_gait_{BaseGait::ECONOMIC};
+
   // ---------------- Teleop tuning ----------------
   static constexpr double DEADBAND   = 0.05;
   static constexpr double RX_TIMEOUT = 0.25;
@@ -134,7 +140,28 @@ private:
 
   bool specialLocomotionActive() const {
     return freeBound_flag_ || freeAvoid_flag_ || crossStep_flag_ ||
-           freeJump_flag_ || walkUpright_flag_ || handStand_flag_ || classicWalk_flag_;
+           freeJump_flag_ || walkUpright_flag_ || handStand_flag_ || classicWalk_flag_ ||
+           base_gait_ != BaseGait::ECONOMIC;
+  }
+
+  // Issues the SDK call for a given base gait selection. Caller must hold sport_mtx_.
+  void sendBaseGait(BaseGait g, unitree_api::msg::Request &req) {
+    switch (g) {
+      case BaseGait::STATIC_WALK: sportClient_.StaticWalk(req);  break;
+      case BaseGait::TROT_RUN:    sportClient_.TrotRun(req);     break;
+      case BaseGait::FREE_WALK:   sportClient_.FreeWalk(req);    break;
+      case BaseGait::ECONOMIC:
+      default:                    sportClient_.EconomicGait(req); break;
+    }
+  }
+
+  // static_walk/trot_run/freewalk are mutually-exclusive toggles: clicking the
+  // currently-active one turns it off (reverts to the EconomicGait baseline),
+  // clicking another switches straight to it. Caller must hold sport_mtx_.
+  void toggleBaseGait(BaseGait g, unitree_api::msg::Request &req) {
+    base_gait_ = (base_gait_ == g) ? BaseGait::ECONOMIC : g;
+    sendBaseGait(base_gait_, req);
+    gait_sent_ = true;
   }
 
   void teleopCb(const geometry_msgs::msg::Twist::SharedPtr msg) {
@@ -159,9 +186,13 @@ private:
 
     mode_ = m;
 
-    if (mode_ == Mode::MOVEMENT) {
-      sportClient_.StaticWalk(req);
-    } else if (mode_ == Mode::POSING) {
+    if (mode_ == Mode::MOVEMENT || mode_ == Mode::ACTIONS) {
+      // Default to StaticWalk on first entry; if the user already has a base
+      // gait toggled on (StaticWalk/TrotRun/FreeWalk), honor it instead of
+      // silently clobbering their selection.
+      if (base_gait_ == BaseGait::ECONOMIC) base_gait_ = BaseGait::STATIC_WALK;
+      sendBaseGait(base_gait_, req);
+    } else { // POSING
       sportClient_.StopMove(req);
       pose_flag_ = true;
       sportClient_.Pose(req, true);
@@ -171,8 +202,6 @@ private:
       zero_flush_left_ = 0;
       last_nonzero_ = false;
       last_rx_time_ = this->now();
-    } else { // ACTIONS
-      sportClient_.StaticWalk(req);
     }
   }
 
@@ -190,9 +219,28 @@ private:
     if (!gait_sent_) {
       std::lock_guard<std::mutex> lk(sport_mtx_);
       unitree_api::msg::Request req;
-      sportClient_.EconomicGait(req);
+      // Reassert whichever base gait is currently toggled on, so standing up
+      // (e.g. from sit) doesn't silently drop a persistent gait selection.
+      sendBaseGait(base_gait_, req);
+      reassertSpecialLocomotion(req);
       gait_sent_ = true;
     }
+  }
+
+  // Re-issue any active special-locomotion toggle after standing up. StandUp
+  // follows the same StopMove/StandDown cycle that silently drops base_gait_
+  // (the bug this reassert path was built to fix); we don't have hardware
+  // confirmation these particular flags are dropped the same way, but
+  // reasserting them here is a no-op if the firmware kept them anyway, so it
+  // costs nothing to stay consistent. Caller must hold sport_mtx_.
+  void reassertSpecialLocomotion(unitree_api::msg::Request &req) {
+    if (freeBound_flag_)    sportClient_.FreeBound(req, true);
+    if (freeAvoid_flag_)    sportClient_.FreeAvoid(req, true);
+    if (crossStep_flag_)    sportClient_.CrossStep(req, true);
+    if (freeJump_flag_)     sportClient_.FreeJump(req, true);
+    if (walkUpright_flag_)  sportClient_.WalkUpright(req, true);
+    if (handStand_flag_)    sportClient_.HandStand(req, true);
+    if (classicWalk_flag_)  sportClient_.ClassicWalk(req, true);
   }
 
   // Accept BOTH your old and new action strings so all existing HTMLs keep working.
@@ -209,9 +257,15 @@ private:
 
     // ----- global helpers -----
     if (a == "stop_move")    { sportClient_.StopMove(req); return; }
-    if (a == "static_walk")  { sportClient_.StaticWalk(req); return; }
-    if (a == "trot_run")     { sportClient_.TrotRun(req); return; }
-    if (a == "economic_gait"){ sportClient_.EconomicGait(req); gait_sent_ = true; return; }
+    // static_walk/trot_run/freewalk have no on/off flag in the SDK, so we track
+    // the desired base gait ourselves (base_gait_) and reissue it (see
+    // specialLocomotionActive/maybeAssertGait) instead of firing once and
+    // letting StopMove/gait-reassert silently revert it. Mutually exclusive:
+    // clicking the active one turns it off (back to EconomicGait baseline).
+    if (a == "static_walk")  { toggleBaseGait(BaseGait::STATIC_WALK, req); return; }
+    if (a == "trot_run")     { toggleBaseGait(BaseGait::TROT_RUN, req);    return; }
+    if (a == "freewalk")     { toggleBaseGait(BaseGait::FREE_WALK, req);   return; }
+    if (a == "economic_gait"){ base_gait_ = BaseGait::ECONOMIC; sportClient_.EconomicGait(req); gait_sent_ = true; return; }
     if (a == "switch_avoid") { sportClient_.SwitchAvoidMode(req); return; }
 
     // ----- old compatibility: stand/sit from WebTeleopBridge -----
