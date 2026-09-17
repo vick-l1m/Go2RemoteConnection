@@ -1245,4 +1245,86 @@ Stephen Brawner (brawner@gmail.com)
     <axis
       xyz="0 0 0" />
   </joint>
+
+  <!-- Add-on RealSense D435i + mount bracket (generated from camera.yaml by tools/gen_robot_model_assets.py) -->
+  <material name="d435i_housing">
+    <color rgba="0.1600 0.1700 0.1800 1.0"/>
+  </material>
+  <material name="d435i_glass">
+    <color rgba="0.0200 0.0200 0.0250 1.0"/>
+  </material>
+  <material name="d435i_lens_0">
+    <color rgba="0.0400 0.0500 0.0800 1.0"/>
+  </material>
+  <material name="d435i_lens_1">
+    <color rgba="0.1000 0.0400 0.0400 1.0"/>
+  </material>
+  <material name="d435i_lens_2">
+    <color rgba="0.0300 0.0500 0.1000 1.0"/>
+  </material>
+  <material name="d435i_lens_3">
+    <color rgba="0.0400 0.0500 0.0800 1.0"/>
+  </material>
+  <material name="camera_mount">
+    <color rgba="0.1200 0.1200 0.1300 1.0"/>
+  </material>
+  <link name="camera_link">
+    <visual>
+      <origin xyz="-0.012500 0.000000 0.000000"/>
+      <geometry><box size="0.025000 0.090000 0.025000"/></geometry>
+      <material name="d435i_housing"/>
+    </visual>
+    <visual>
+      <origin xyz="-0.001000 0.000000 0.000000"/>
+      <geometry><box size="0.002000 0.086000 0.021000"/></geometry>
+      <material name="d435i_glass"/>
+    </visual>
+    <visual>
+      <origin xyz="-0.000500 0.025000 0.000000" rpy="0 1.5707963 0"/>
+      <geometry><cylinder radius="0.004500" length="0.002000"/></geometry>
+      <material name="d435i_lens_0"/>
+    </visual>
+    <visual>
+      <origin xyz="-0.000500 0.009000 0.000000" rpy="0 1.5707963 0"/>
+      <geometry><cylinder radius="0.003500" length="0.002000"/></geometry>
+      <material name="d435i_lens_1"/>
+    </visual>
+    <visual>
+      <origin xyz="-0.000500 -0.011000 0.000000" rpy="0 1.5707963 0"/>
+      <geometry><cylinder radius="0.004000" length="0.002000"/></geometry>
+      <material name="d435i_lens_2"/>
+    </visual>
+    <visual>
+      <origin xyz="-0.000500 -0.025000 0.000000" rpy="0 1.5707963 0"/>
+      <geometry><cylinder radius="0.004500" length="0.002000"/></geometry>
+      <material name="d435i_lens_3"/>
+    </visual>
+    <visual>
+      <origin xyz="-0.012500 0.000000 -0.014500"/>
+      <geometry><box size="0.012000 0.020000 0.004000"/></geometry>
+      <material name="d435i_housing"/>
+    </visual>
+  </link>
+  <joint name="camera_link_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin xyz="0.280000 0.000000 0.100000" rpy="0.000000 0.523599 0.000000"/>
+  </joint>
+  <link name="camera_mount">
+    <visual>
+      <origin xyz="0.160000 0.000000 0.050000"/>
+      <geometry><box size="0.014000 0.030000 0.100000"/></geometry>
+      <material name="camera_mount"/>
+    </visual>
+    <visual>
+      <origin xyz="0.220000 0.000000 0.095000"/>
+      <geometry><box size="0.120000 0.030000 0.010000"/></geometry>
+      <material name="camera_mount"/>
+    </visual>
+  </link>
+  <joint name="camera_mount_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_mount"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
 </robot>
