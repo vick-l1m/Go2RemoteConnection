@@ -373,6 +373,12 @@ Author: Victor Lim
         <div id="speedLimitControls"></div>
       </div>
 
+      <div id="robotViewerPanel" class="panel">
+        <h2>Robot Model</h2>
+        <div id="go2ViewerRoot"
+             style="width:320px; height:260px; border-radius:var(--radius-sm); overflow:hidden; border:1px solid var(--border);"></div>
+      </div>
+
       <div class="status">
         <div id="msg" class="small">Ready.</div>
         <div id="detail" class="mono"></div>
@@ -384,5 +390,19 @@ Author: Victor Lim
       </div>
     </div>
   </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/app/static/vendor/three/three.module.js",
+      "three/addons/": "/app/static/vendor/three/addons/",
+      "urdf-loader": "/app/static/vendor/urdf-loader/URDFLoader.js"
+    }
+  }
+  </script>
+  <script type="module">
+    import { mountGo2Viewer } from "/app/static/robot_viewer.js";
+    window.addEventListener("DOMContentLoaded", () => mountGo2Viewer("go2ViewerRoot"));
+  </script>
 </body>
 </html>

@@ -33,6 +33,7 @@ from app.api.rl_policy import router as rl_policy_router
 from app.api.camera_routes import router as camera_router
 from app.api.yolo_routes import router as yolo_router
 from app.api.terminal_routes import router as terminal_router
+from app.api.robot_model_routes import router as robot_model_router
 
 
 def _truthy(v: str) -> bool:
@@ -160,3 +161,4 @@ app.include_router(rl_policy_router)
 app.include_router(camera_router)
 app.include_router(yolo_router)
 app.include_router(terminal_router)
+app.include_router(robot_model_router)

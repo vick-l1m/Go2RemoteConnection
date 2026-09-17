@@ -29,8 +29,20 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Bool, Float32
 from std_msgs.msg import String as RosString
+from unitree_go.msg import LowState, SportModeState
 
 from app.core.state import state
+
+
+# SDK motor_state[0..11] order -> URDF joint names (SDK name + "_joint").
+# Mirror of go2_remote_viz/recording/lowstate_to_jointstate.py JOINT_NAMES —
+# keep both lists in sync if the SDK ordering ever changes.
+ROBOT_JOINT_NAMES = [
+    "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
+    "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
+    "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
+    "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
+]
 
 
 # ============================================================
@@ -140,6 +152,28 @@ def get_yolo_cam_store() -> CameraStore:
 
 
 # ============================================================
+# ROBOT POSE STORE (joint angles + base pose, for the live 3D viewer)
+# ============================================================
+@dataclass
+class RobotPoseStore:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    clients: Set[WebSocket] = field(default_factory=set)
+    seq: int = 0
+    last_joints: Optional[Dict[str, float]] = None
+    last_base: Optional[Dict[str, Any]] = None
+
+
+_robot_pose_store: Optional[RobotPoseStore] = None
+
+
+def get_robot_pose_store() -> RobotPoseStore:
+    global _robot_pose_store
+    if _robot_pose_store is None:
+        _robot_pose_store = RobotPoseStore()
+    return _robot_pose_store
+
+
+# ============================================================
 # ROS <-> WEB BRIDGE NODE
 # ============================================================
 class WebRosBridge(Node):
@@ -213,6 +247,21 @@ class WebRosBridge(Node):
         self.sub_yolo_cam = self.create_subscription(
             CompressedImage, yolo_cam_topic, self._on_yolo_cam, cam_qos
         )
+
+        # ---------------- Robot pose (joint angles + base pose) ----------------
+        # Feeds the live 3D robot viewer on the web pages. /lowstate publishes far
+        # faster than any UI needs, so callbacks only cache the latest sample —
+        # a separate timer below does the actual (rate-limited) broadcast.
+        self._last_joints: Optional[Dict[str, float]] = None
+        self._last_base: Optional[Dict[str, Any]] = None
+
+        self.sub_lowstate = self.create_subscription(
+            LowState, "/lowstate", self._on_lowstate, cam_qos
+        )
+        self.sub_sportmodestate = self.create_subscription(
+            SportModeState, "/sportmodestate", self._on_sportmodestate, cam_qos
+        )
+        self.create_timer(1.0 / 25.0, self._broadcast_robot_pose)
 
         # ---------------- RL policy liveness watchdog ----------------
         # If we are in RL control mode but go2_rl_policy_node stops sending its
@@ -519,6 +568,58 @@ class WebRosBridge(Node):
 
         if self._loop:
             asyncio.run_coroutine_threadsafe(update_and_send(), self._loop)
+
+    # ---------------- Robot pose callbacks ----------------
+    def _on_lowstate(self, msg: LowState):
+        # Mirror of go2_remote_viz/recording/lowstate_to_jointstate.py's mapping.
+        self._last_joints = {
+            name: float(msg.motor_state[i].q)
+            for i, name in enumerate(ROBOT_JOINT_NAMES)
+        }
+
+    def _on_sportmodestate(self, msg: SportModeState):
+        # Mirror of go2_remote_viz/recording/sportmodestate_to_tf.py's mapping.
+        # Unitree quaternion order is [w, x, y, z]; ROS/three.js want x, y, z, w.
+        qw, qx, qy, qz = (float(v) for v in msg.imu_state.quaternion)
+        self._last_base = {
+            "position": [float(msg.position[0]), float(msg.position[1]), float(msg.position[2])],
+            "quaternion": [qx, qy, qz, qw],
+        }
+
+    def _broadcast_robot_pose(self):
+        if self._last_joints is None and self._last_base is None:
+            return
+
+        store = get_robot_pose_store()
+        joints = self._last_joints
+        base = self._last_base
+
+        async def fanout():
+            async with store.lock:
+                store.seq += 1
+                store.last_joints = joints
+                store.last_base = base
+                seq = store.seq
+                clients = list(store.clients)
+
+            if not clients:
+                return
+
+            data = json.dumps({"t": "pose", "seq": seq, "joints": joints, "base": base})
+            dead = []
+            for ws in clients:
+                try:
+                    await ws.send_text(data)
+                except Exception:
+                    dead.append(ws)
+
+            if dead:
+                async with store.lock:
+                    for ws in dead:
+                        store.clients.discard(ws)
+
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(fanout(), self._loop)
 
 
 # ============================================================
