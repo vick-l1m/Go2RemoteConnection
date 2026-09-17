@@ -154,6 +154,7 @@ class WebRosBridge(Node):
         self.pub_sport_cmd = self.create_publisher(RosString, "/web_sport_cmd", 10)
         self.pub_control_mode = self.create_publisher(RosString, "/web_control_mode", 1)
         self.pub_rl_policy = self.create_publisher(RosString, "/web_rl_policy", 1)
+        self.pub_rl_posture = self.create_publisher(RosString, "/web_rl_posture", 1)
         self.pub_estop = self.create_publisher(Bool, "/web_estop", 1)
 
         # ---------------- Map subscriptions ----------------
@@ -328,6 +329,14 @@ class WebRosBridge(Node):
         msg = RosString()
         msg.data = str(policy_id)
         self.pub_rl_policy.publish(msg)
+
+    def publish_rl_posture(self, posture: str):
+        if not self._ok_to_publish():
+            return
+
+        msg = RosString()
+        msg.data = str(posture)
+        self.pub_rl_posture.publish(msg)
 
     def publish_estop(self, engaged: bool):
         if not self._ok_to_publish():

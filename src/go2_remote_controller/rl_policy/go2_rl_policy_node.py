@@ -62,9 +62,28 @@ DEPLOYMENT CONTRACT (must match training -- see sim_to_real_deployment_plan.md):
     _apply_obs_transform() is the clip->scale step unitree_rl_lab's C++ deploy does in
     ObservationTermCfg::add(); do not remove it.
 
-base_lin_vel (obs 0:3) is NOT observable in low-level mode; with the un-retrained
-48-dim policy it is fed zeros (``--lin-vel-mode zero``). Expect a rougher gait
-than sim -- this build validates the pipeline, not gait quality.
+base_lin_vel (obs 0:3) is NOT observable in low-level mode. A policy whose contract
+still declares it is fed zeros (``--lin-vel-mode zero``) and the node says so loudly at
+load: those three numbers are the velocity-tracking inputs, so the policy is running
+outside its training distribution on exactly the term its dominant reward optimised.
+The fix is on the training side -- drop base_lin_vel from the policy observation group
+and keep it for the critic only (docs/plans/sim_to_real_deployment_plan.md Phase 0).
+Every policy trained that way (``go2-velocity`` and its descendants; the perception
+task ``stepfield-spec-unitree``) simply has no such term and runs at full fidelity.
+
+PERCEPTION POLICIES (height_scan). A rough policy's observation ends with a 187-cell
+terrain scan produced on the ROS side by go2_perception/heightmap_node from the D435i
+depth cloud. This process has no rclpy to subscribe with, so the scan crosses the same
+localhost UDP link as the joystick, as a packed binary frame (see height_scan_wire.py).
+The scan is treated as a safety-critical input, not a nice-to-have:
+
+  * engaging a policy whose contract declares ``height_scan`` is REFUSED unless a scan
+    has arrived within HEIGHT_SCAN_TIMEOUT, and
+  * if the scan goes stale while the policy is driving, the node ESTOPs (soft collapse)
+    the same way it does when the bridge link dies.
+
+Feeding a stale or absent scan instead would hand the policy a frozen or flat view of
+terrain it is actively stepping onto, which is worse than stopping.
 
 !!! TEST ON A GANTRY FIRST, feet off the ground, E-stop in hand. !!!
 """
@@ -81,6 +100,8 @@ import time
 
 import numpy as np
 import onnxruntime as ort
+
+import height_scan_wire
 
 from unitree_sdk2py.core.channel import (
     ChannelFactoryInitialize,
@@ -140,6 +161,13 @@ CMD_TIMEOUT = 0.5      # s, deadman on the joystick command
 CMD_CLIP = 1.0         # training command range +/-1
 DAMP_KD = 3.0          # damping fallback (soft collapse) on fault
 BRIDGE_TIMEOUT = 1.0   # s, deadman on the ROS bridge link (heartbeat/ping/teleop)
+
+# Deadman on the perception height scan, for policies whose contract declares one.
+# Deliberately tighter than BRIDGE_TIMEOUT: a joystick that stops updating leaves the
+# robot walking on its last command, but terrain that stops updating leaves it stepping
+# onto ground it can no longer see. heightmap_node runs at the D435i's frame rate
+# (30 Hz nominal), so 0.4 s is ~12 missed frames -- past any plausible hiccup.
+HEIGHT_SCAN_TIMEOUT = 0.4
 
 # Action guard. A correctly-fed policy outputs |a| of roughly 1-2.5 here; the exported
 # onnx is the policy *mean* and is unbounded, and deploy.yaml's action clip is +-100,
@@ -280,6 +308,22 @@ class Go2RLPolicyController:
         self.q_default_isaac = np.array([Q_DEFAULT_BY_NAME[n] for n in isaac_joints], np.float32)
         self.q_default_sdk = np.array([Q_DEFAULT_BY_NAME[n] for n in SDK_JOINTS], np.float32)
         self.contract = None
+
+        # ---- perception height scan (forwarded by the bridge) -------------
+        # Declared HERE, above the first _load_policy_entry() call below, because
+        # _load_policy_file() reads scan_geom to check a perception policy's expected
+        # scan width against the grid the perception stack actually publishes.
+        # Guarded by _scan_lock rather than the main _lock: it is written by the UDP rx
+        # thread at camera rate and read by the control loop at 50 Hz, and it must not
+        # contend with the command/phase state those two already share.
+        self._scan_lock = threading.Lock()
+        self.height_scan = None            # np.float32 (N,), already clipped/offset
+        self.last_scan_t = 0.0             # monotonic t of the most recent valid frame
+        self.scan_geom = None              # dict from height_scan_wire.decode (minus values)
+        self._scan_seq_prev = None
+        self._scan_drops = 0               # frames lost on the UDP link (seq gaps)
+        self._scan_bad = 0                 # frames rejected as malformed
+        self._scan_logged = False
         self.action_scale = ACTION_SCALE
         self.kp, self.kd = KP, KD
         self.include_base_lin_vel = True
@@ -338,6 +382,13 @@ class Go2RLPolicyController:
         self.low_state = None
         self.cmd = np.zeros(3, np.float32)
         self.last_cmd_t = 0.0
+        # Posture target for sit/stand policies: 1.0 = stand, 0.0 = sit. Starts at
+        # stand because _engage() ramps the robot to the policy's default pose, which
+        # is a standing pose -- handing a freshly engaged policy a "sit" command would
+        # make it fight the ramp it just finished. Unlike the joystick this has NO
+        # deadman: a posture is a latched state, and zeroing it on silence would drop
+        # a sitting robot's command back to stand and stand it up unasked.
+        self.posture_cmd = 1.0
         self.last_action = np.zeros(12, np.float32)
         self.phase = SPORT
         self.requested_mode = "sport"
@@ -421,7 +472,7 @@ class Go2RLPolicyController:
     def _udp_rx_loop(self):
         while not self._stop:
             try:
-                data, _ = self._rx.recvfrom(4096)
+                data, _ = self._rx.recvfrom(height_scan_wire.MAX_DATAGRAM)
             except socket.timeout:
                 continue
             except OSError:
@@ -429,6 +480,12 @@ class Go2RLPolicyController:
                     break
                 continue
             self.last_bridge_t = self._now()   # any datagram proves the bridge is alive
+            # Height scans are binary, everything else is JSON. Tested by magic prefix
+            # first because a float array is not valid UTF-8 and would otherwise cost a
+            # failed decode per camera frame.
+            if height_scan_wire.is_height_scan(data):
+                self._on_height_scan_frame(data)
+                continue
             try:
                 msg = json.loads(data.decode("utf-8"))
                 t = msg.get("t")
@@ -440,10 +497,62 @@ class Go2RLPolicyController:
                 self._set_mode(msg.get("mode", ""))
             elif t == "policy":
                 self._set_policy(msg.get("id", ""))
+            elif t == "posture":
+                self._set_posture(bool(msg.get("stand", True)))
             elif t == "estop":
                 self._set_estop(bool(msg.get("on", False)))
             elif t == "ping":
                 pass   # liveness only; last_bridge_t already updated above
+
+    def _on_height_scan_frame(self, data):
+        """Store one height-scan frame from the bridge.
+
+        A malformed frame is DROPPED, not substituted: the previous scan stays, and if
+        no valid frame arrives the staleness deadman stops the robot. Filling in zeros
+        would read to the policy as "flat ground straight ahead", which on a stepfield
+        is the most dangerous thing this node could invent.
+        """
+        try:
+            frame = height_scan_wire.decode(data)
+        except height_scan_wire.HeightScanWireError as e:
+            self._scan_bad += 1
+            if self._scan_bad in (1, 10, 100) or self._scan_bad % 1000 == 0:
+                self.get_logger().warn(f"bad height-scan frame ({self._scan_bad} so far): {e}")
+            return
+
+        heights = frame.pop("heights")
+        seq = frame["seq"]
+        if self._scan_seq_prev is not None:
+            gap = (seq - self._scan_seq_prev - 1) & 0xFFFFFFFF
+            # Only count small forward gaps as drops; a large one means the bridge
+            # restarted and its counter went back to zero.
+            if 0 < gap < 1000:
+                self._scan_drops += gap
+        self._scan_seq_prev = seq
+
+        with self._scan_lock:
+            self.height_scan = heights
+            self.last_scan_t = self._now()
+            self.scan_geom = frame
+
+        if not self._scan_logged:
+            self._scan_logged = True
+            self.get_logger().info(
+                f"height scan online: {frame['num_x']}x{frame['num_y']} = {heights.size} cells "
+                f"@ {frame['resolution']:.3g} m, centre +{frame['center_x']:.2g} m fwd, "
+                f"{frame['unobserved_count']} unobserved")
+
+    def _height_scan_for_obs(self):
+        """(scan, age_s) for the control loop, or (None, inf) if nothing has arrived."""
+        with self._scan_lock:
+            if self.height_scan is None:
+                return None, float("inf")
+            return self.height_scan, self._now() - self.last_scan_t
+
+    def _height_scan_ready(self):
+        """True when a policy that needs terrain may be driven right now."""
+        _, age = self._height_scan_for_obs()
+        return age <= HEIGHT_SCAN_TIMEOUT
 
     # ------------------------------------------------------------------ #
     # Web-command handlers (driven by the bridge over UDP)
@@ -464,6 +573,25 @@ class Go2RLPolicyController:
         with self._lock:
             self.cmd = np.array([vx, -vy, -wz], np.float32)
             self.last_cmd_t = self._now()
+
+    def _set_posture(self, stand: bool):
+        """Latch the sit/stand target for a posture policy.
+
+        A no-op for velocity policies: they carry no ``posture_command`` observation,
+        so ``_build_obs`` never reads this. Accepting it regardless keeps the bridge
+        protocol uniform and means the web panel does not need to know which kind of
+        policy is loaded.
+        """
+        with self._lock:
+            self.posture_cmd = 1.0 if stand else 0.0
+        # Say so when the loaded policy cannot act on this, rather than logging as if
+        # it had: a velocity policy accepts the value and then ignores it.
+        if "posture_command" not in self.obs_terms:
+            self.get_logger().warn(
+                f"posture '{'stand' if stand else 'sit'}' ignored: the loaded policy is "
+                "velocity-driven (no posture_command in its deploy.yaml).")
+            return
+        self.get_logger().info(f"posture -> {'STAND' if stand else 'SIT'}")
 
     def _set_mode(self, mode):
         new = str(mode).strip().lower()
@@ -517,6 +645,28 @@ class Go2RLPolicyController:
                 f"entries, expected {len(self.isaac_joints)}"
             )
 
+        # A perception policy is only loadable if the scan it expects matches the grid
+        # the perception stack produces. Width is the part the contract records; the
+        # geometry (resolution / centre) is checked against the live frame below.
+        if contract.uses_height_scan:
+            want = contract.obs_widths["height_scan"]
+            geom = self.scan_geom
+            if geom is not None and geom["num_x"] * geom["num_y"] != want:
+                raise DeployContractError(
+                    f"{contract.source}: policy expects a {want}-cell height scan but the "
+                    f"perception stack is publishing {geom['num_x']}x{geom['num_y']} = "
+                    f"{geom['num_x'] * geom['num_y']}. Reconcile heightmap_node's grid "
+                    "params with the env the policy trained under."
+                )
+
+        if contract.include_base_lin_vel:
+            self.get_logger().warn(
+                f"{contract.source} declares base_lin_vel, which the Go2 cannot measure in "
+                f"low-level mode -- feeding ZEROS for obs 0:3 (--lin-vel-mode "
+                f"{self.lin_vel_mode}). The policy is running outside its training "
+                "distribution on its velocity-tracking inputs; expect degraded tracking. "
+                "Retrain without the term (sim_to_real_deployment_plan.md Phase 0).")
+
         with self._policy_lock:
             self.session = sess
             self.in_name = sess.get_inputs()[0].name
@@ -555,9 +705,14 @@ class Go2RLPolicyController:
         """Load the onnx described by a registry entry. Returns True on success and
         leaves the current policy untouched on any failure (unknown/unrunnable/missing)."""
         pid = entry.get("id")
-        if not entry.get("runnable", True) or entry.get("uses_heightmap", False):
-            self.get_logger().warn(
-                f"policy '{pid}' needs a height scan this node cannot provide; not loading")
+        # NOTE: uses_heightmap is no longer a refusal. This node CAN be fed a height scan
+        # now (the bridge forwards one over the UDP link), so whether a perception policy
+        # may run is a question about live data, not about the policy. Loading is
+        # harmless -- it builds an onnx session and reads the contract -- and the real
+        # gate is in _engage(), which refuses to release the sport service without a
+        # fresh scan. 'runnable' still means "this launcher cannot run it at all".
+        if not entry.get("runnable", True):
+            self.get_logger().warn(f"policy '{pid}' is marked not runnable; not loading")
             return False
         path = self._resolve_policy_path(entry)
         if not path.exists():
@@ -696,10 +851,25 @@ class Go2RLPolicyController:
         # needs perception, but never release the sport service for one we cannot
         # feed. Revert the web toggle to sport instead of stranding the robot.
         entry = self.policies.get(self.active_policy_id)
-        if entry is not None and (not entry.get("runnable", True) or entry.get("uses_heightmap", False)):
+        refusal = None
+        if entry is not None and not entry.get("runnable", True):
+            refusal = "it is marked not runnable in the registry"
+        elif self.contract is not None and self.contract.uses_height_scan:
+            # The gate that matters for perception: never release the sport service for a
+            # policy that steps on terrain it cannot currently see. Checked here, at the
+            # single point where control is handed over, rather than trusting a static
+            # registry flag to predict whether the camera is alive.
+            scan, age = self._height_scan_for_obs()
+            if scan is None:
+                refusal = (
+                    "it needs a height scan and none has arrived. Start the perception "
+                    "stack (ros2 launch go2_bringup real_perception.launch.py rviz:=false) "
+                    "and check /tmp/go2_rl_bridge.log for 'forwarding height scans'")
+            elif age > HEIGHT_SCAN_TIMEOUT:
+                refusal = f"its height scan is stale ({age:.2f} s old; limit {HEIGHT_SCAN_TIMEOUT} s)"
+        if refusal is not None:
             self.get_logger().error(
-                f"refusing to engage '{self.active_policy_id}': needs a height scan this "
-                "node cannot provide; staying in sport mode")
+                f"refusing to engage '{self.active_policy_id}': {refusal}; staying in sport mode")
             with self._lock:
                 self.requested_mode = "sport"
             self._send({"t": "mode_out", "mode": "sport"})   # bounce the web toggle back to sport
@@ -716,6 +886,10 @@ class Go2RLPolicyController:
             self.start_pos_sdk = self._read_q_sdk()
             self.last_action = np.zeros(12, np.float32)
             self.gait_phase = 0.0        # fresh episode: restart the gait clock
+            # The ramp below drives the robot to the policy's DEFAULT pose, which is a
+            # standing one. Re-latch stand so a posture policy is not asked to sit the
+            # instant it takes over from a ramp that just stood it up.
+            self.posture_cmd = 1.0
             self.ramp_t = 0.0
             self._sat_steps = 0          # and fresh guards, so a previous run's
             self._tilt_since = None      # saturation/tilt history cannot trip this one
@@ -787,6 +961,10 @@ class Go2RLPolicyController:
             self.start_pos_sdk = self._read_q_sdk()
             self.last_action = np.zeros(12, np.float32)
             self.gait_phase = 0.0        # fresh episode: restart the gait clock
+            # The ramp below drives the robot to the policy's DEFAULT pose, which is a
+            # standing one. Re-latch stand so a posture policy is not asked to sit the
+            # instant it takes over from a ramp that just stood it up.
+            self.posture_cmd = 1.0
             self.ramp_t = 0.0
             self._sat_steps = 0          # and fresh guards, so a previous run's
             self._tilt_since = None      # saturation/tilt history cannot trip this one
@@ -927,6 +1105,18 @@ class Go2RLPolicyController:
             with self._lock:
                 self.phase = ESTOP
             phase = ESTOP
+        # Perception deadman, same failure response for the same reason: while a rough
+        # policy owns the motors, terrain that stops updating means it is stepping onto
+        # ground it can no longer see. Holding the last scan would keep it walking
+        # confidently off the edge of what it knows.
+        if phase in (ENGAGE, RL_RUN) and self.contract is not None and self.contract.uses_height_scan:
+            _scan, age = self._height_scan_for_obs()
+            if age > HEIGHT_SCAN_TIMEOUT:
+                self.get_logger().error(
+                    f"height scan stale ({age:.2f} s > {HEIGHT_SCAN_TIMEOUT} s); ESTOP (soft collapse)")
+                with self._lock:
+                    self.phase = ESTOP
+                phase = ESTOP
         try:
             if phase == SPORT:
                 return                       # sport svc owns the robot
@@ -1133,6 +1323,7 @@ class Go2RLPolicyController:
             timed_out = (self._now() - self.last_cmd_t) > CMD_TIMEOUT
             cmd = np.zeros(3, np.float32) if timed_out else self._clip_cmd(self.cmd)
             last_a = self.last_action.copy()
+            posture = self.posture_cmd
         # Keyed by term name and emitted in the contract's own order, rather than
         # positionally: which terms are present *and in what order* is recorded in
         # deploy.yaml, and a reordered observation is well-formed and silently wrong.
@@ -1144,7 +1335,17 @@ class Go2RLPolicyController:
             "joint_pos_rel": q_isaac - self.q_default_isaac,
             "joint_vel_rel": dq_isaac,
             "last_action": last_a,
+            "posture_command": np.array([posture], np.float32),
         }
+        if "height_scan" in self.obs_terms:
+            scan, _age = self._height_scan_for_obs()
+            # Freshness is enforced by the control loop's deadman before we get here, so
+            # by this point a scan exists. The guard is for the impossible case only --
+            # and it raises rather than zero-fills, because a silent flat-ground scan is
+            # the failure this whole path is built to prevent.
+            if scan is None:
+                raise RuntimeError("policy needs a height scan but none has ever arrived")
+            raw["height_scan"] = scan
         parts = []
         for name in self.obs_terms:
             # gait_phase is a clock, not a sensor: advance it exactly once per control

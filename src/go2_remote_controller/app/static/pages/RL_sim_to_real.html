@@ -35,6 +35,8 @@ Author: Victor Lim
     let controlMode = "sport";
     let policies = [];         // registry entries from /rl/policies
     let currentPolicy = "";    // id of the selected/loaded policy
+    let rlPosture = "stand";   // latched sit/stand target for a posture policy
+    let postureSupported = false;  // does the SELECTED policy take a posture command?
 
     window.addEventListener("DOMContentLoaded", async () => {
       // Standalone page: no nav bar to the other UIs.
@@ -42,6 +44,7 @@ Author: Victor Lim
       setTimeout(refreshSafetyStatus, 200);
       setTimeout(refreshControlMode, 250);
       setTimeout(loadPolicies, 300);
+      setTimeout(refreshPosture, 350);
       initJoysticks();
     });
 
@@ -84,8 +87,12 @@ Author: Victor Lim
 
     function updatePolicyCaption() {
       const cap = document.getElementById("policyCaption");
-      if (!cap) return;
       const p = policies.find((x) => x.id === currentPolicy);
+      // Track locally so the panel reacts the moment the dropdown changes, rather
+      // than waiting on the /rl/posture round-trip that confirms it.
+      postureSupported = !!p && p.control === "posture";
+      applyPostureUi();
+      if (!cap) return;
       cap.textContent = p ? policyLabel(p) : "";
     }
 
@@ -112,6 +119,53 @@ Author: Victor Lim
         if (sel) sel.value = currentPolicy;
         updatePolicyCaption();
       } catch (_) {}
+    }
+
+    // ---- RL Actions (sit/stand posture) -------------------------------
+    // Distinct from the sport Stand/Sit buttons in the top row: those call the Unitree
+    // sport service, which would fight a running RL policy for the motors. These latch
+    // a posture the policy itself reads as an observation.
+    async function refreshPosture() {
+      const r = await Go2Shared.httpGet("/rl/posture", { bypassCommsGate: true });
+      if (!r.ok) return;
+      try {
+        const data = JSON.parse(r.text);
+        rlPosture = data.posture || "stand";
+        postureSupported = !!data.supported;
+      } catch (_) { return; }
+      applyPostureUi();
+    }
+
+    async function setPosture(posture) {
+      const r = await Go2Shared.httpPost(`/rl/posture/${posture}`);
+      Go2Shared.setStatus(
+        r.ok ? `Posture: ${posture}` : `Posture failed: ${posture}`,
+        r.ok,
+        `URL: ${r.url}\n${r.text}`
+      );
+      if (r.ok) { rlPosture = posture; applyPostureUi(); }
+      await refreshPosture();
+    }
+
+    function applyPostureUi() {
+      const active = controlMode === "rl" && postureSupported;
+      for (const p of ["sit", "stand"]) {
+        const btn = document.getElementById(`posture_${p}`);
+        if (!btn) continue;
+        btn.disabled = !active;
+        // Highlight whichever posture is currently latched.
+        btn.classList.toggle("activeMode", active && rlPosture === p);
+      }
+      const note = document.getElementById("postureNote");
+      if (!note) return;
+      if (controlMode !== "rl") {
+        note.textContent = "Turn RL: ON to command a posture.";
+      } else if (!postureSupported) {
+        note.textContent = "The selected policy is velocity-driven — drive it with the joysticks.";
+      } else {
+        note.textContent = `Policy is holding: ${rlPosture.toUpperCase()}. `
+          + "The joysticks do nothing for a posture policy.";
+      }
     }
 
     async function toggleControlMode() {
@@ -153,6 +207,7 @@ Author: Victor Lim
       // the motors so the control law can't change mid-run.
       const sel = document.getElementById("policySelect");
       if (sel) sel.disabled = controlMode === "rl";
+      applyPostureUi();   // the panel is only live while RL owns the motors
     }
 
     async function refreshControlMode() {
@@ -230,9 +285,9 @@ Author: Victor Lim
       if (!Go2Shared.state.COMMS_ENABLED) return;
 
       const cmd = {
-        linear_x: -latest.ly * 0.6,
-        linear_y: latest.lx * 0.6,
-        angular_z: latest.rx * 1.2,
+        linear_x: -latest.ly * 1.5,
+        linear_y: latest.lx * 1.5,
+        angular_z: latest.rx * 1.5,
       };
 
       const r = await Go2Shared.httpPost("/teleop", cmd);
@@ -286,6 +341,19 @@ Author: Victor Lim
                 style="flex:1; min-width:240px; padding:4px;"></select>
       </div>
       <div id="policyCaption" class="small" style="margin-bottom:8px; color:#555;"></div>
+
+      <div style="border:1px solid #ccc; border-radius:6px; padding:8px; margin-bottom:10px;">
+        <div style="font-weight:bold; margin-bottom:6px;">RL Actions</div>
+        <div class="row" style="margin-bottom:4px;">
+          <button id="posture_stand" onclick="setPosture('stand')">Stand</button>
+          <button id="posture_sit" onclick="setPosture('sit')">Sit</button>
+        </div>
+        <div id="postureNote" class="small" style="color:#555;"></div>
+        <div class="small" style="color:#777; margin-top:4px;">
+          These drive the <em>trained policy</em>. The Stand/Sit buttons in the top row
+          call the Unitree sport service instead — do not use those while RL is on.
+        </div>
+      </div>
 
       <div class="joyRow">
         <div class="joyBox">

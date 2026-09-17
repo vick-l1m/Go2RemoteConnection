@@ -60,7 +60,31 @@ KNOWN_OBS_TERMS = (
     "last_action",
     "height_scan",
     "gait_phase",
+    "posture_command",
 )
+
+# Isaac Lab and unitree_rl_lab spell three of those terms differently, and this repo
+# trains tasks descending from both. The names above are the unitree_rl_lab spelling,
+# which the obs builders key on; stock Isaac Lab's locomotion-velocity task names the
+# same three terms ``joint_pos`` / ``joint_vel`` / ``actions`` (velocity_env_cfg.py's
+# ObservationsCfg.PolicyCfg), while binding them to the identical mdp functions --
+# ``mdp.joint_pos_rel``, ``mdp.joint_vel_rel``, ``mdp.last_action``.
+#
+# So every policy descending from the stock rough task -- which is the whole PERCEPTION
+# lineage: camera-rough, stepfield-lane, stepfield-spec -- emitted a deploy.yaml naming
+# terms this loader rejected, and was therefore unloadable by BOTH policy nodes. Not a
+# subtle failure (it raises), but a total one, and it was invisible until a perception
+# policy was first taken to the robot.
+#
+# Aliasing rather than renaming the terms upstream, because the contracts of policies
+# ALREADY trained and promoted are on disk and cannot be regenerated without retraining.
+# The alias is applied on load, so everything downstream -- obs_terms, obs_scales,
+# obs_clips, the builders -- sees only the canonical name.
+OBS_TERM_ALIASES = {
+    "joint_pos": "joint_pos_rel",
+    "joint_vel": "joint_vel_rel",
+    "actions": "last_action",
+}
 
 
 class DeployContract:
@@ -107,6 +131,13 @@ class DeployContract:
     @property
     def uses_gait_phase(self) -> bool:
         return "gait_phase" in self.obs_terms
+
+    @property
+    def uses_posture_command(self) -> bool:
+        """True for a posture policy (sit/stand), which is commanded by a discrete
+        target rather than a velocity. Such a policy has no ``velocity_commands``
+        term, so the joystick does not drive it."""
+        return "posture_command" in self.obs_terms
 
     @property
     def gait_phase_period(self) -> float | None:
@@ -224,11 +255,27 @@ class DeployContract:
         if not isinstance(obs, dict) or not obs:
             raise DeployContractError(f"{self.source}: 'observations' must be a non-empty mapping")
 
+        # Map stock-Isaac-Lab term names onto the canonical ones before anything else
+        # reads them (see OBS_TERM_ALIASES). Done here rather than at each use site so
+        # obs_terms, obs_widths, obs_scales and obs_clips are all keyed consistently and
+        # the builders never see an alias.
+        obs = {OBS_TERM_ALIASES.get(k, k): v for k, v in obs.items()}
+        if len(obs) != len(self._d["observations"]):
+            raise DeployContractError(
+                f"{self.source}: observation names collide once aliases are applied "
+                f"({sorted(self._d['observations'])}). A contract may spell a term either "
+                "way, but not both."
+            )
+        self.aliased_terms = {
+            k: OBS_TERM_ALIASES[k] for k in self._d["observations"] if k in OBS_TERM_ALIASES
+        }
+
         # Prefer the explicit order: YAML mapping order survives the exporter (which
         # dumps with sort_keys=False) but not a careless round-trip, and a reordered
         # observation is the exact silent failure this contract exists to prevent.
         declared = self._d.get("observation_order")
         if declared is not None:
+            declared = [OBS_TERM_ALIASES.get(t, t) for t in declared]
             if sorted(declared) != sorted(obs):
                 raise DeployContractError(
                     f"{self.source}: observation_order {list(declared)} does not match "
@@ -244,7 +291,8 @@ class DeployContract:
         if unknown:
             raise DeployContractError(
                 f"{self.source}: observation term(s) {unknown} are not produced by this node. "
-                f"Known terms: {', '.join(KNOWN_OBS_TERMS)}."
+                f"Known terms: {', '.join(KNOWN_OBS_TERMS)} "
+                f"(also accepted, as aliases: {', '.join(sorted(OBS_TERM_ALIASES))})."
             )
 
         self.obs_widths: dict[str, int] = {}

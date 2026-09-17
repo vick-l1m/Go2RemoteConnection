@@ -149,6 +149,20 @@ if [ "$OVERLAY_SOURCED" -eq 0 ]; then
   echo "[run_all] WARNING: no go2_remote_controller overlay found (did you colcon build?)"
 fi
 
+# The OUTER Go2_RL_workflow workspace, if this checkout is a submodule of it. It builds
+# go2_msgs (the HeightScan type) and go2_perception (heightmap_node) -- neither of which
+# this submodule contains. Without it go2_rl_bridge_node cannot import go2_msgs, forwards
+# no height scan, and every PERCEPTION policy refuses to engage; blind policies are
+# unaffected either way. Sourcing an overlay only puts packages on the path, it starts
+# nothing, so this is safe when perception is not in use.
+for outer in "$WS_DIR/../install/setup.bash" "$HOME/Go2_RL_workflow/install/setup.bash"; do
+  if [ -f "$outer" ]; then
+    echo "[run_all] Sourcing outer workspace overlay (go2_msgs/go2_perception): $outer"
+    source "$outer"
+    break
+  fi
+done
+
 set -u
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"

@@ -13,8 +13,18 @@ ROS -> controller (forwarded as JSON UDP datagrams):
     SUB /web_teleop        geometry_msgs/Twist   -> {"t":"teleop","vx","vy","wz"}
     SUB /web_control_mode  std_msgs/String       -> {"t":"mode","mode":"sport"|"rl"}
     SUB /web_rl_policy     std_msgs/String       -> {"t":"policy","id":str}
+    SUB /web_rl_posture    std_msgs/String       -> {"t":"posture","stand":bool}
     SUB /web_estop         std_msgs/Bool         -> {"t":"estop","on":bool}
     (plus a 10 Hz {"t":"ping"} keepalive so the controller can deadman this link)
+    SUB /go2/height_scan   go2_msgs/HeightScan   -> binary frame (see height_scan_wire)
+
+The height scan is the one message on this link that is NOT JSON. It is 187 floats at
+camera rate, so it goes over as a packed binary frame with a magic prefix the receiver
+tests before trying json.loads(); see height_scan_wire.py for the format and why.
+It is also the one subscription that may be unavailable: go2_msgs is built by the
+OUTER Go2_RL_workflow workspace, which RL_start_remote_connection.sh does not source.
+When the import fails this node logs it once and runs exactly as before, so the blind
+(flat) policies are unaffected -- only perception policies refuse to engage.
 
 controller -> ROS (received over UDP, republished):
     {"t":"heartbeat"}          -> PUB /web_rl_heartbeat    std_msgs/Bool(true)  (~5 Hz)
@@ -34,6 +44,21 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool, String
 
+import height_scan_wire
+
+# go2_msgs lives in the outer Go2_RL_workflow colcon workspace, which the RL launcher
+# does not source (it sources only this submodule's overlay). Import defensively so a
+# robot without the perception workspace built still runs the blind policies, and says
+# clearly why a perception policy will not engage.
+try:
+    from go2_msgs.msg import HeightScan
+    HEIGHT_SCAN_AVAILABLE = True
+    HEIGHT_SCAN_IMPORT_ERROR = ""
+except ImportError as _e:  # pragma: no cover - depends on the robot's built overlay
+    HeightScan = None
+    HEIGHT_SCAN_AVAILABLE = False
+    HEIGHT_SCAN_IMPORT_ERROR = str(_e)
+
 DEF_UDP_HOST = "127.0.0.1"
 DEF_CTRL_PORT = 47811    # the controller listens here (web -> control)
 DEF_BRIDGE_PORT = 47812  # this node listens here (control -> web)
@@ -42,9 +67,12 @@ DEF_BRIDGE_PORT = 47812  # this node listens here (control -> web)
 # the rare localhost UDP drop; they are idempotent on the controller side.
 CRITICAL_REPEAT = 3
 
+#: Default topic carrying the perception height scan (go2_perception/heightmap_node).
+DEF_HEIGHT_SCAN_TOPIC = "/go2/height_scan"
+
 
 class Go2RLBridge(Node):
-    def __init__(self, udp_host, ctrl_port, bridge_port):
+    def __init__(self, udp_host, ctrl_port, bridge_port, height_scan_topic=DEF_HEIGHT_SCAN_TOPIC):
         super().__init__("go2_rl_bridge_node")
 
         self._ctrl_addr = (udp_host, ctrl_port)
@@ -59,7 +87,23 @@ class Go2RLBridge(Node):
         self.create_subscription(Twist, "/web_teleop", self._on_teleop, 10)
         self.create_subscription(String, "/web_control_mode", self._on_mode, 10)
         self.create_subscription(String, "/web_rl_policy", self._on_policy, 10)
+        self.create_subscription(String, "/web_rl_posture", self._on_posture, 10)
         self.create_subscription(Bool, "/web_estop", self._on_estop, 10)
+
+        # Perception -> controller. Depth 1: a height scan is only ever useful fresh,
+        # and queueing stale terrain behind a momentary stall is worse than dropping it
+        # (the controller deadmans on scan age anyway).
+        self._scan_seq = 0
+        self._scan_logged = False
+        if HEIGHT_SCAN_AVAILABLE and height_scan_topic:
+            self.create_subscription(HeightScan, height_scan_topic, self._on_height_scan, 1)
+            self.get_logger().info(f"forwarding height scans from {height_scan_topic}")
+        elif not HEIGHT_SCAN_AVAILABLE:
+            self.get_logger().warn(
+                f"go2_msgs not importable ({HEIGHT_SCAN_IMPORT_ERROR}); height scans will NOT "
+                "be forwarded, so perception policies cannot engage. Build and source the "
+                "outer Go2_RL_workflow workspace (colcon build --packages-select go2_msgs "
+                "go2_perception) to enable them. Blind policies are unaffected.")
 
         # controller -> ROS
         self._pub_hb = self.create_publisher(Bool, "/web_rl_heartbeat", 10)
@@ -100,8 +144,53 @@ class Go2RLBridge(Node):
         if pid:
             self._send({"t": "policy", "id": pid}, repeat=CRITICAL_REPEAT)
 
+    def _on_posture(self, msg: String):
+        # Edge-triggered and latched on the controller, so repeat it like mode/estop:
+        # a dropped datagram here leaves the robot holding the previous posture with
+        # the UI showing the new one.
+        want = msg.data.strip().lower()
+        if want in ("sit", "stand"):
+            self._send({"t": "posture", "stand": want == "stand"}, repeat=CRITICAL_REPEAT)
+
     def _on_estop(self, msg: Bool):
         self._send({"t": "estop", "on": bool(msg.data)}, repeat=CRITICAL_REPEAT)
+
+    def _on_height_scan(self, msg):
+        """Forward one scan as a binary frame (see height_scan_wire).
+
+        Sent raw and unsorted: heightmap_node already produced RayCaster order with the
+        training clip/offset applied, and re-touching either here is the silent scramble
+        HeightScan.msg warns about. Never repeated -- a dropped frame is replaced by the
+        next one microseconds later, and the controller's staleness deadman covers a
+        real outage.
+        """
+        try:
+            frame = height_scan_wire.encode(
+                msg.heights,
+                num_x=msg.num_x,
+                num_y=msg.num_y,
+                resolution=msg.resolution,
+                center_x=msg.center_x,
+                center_y=msg.center_y,
+                unobserved_count=msg.unobserved_count,
+                seq=self._scan_seq,
+            )
+        except height_scan_wire.HeightScanWireError as e:
+            # Throttled: a geometry fault repeats at camera rate.
+            self.get_logger().error(f"height scan not encodable, dropping: {e}", throttle_duration_sec=5.0)
+            return
+        self._scan_seq = (self._scan_seq + 1) & 0xFFFFFFFF
+        if not self._scan_logged:
+            self._scan_logged = True
+            self.get_logger().info(
+                f"first height scan: {msg.num_x}x{msg.num_y} @ {msg.resolution:.3g} m, "
+                f"centre (+{msg.center_x:.2g}, {msg.center_y:+.2g}) m, "
+                f"{msg.unobserved_count}/{msg.num_x * msg.num_y} cells unobserved, "
+                f"{len(frame)} B/frame")
+        try:
+            self._tx.sendto(frame, self._ctrl_addr)
+        except OSError:
+            pass
 
     # ---- controller -> ROS ------------------------------------------- #
     def _udp_rx_loop(self):
@@ -144,10 +233,14 @@ def main():
                     default=int(os.environ.get("GO2_RL_CTRL_PORT", DEF_CTRL_PORT)))
     ap.add_argument("--bridge-port", type=int,
                     default=int(os.environ.get("GO2_RL_BRIDGE_PORT", DEF_BRIDGE_PORT)))
+    ap.add_argument("--height-scan-topic",
+                    default=os.environ.get("GO2_RL_HEIGHT_SCAN_TOPIC", DEF_HEIGHT_SCAN_TOPIC),
+                    help="go2_msgs/HeightScan topic to forward to the controller "
+                         "(empty string disables forwarding)")
     args = ap.parse_args()
 
     rclpy.init()
-    node = Go2RLBridge(args.udp_host, args.ctrl_port, args.bridge_port)
+    node = Go2RLBridge(args.udp_host, args.ctrl_port, args.bridge_port, args.height_scan_topic)
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, SystemExit):

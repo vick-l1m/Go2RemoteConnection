@@ -99,9 +99,9 @@ Author: Victor Lim
       if (!Go2Shared.state.COMMS_ENABLED) return;
 
       const cmd = {
-        linear_x: -latest.ly * 0.6,
-        linear_y: latest.lx * 0.6,
-        angular_z: latest.rx * 1.2,
+        linear_x: -latest.ly * 1.5,
+        linear_y: latest.lx * 1.5,
+        angular_z: latest.rx * 1.5,
       };
 
       const r = await Go2Shared.httpPost("/teleop", cmd);
