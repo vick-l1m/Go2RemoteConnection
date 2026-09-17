@@ -160,6 +160,18 @@ DISENGAGE_HOLD = 1.0   # s, PD-hold default before handing back to sport
 CMD_TIMEOUT = 0.5      # s, deadman on the joystick command
 CMD_CLIP = 1.0         # training command range +/-1
 DAMP_KD = 3.0          # damping fallback (soft collapse) on fault
+
+# --- sit damping -----------------------------------------------------------------
+# Unitree's sport StandDown drives to its sit pose and then lets the motors go limp, so
+# the robot settles the last ~3 cm onto the ground under its own weight. A position
+# policy cannot do that -- it holds whatever pose it is commanding -- so the node does
+# it, and only for sit: standing never damps.
+SIT_DAMP_KD = 2.0      # kp goes to 0; this is the viscous damping left behind.
+                       # HIGHER = more resistance = slower, softer settle.
+                       # LOWER  = the legs yield faster. Tune on the gantry.
+SIT_DAMP_DELAY = 1.0   # s of stillness after the sit before going limp
+SIT_DAMP_FADE = 0.5    # s to fade the gains out; a step change is what feels harsh
+SIT_SETTLE_DQ = 0.6    # rad/s; below this on every joint counts as "stopped moving"
 BRIDGE_TIMEOUT = 1.0   # s, deadman on the ROS bridge link (heartbeat/ping/teleop)
 
 # Deadman on the perception height scan, for policies whose contract declares one.
@@ -389,6 +401,8 @@ class Go2RLPolicyController:
         # deadman: a posture is a latched state, and zeroing it on silence would drop
         # a sitting robot's command back to stand and stand it up unasked.
         self.posture_cmd = 1.0
+        self._sit_still_since = None   # when the sit last became still
+        self._sit_damp_t0 = None       # when damping engaged (latched)
         self.last_action = np.zeros(12, np.float32)
         self.phase = SPORT
         self.requested_mode = "sport"
@@ -890,6 +904,8 @@ class Go2RLPolicyController:
             # standing one. Re-latch stand so a posture policy is not asked to sit the
             # instant it takes over from a ramp that just stood it up.
             self.posture_cmd = 1.0
+            self._sit_still_since = None
+            self._sit_damp_t0 = None
             self.ramp_t = 0.0
             self._sat_steps = 0          # and fresh guards, so a previous run's
             self._tilt_since = None      # saturation/tilt history cannot trip this one
@@ -965,6 +981,8 @@ class Go2RLPolicyController:
             # standing one. Re-latch stand so a posture policy is not asked to sit the
             # instant it takes over from a ramp that just stood it up.
             self.posture_cmd = 1.0
+            self._sit_still_since = None
+            self._sit_damp_t0 = None
             self.ramp_t = 0.0
             self._sat_steps = 0          # and fresh guards, so a previous run's
             self._tilt_since = None      # saturation/tilt history cannot trip this one
@@ -1228,9 +1246,52 @@ class Go2RLPolicyController:
         q_target_isaac = self.q_default_isaac + self.action_scale * action
         q_target_sdk = q_target_isaac[self.sdk_from_isaac]
         # Gains ride the same curve, RAMP_KP/KD -> the trained kp/kd.
+        kp_run = RAMP_KP + alpha * (self.kp - RAMP_KP)
+        kd_run = RAMP_KD + alpha * (self.kd - RAMP_KD)
+        # ...then fade toward limp once a sit has settled. The policy keeps running
+        # throughout -- it is still fed observations and still updates last_action -- so
+        # the next posture command is acted on immediately and from consistent state.
+        # Its q_target simply stops being enforced while kp is on its way to zero.
+        damp = self._sit_damp_blend()
         self._publish(q_target_sdk,
-                      RAMP_KP + alpha * (self.kp - RAMP_KP),
-                      RAMP_KD + alpha * (self.kd - RAMP_KD))
+                      (1.0 - damp) * kp_run,
+                      (1.0 - damp) * kd_run + damp * SIT_DAMP_KD)
+
+    def _sit_damp_blend(self):
+        """0..1 blend toward limp motors once a commanded sit has settled.
+
+        Returns 0 for a velocity policy, while standing, or before the sit has come to
+        rest; then fades to 1 over SIT_DAMP_FADE so the gains never step.
+
+        **Latched once engaged.** Damping makes the legs start moving again -- that is
+        the whole point, the robot settles the last few centimetres -- so a live
+        stillness test would see that motion, decide the sit was not finished after all,
+        and undamp. It would then stiffen, get still, damp, and oscillate. Only a
+        posture change back to stand (or leaving RL) clears it.
+        """
+        with self._lock:
+            sitting = self.posture_cmd < 0.5
+        if not sitting or "posture_command" not in self.obs_terms:
+            self._sit_still_since = None
+            self._sit_damp_t0 = None
+            return 0.0
+
+        now = self._now()
+        if self._sit_damp_t0 is not None:
+            return float(np.clip((now - self._sit_damp_t0) / SIT_DAMP_FADE, 0.0, 1.0))
+
+        dq = np.array([self.low_state.motor_state[i].dq for i in range(12)], np.float32)
+        if np.max(np.abs(dq)) > SIT_SETTLE_DQ:
+            self._sit_still_since = None
+            return 0.0
+        if self._sit_still_since is None:
+            self._sit_still_since = now
+            return 0.0
+        if (now - self._sit_still_since) >= SIT_DAMP_DELAY:
+            self._sit_damp_t0 = now
+            self.get_logger().info(
+                f"sit settled -> damping motors (kp 0, kd {SIT_DAMP_KD}) over {SIT_DAMP_FADE}s")
+        return 0.0
 
     def _tilt_abort_detected(self):
         """True while the base has been tilted past TILT_ABORT_RAD for the debounce.

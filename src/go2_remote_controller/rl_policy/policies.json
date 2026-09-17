@@ -38,7 +38,7 @@
     {
       "id": "flat",
       "name": "Flat terrain (baseline)",
-      "model": "RSL-RL PPO \u00b7 Isaac-Velocity-Flat-Unitree-Go2-v0",
+      "model": "RSL-RL PPO · Isaac-Velocity-Flat-Unitree-Go2-v0",
       "type": "blind",
       "obs_dim": 48,
       "uses_heightmap": false,
@@ -48,7 +48,7 @@
     {
       "id": "flat_custom",
       "name": "Flat terrain (custom reward)",
-      "model": "RSL-RL PPO \u00b7 unitree_go2_flat_custom",
+      "model": "RSL-RL PPO · unitree_go2_flat_custom",
       "type": "blind",
       "obs_dim": 48,
       "uses_heightmap": false,
@@ -58,7 +58,7 @@
     {
       "id": "flat_amp",
       "name": "Flat terrain (AMP imitation)",
-      "model": "AMP imitation-reward \u00b7 unitree_go2_flat_amp \u00b7 2026-07-27_17-25-44 (style_weight 0.1)",
+      "model": "AMP imitation-reward · unitree_go2_flat_amp · 2026-07-27_17-25-44 (style_weight 0.1)",
       "type": "blind",
       "obs_dim": 48,
       "uses_heightmap": false,
@@ -68,7 +68,7 @@
     {
       "id": "rough",
       "name": "Rough terrain (height-scan)",
-      "model": "RSL-RL PPO \u00b7 unitree_go2_rough",
+      "model": "RSL-RL PPO · unitree_go2_rough",
       "type": "camera",
       "obs_dim": 235,
       "uses_heightmap": true,
@@ -78,7 +78,7 @@
     {
       "id": "rough_camera",
       "name": "Rough terrain (D435i camera)",
-      "model": "RSL-RL PPO \u00b7 unitree_go2_rough_camera",
+      "model": "RSL-RL PPO · unitree_go2_rough_camera",
       "type": "camera",
       "obs_dim": 235,
       "uses_heightmap": true,
@@ -88,7 +88,7 @@
     {
       "id": "unitree_go2_velocity_2026-09-09",
       "name": "Unitree go2-velocity (ported contract)",
-      "model": "RSL-RL PPO \u00b7 unitree_go2_velocity \u00b7 2026-09-09_02-32-33 (1500 iterations)",
+      "model": "RSL-RL PPO · unitree_go2_velocity · 2026-09-09_02-32-33 (1500 iterations)",
       "type": "blind",
       "obs_dim": 47,
       "uses_heightmap": false,
@@ -98,7 +98,7 @@
     {
       "id": "unitree_go2_flat_dr_2026-09-09",
       "name": "Flat + domain randomisation",
-      "model": "RSL-RL PPO \u00b7 unitree_go2_flat_dr \u00b7 2026-09-09_09-13-44 (2000 iterations)",
+      "model": "RSL-RL PPO · unitree_go2_flat_dr · 2026-09-09_09-13-44 (2000 iterations)",
       "type": "blind",
       "obs_dim": 45,
       "uses_heightmap": false,
@@ -108,7 +108,7 @@
     {
       "id": "unitree_go2_flat_dr_omni_2026-09-15",
       "name": "Flat DR, symmetric xy",
-      "model": "RSL-RL PPO \u00b7 unitree_go2_flat_dr_omni \u00b7 2026-09-15_14-09-12 (2000 iterations)",
+      "model": "RSL-RL PPO · unitree_go2_flat_dr_omni · 2026-09-15_14-09-12 (2000 iterations)",
       "type": "blind",
       "obs_dim": 45,
       "uses_heightmap": false,
@@ -118,18 +118,18 @@
     {
       "id": "unitree_go2_sit_stand",
       "name": "Sit / stand posture",
-      "model": "RSL-RL PPO \u00b7 unitree_go2_sit_stand \u00b7 2026-09-16_16-08-21 (1500 iterations)",
+      "model": "RSL-RL PPO · unitree_go2_sit_stand · 2026-09-17_15-33-26 (1500 iters; controlled descent: foot-contact + capped descent/ascent rate)",
       "type": "blind",
       "control": "posture",
       "obs_dim": 43,
       "uses_heightmap": false,
       "runnable": true,
-      "path": "policies/unitree_go2_sit_stand_2026-09-16/policy.onnx"
+      "path": "policies/unitree_go2_sit_stand_2026-09-17/policy.onnx"
     },
     {
       "id": "unitree_go2_stepfield_spec_2026-09-15",
       "name": "Stepfield spec (baseline)",
-      "model": "RSL-RL PPO \u00b7 unitree_go2_stepfield_spec \u00b7 2026-09-15_18-13-01 (3000 iterations)",
+      "model": "RSL-RL PPO · unitree_go2_stepfield_spec · 2026-09-15_18-13-01 (3000 iterations)",
       "type": "camera",
       "obs_dim": 235,
       "uses_heightmap": true,
@@ -139,7 +139,7 @@
     {
       "id": "unitree_go2_stepfield_spec_2026-09-16",
       "name": "Stepfield spec + stumble penalty",
-      "model": "RSL-RL PPO \u00b7 unitree_go2_stepfield_spec \u00b7 2026-09-16_11-30-27 (5251 iterations)",
+      "model": "RSL-RL PPO · unitree_go2_stepfield_spec · 2026-09-16_11-30-27 (5251 iterations)",
       "type": "camera",
       "obs_dim": 235,
       "uses_heightmap": true,
@@ -149,7 +149,7 @@
     {
       "id": "unitree_go2_stepfield_spec_unitree_2026-09-16",
       "name": "Stepfield spec (Unitree asset)",
-      "model": "RSL-RL PPO \u00b7 unitree_go2_stepfield_spec_unitree \u00b7 2026-09-16_17-09-48 (3000 iterations)",
+      "model": "RSL-RL PPO · unitree_go2_stepfield_spec_unitree · 2026-09-16_17-09-48 (3000 iterations)",
       "type": "camera",
       "obs_dim": 232,
       "uses_heightmap": true,
