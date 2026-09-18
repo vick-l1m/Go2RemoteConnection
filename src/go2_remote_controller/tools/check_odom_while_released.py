@@ -27,6 +27,21 @@ SAFETY
     on the floor with clear space. Nothing is ever commanded to move. The sport
     service is restored on every exit path, including Ctrl-C and exceptions.
 
+RESULT (measured 2026-09-18, unitree-jetson-payload, sport mode "mcf")
+    Every onboard localisation source stops when the sport service is released:
+
+      rt/sportmodestate    296.9 Hz  ->  no messages at all
+      /utlidar/robot_odom  149.5 Hz  ->  9.580 s gap
+      /utlidar/cloud_base   14.7 Hz  ->  9.597 s gap
+
+    Only rt/lowstate (joints, IMU, foot force) and the payload D435i survive --
+    payload USB sensors are independent of the motion switcher, Go2-service ones
+    are not. So an odom-frame elevation map is unavailable on this platform
+    without first writing a state estimator from rt/lowstate alone, which is why
+    the design moved to a recurrent policy instead.
+
+    Full write-up: docs/measurements/go2_localisation_while_engaged.md (outer repo).
+
 USAGE (on the robot)
     python3 check_odom_while_released.py --net eth0
     python3 check_odom_while_released.py --net eth0 --move-test
@@ -103,6 +118,14 @@ def main():
     ap.add_argument("--net", default="", help="DDS interface to the robot (e.g. eth0)")
     ap.add_argument("--window", type=float, default=8.0,
                     help="seconds to sample in each phase (default 8)")
+    ap.add_argument("--hold", type=float, default=0.0, metavar="SECONDS",
+                    help="release the sport service, hold for SECONDS, then restore -- "
+                         "without sampling rt/sportmodestate. Use this to probe OTHER "
+                         "pose sources from another terminal while the robot is in the "
+                         "state the RL policy actually runs in, e.g. "
+                         "`ros2 topic hz /utlidar/robot_odom`. The L1 lidar's "
+                         "localisation is a separate stack from the sport service, so "
+                         "it may survive a release that kills /sportmodestate.")
     ap.add_argument("--move-test", action="store_true",
                     help="after release, pause so you can slide the robot ~1 m by hand; "
                          "reports whether the pose followed (alive != integrating)")
@@ -130,6 +153,36 @@ def main():
 
     released = False
     try:
+        if args.hold > 0.0:
+            # Probe mode: get the robot into the released state and stay there, so
+            # ROS 2 tooling can measure any topic without this script needing to know
+            # its DDS type.
+            print("\ncrouching (StandDown) before release...")
+            sport.StopMove()
+            sport.StandDown()
+            time.sleep(2.0)
+            print("releasing sport service...")
+            for _ in range(10):
+                _status, mode = msc.CheckMode()
+                if not mode or not mode.get("name"):
+                    break
+                msc.ReleaseMode()
+                time.sleep(0.5)
+            released = True
+            _status, mode = msc.CheckMode()
+            print(f"sport service RELEASED (mode now: {mode})")
+            print(f"\n>>> Probe other pose sources NOW, for {args.hold:.0f} s. In another "
+                  f"terminal:")
+            for topic in ("/utlidar/robot_odom", "/utlidar/robot_pose",
+                          "/lf/sportmodestate", "/odommodestate"):
+                print(f"      ros2 topic hz {topic}")
+            print("    A live rate is not enough -- also echo it and check the values "
+                  "CHANGE\n    when you slide the robot by hand, or it is a frozen "
+                  "cached sample.\n")
+            time.sleep(args.hold)
+            print("hold elapsed.")
+            return 0
+
         # --- Phase 1: sport service owning the robot ---
         print(f"\nsampling {TOPIC} for {args.window:.0f} s with sport ACTIVE...")
         watcher.reset()
