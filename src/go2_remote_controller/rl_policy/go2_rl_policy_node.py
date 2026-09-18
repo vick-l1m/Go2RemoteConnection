@@ -98,6 +98,8 @@ import socket
 import threading
 import time
 
+import collections
+
 import numpy as np
 import onnxruntime as ort
 
@@ -336,12 +338,18 @@ class Go2RLPolicyController:
         self._scan_drops = 0               # frames lost on the UDP link (seq gaps)
         self._scan_bad = 0                 # frames rejected as malformed
         self._scan_logged = False
+        # Sentinel the active policy trained on; None if its contract predates the
+        # field, in which case the check below is skipped rather than guessed at.
+        self._scan_unobserved_expected = None
         self.action_scale = ACTION_SCALE
         self.kp, self.kd = KP, KD
         self.include_base_lin_vel = True
         # Observation layout + per-term transforms. All replaced by the active policy's
         # deploy.yaml in _load_policy_file(); these provisional values describe the stock
         # 48-dim Isaac Lab layout, which is unscaled and unclipped.
+        self.obs_history = {}
+        # name -> deque of past frames; per-episode state, cleared on engage.
+        self._obs_history_buf = {}
         self.obs_terms = ["base_lin_vel", "base_ang_vel", "projected_gravity",
                           "velocity_commands", "joint_pos_rel", "joint_vel_rel", "last_action"]
         self.obs_scales = {}
@@ -555,6 +563,17 @@ class Go2RLPolicyController:
                 f"height scan online: {frame['num_x']}x{frame['num_y']} = {heights.size} cells "
                 f"@ {frame['resolution']:.3g} m, centre +{frame['center_x']:.2g} m fwd, "
                 f"{frame['unobserved_count']} unobserved")
+            # ~half the scan is masked on a perception policy, so a stack filling 0.0
+            # for a policy trained on -1.0 reads as a hole wherever it learnt
+            # "unknown". Geometry is already checked at load; this is the same class
+            # of silent mismatch and the wire header carries the value for it.
+            want = self._scan_unobserved_expected
+            got = frame.get("unobserved")
+            if want is not None and got is not None and abs(got - want) > 1e-6:
+                self.get_logger().error(
+                    f"height scan unobserved_value {got} != trained {want}; the policy "
+                    f"will run with a wrong terrain view. Set heightmap_node's "
+                    f"empty_fill to {want}.")
 
     def _height_scan_for_obs(self):
         """(scan, age_s) for the control loop, or (None, inf) if nothing has arrived."""
@@ -693,6 +712,11 @@ class Go2RLPolicyController:
             # these the vector is the right width and the wrong magnitude, which is the
             # one failure this whole contract exists to prevent.
             self.obs_terms = list(contract.obs_terms)
+            # Frames of history per term (1 = none). Without this a policy trained on
+            # a stacked scan gets one frame at the wrong width and is refused.
+            self.obs_history = {n: k for n, k in contract.obs_history.items() if k > 1}
+            self._scan_unobserved_expected = contract.height_scan_unobserved
+            self._scan_logged = False      # re-log and re-check for the new policy
             self.obs_scales = dict(contract.obs_scales)
             self.obs_clips = dict(contract.obs_clips)
             ranges = contract.command_ranges
@@ -900,6 +924,9 @@ class Go2RLPolicyController:
             self.start_pos_sdk = self._read_q_sdk()
             self.last_action = np.zeros(12, np.float32)
             self.gait_phase = 0.0        # fresh episode: restart the gait clock
+            # Same reason: a stale observation window would feed the policy frames
+            # from before the robot was last put down.
+            self._obs_history_buf.clear()
             # The ramp below drives the robot to the policy's DEFAULT pose, which is a
             # standing one. Re-latch stand so a posture policy is not asked to sit the
             # instant it takes over from a ramp that just stood it up.
@@ -977,6 +1004,9 @@ class Go2RLPolicyController:
             self.start_pos_sdk = self._read_q_sdk()
             self.last_action = np.zeros(12, np.float32)
             self.gait_phase = 0.0        # fresh episode: restart the gait clock
+            # Same reason: a stale observation window would feed the policy frames
+            # from before the robot was last put down.
+            self._obs_history_buf.clear()
             # The ramp below drives the robot to the policy's DEFAULT pose, which is a
             # standing one. Re-latch stand so a posture policy is not asked to sit the
             # instant it takes over from a ramp that just stood it up.
@@ -1412,8 +1442,31 @@ class Go2RLPolicyController:
             # gait_phase is a clock, not a sensor: advance it exactly once per control
             # step, and only when the contract says the policy carries it.
             value = self._advance_gait_phase() if name == "gait_phase" else raw[name]
-            parts.append(self._apply_obs_transform(name, value))
+            value = self._apply_obs_transform(name, value)
+            # History AFTER scale/clip: Isaac Lab's ObservationManager buffers the
+            # finished term, so stacking raw values would scale only the newest frame.
+            parts.append(self._with_history(name, value)
+                         if name in self.obs_history else value)
         return np.concatenate(parts).astype(np.float32)
+
+    def _with_history(self, name, value):
+        """Append ``value`` and return the term's history, oldest -> newest.
+
+        Mirrors isaaclab.utils.buffers.CircularBuffer: on the first push after a reset
+        the WHOLE buffer is filled with that frame, so a freshly-engaged policy sees N
+        copies of the present rather than a window of zeros -- which is what the start
+        of a training episode looked like. Kept byte-equivalent to
+        go2_rl/obs_builder.py's copy; the two have to agree or sim and robot feed the
+        same policy different vectors.
+        """
+        length = self.obs_history[name]
+        buf = self._obs_history_buf.get(name)
+        if buf is None:
+            buf = collections.deque([value] * length, maxlen=length)
+            self._obs_history_buf[name] = buf
+        else:
+            buf.append(value)
+        return np.concatenate(list(buf))
 
     def _advance_gait_phase(self):
         """(sin, cos) of the gait clock, advanced one control step.

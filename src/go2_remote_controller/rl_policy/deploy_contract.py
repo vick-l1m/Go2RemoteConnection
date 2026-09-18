@@ -295,7 +295,29 @@ class DeployContract:
                 f"(also accepted, as aliases: {', '.join(sorted(OBS_TERM_ALIASES))})."
             )
 
+        # Token the policy was trained to read as "camera could not see this cell".
+        #
+        # None only when the policy carries no height scan at all. A contract that
+        # HAS a scan but no recorded value was exported before the field existed,
+        # and that code hardcoded 0.0 -- so absent means 0.0, not "unknown". That
+        # distinction matters: heightmap_node's fill has since moved to -1.0, so
+        # treating absent as unknown would silently feed every pre-existing
+        # perception policy a hole wherever it learnt "not seen", across roughly
+        # half the scan. Inferring the legacy value makes that a loud mismatch.
+        LEGACY_UNOBSERVED = 0.0
+        hs = obs.get("height_scan")
+        if hs is None:
+            self.height_scan_unobserved = None
+        else:
+            raw_unobs = (hs.get("params") or {}).get("unobserved_value")
+            self.height_scan_unobserved = (
+                LEGACY_UNOBSERVED if raw_unobs is None else float(raw_unobs))
+
         self.obs_widths: dict[str, int] = {}
+        # Frames of history per term (1 = no history). Isaac Lab stacks oldest ->
+        # newest and flattens; the builder has to reproduce that exactly, so the
+        # length is surfaced here rather than only folded into obs_widths below.
+        self.obs_history: dict[str, int] = {}
         self.obs_scales: dict[str, list[float] | None] = {}
         self.obs_clips: dict[str, tuple[float, float] | None] = {}
         for name in self.obs_terms:
@@ -305,7 +327,9 @@ class DeployContract:
                 raise DeployContractError(f"{self.source}: observation {name!r} has no scale (cannot infer width)")
             scale = [float(s) for s in scale] if isinstance(scale, (list, tuple)) else [float(scale)]
 
-            self.obs_widths[name] = len(scale) * int(term.get("history_length", 1) or 1)
+            history = int(term.get("history_length", 1) or 1)
+            self.obs_history[name] = history
+            self.obs_widths[name] = len(scale) * history
 
             # None means identity, and the builders then skip the multiply entirely --
             # which keeps the stock-Isaac-Lab policies (every scale 1.0, because that
