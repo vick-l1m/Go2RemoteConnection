@@ -185,6 +185,16 @@
       "uses_heightmap": false,
       "runnable": true,
       "path": "policies/unitree_go2_flat_dr_omni_amp_style02/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_flat_dr_omni_amp_uncond_2026-09-19",
+      "name": "Flat DR Omni + AMP (unconditional)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_flat_dr_omni_amp_uncond \u00b7 2026-09-19_05-03-50 (2000 iterations)",
+      "type": "blind",
+      "obs_dim": 45,
+      "uses_heightmap": false,
+      "runnable": true,
+      "path": "policies/unitree_go2_flat_dr_omni_amp_uncond_2026-09-19/policy.onnx"
     }
   ]
 }
