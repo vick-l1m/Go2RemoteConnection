@@ -197,6 +197,54 @@ class DeployContract:
             highs.append(float(pair[1]))
         return lows, highs
 
+    @property
+    def command_style(self) -> str | None:
+        """How the ``(vx, vy, wz)`` command is meant to be *produced*, or None for the default.
+
+        ``"forward_biased"`` means the policy was trained with no lateral channel at all:
+        a world-frame heading target, and forward speed gated by the heading error still
+        outstanding (``go2_training.mdp.ForwardBiasedVelocityCommand``). A node driving
+        such a policy must convert the operator's lateral stick into a turn rather than
+        pass it through -- see :mod:`forward_bias`.
+
+        Announced by the trainer rather than inferred from a zero lateral range, because
+        the two failure modes are not equivalent: guessing wrong here means the robot
+        silently ignores half the joystick, with nothing in any log to say why.
+        """
+        style = ((self._d.get("commands") or {}).get("base_velocity") or {}).get("style")
+        if style is None:
+            return None
+        style = str(style)
+        if style not in ("forward_biased",):
+            raise DeployContractError(
+                f"{self.source}: commands.base_velocity.style is {style!r}, which this node "
+                "does not know how to drive. Update the node, or run a policy it supports."
+            )
+        return style
+
+    @property
+    def is_forward_biased(self) -> bool:
+        """True when the lateral stick must be converted to a turn, not forwarded."""
+        return self.command_style == "forward_biased"
+
+    @property
+    def heading_stiffness(self) -> float:
+        """Heading error -> yaw rate gain, as trained. Defaults to Isaac Lab's 1.0.
+
+        Only meaningful for a forward-biased policy. Defaulted rather than required so a
+        contract written before this key existed still loads.
+        """
+        raw = ((self._d.get("commands") or {}).get("base_velocity") or {}).get("heading_stiffness")
+        if raw is None:
+            return 1.0
+        value = float(raw)
+        if not value > 0.0:
+            raise DeployContractError(
+                f"{self.source}: commands.base_velocity.heading_stiffness must be positive, "
+                f"got {value}"
+            )
+        return value
+
     def _uniform_gain(self, values, what: str) -> float:
         """Collapse a per-joint gain list to the single value the nodes command.
 

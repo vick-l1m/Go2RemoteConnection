@@ -247,6 +247,7 @@ class _StdLogger:
 
 
 from deploy_contract import DeployContract, DeployContractError  # noqa: E402
+from forward_bias import stick_to_velocity_command  # noqa: E402
 
 
 def projected_gravity(quat_wxyz):
@@ -768,6 +769,17 @@ class Go2RLPolicyController:
             self.get_logger().warn(
                 f"policy '{pid}' onnx obs_dim {self.obs_dim} != policies.json {exp} "
                 "(stale registry entry -- the onnx and its deploy.yaml agree)")
+        # Same deal for the command mapping. The contract drives _shape_cmd either way;
+        # policies.json's `control` only labels the web joystick, so a mismatch means the
+        # operator is told the sticks do one thing while the robot does the other.
+        declared_forward = str(entry.get("control", "velocity")).strip().lower() == "forward"
+        if declared_forward != self.contract.is_forward_biased:
+            self.get_logger().warn(
+                f"policy '{pid}': policies.json says control="
+                f"{entry.get('control', 'velocity')!r} but its deploy.yaml "
+                f"{'IS' if self.contract.is_forward_biased else 'is NOT'} forward-biased. "
+                "The contract wins; fix the registry entry so the web joystick is labelled "
+                "correctly (control: 'forward' for a forward-biased policy).")
         self.active_policy_id = pid
         self.get_logger().info(
             f"loaded policy '{pid}' from {path} — {self.contract!r}")
@@ -1404,6 +1416,42 @@ class Go2RLPolicyController:
         """
         return np.clip(cmd, self.cmd_lo, self.cmd_hi).astype(np.float32)
 
+    def _shape_cmd(self, cmd):
+        """Turn the raw joystick into the command the loaded policy was trained on.
+
+        Default policies: :meth:`_clip_cmd` alone, unchanged.
+
+        Forward-biased policies (``style: forward_biased`` in deploy.yaml): the move
+        stick is a *direction request*, not a velocity. Its angle is read as a heading
+        error, which becomes a yaw command and gates the forward speed, and the lateral
+        axis is zeroed -- because such a policy was trained with that axis pinned to 0 for
+        its entire run, so forwarding a strafe would feed it an input it has never seen.
+        The conversion lives in ``forward_bias.py``, byte-identical to the copy the
+        training side applies, so the sticks produce commands on the same curve the policy
+        learned. See ``training/go2_training/envs/stepfield_fwd_env_cfg.py``.
+
+        Keyed on the contract, not a launch flag: hot-swapping between an omnidirectional
+        and a forward-biased policy changes the mapping on the next control tick.
+        """
+        contract = self.contract
+        if contract is None or not contract.is_forward_biased:
+            return self._clip_cmd(cmd)
+
+        # cmd_lo/cmd_hi come from the same contract's ranges (see _load_policy_file), so
+        # this envelope is the trained one; the mapping clips to it internally and
+        # _clip_cmd below is then a no-op belt-and-braces.
+        vx, vy, wz = stick_to_velocity_command(
+            float(cmd[0]), float(cmd[1]), float(cmd[2]),
+            forward_max=float(self.cmd_hi[0]),
+            # cmd_lo[0] is the trained reverse bound, e.g. -0.5; the mapping wants its
+            # magnitude. max(0, ...) keeps a forward-only contract from asking for a
+            # negative reverse_max.
+            reverse_max=max(0.0, -float(self.cmd_lo[0])),
+            yaw_max=float(self.cmd_hi[2]),
+            stiffness=contract.heading_stiffness,
+        )
+        return self._clip_cmd(np.array([vx, vy, wz], np.float32))
+
     def _build_obs(self):
         ls = self.low_state
         q_sdk = np.array([ls.motor_state[i].q for i in range(12)], np.float32)
@@ -1412,7 +1460,7 @@ class Go2RLPolicyController:
         dq_isaac = dq_sdk[self.isaac_from_sdk]
         with self._lock:
             timed_out = (self._now() - self.last_cmd_t) > CMD_TIMEOUT
-            cmd = np.zeros(3, np.float32) if timed_out else self._clip_cmd(self.cmd)
+            cmd = np.zeros(3, np.float32) if timed_out else self._shape_cmd(self.cmd)
             last_a = self.last_action.copy()
             posture = self.posture_cmd
         # Keyed by term name and emitted in the contract's own order, rather than

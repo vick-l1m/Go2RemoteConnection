@@ -60,6 +60,7 @@ Keeping one policy per directory is the least error-prone layout.
 | `go2_rl_bridge_node.py` | the ROS↔UDP bridge (pure rclpy, **no SDK**): forwards `/web_teleop`, `/web_control_mode`, `/web_estop` to the controller and republishes its heartbeat / un-gate signals. |
 | `policy.onnx` | exported flat policy (copy of `logs/rsl_rl/unitree_go2_flat/<ts>/exported/policy.onnx`) |
 | `deploy_contract.py` | reads a policy's `deploy.yaml`. Byte-identical mirror of `src/go2_rl/go2_rl/deploy_contract.py` upstream — edit there, copy here. |
+| `forward_bias.py` | the joystick mapping for a **forward-biased** policy (`style: forward_biased` in `deploy.yaml`): the move stick's angle is read as a heading error, which turns the robot and gates its forward speed, and the lateral axis is pinned to 0. Byte-identical mirror of `training/go2_training/utils/forward_bias.py`, which is **canonical** — the training env gates its command with the same formula, so a drift here is a train/deploy mismatch. Edit there, copy here; the parent's `test_forward_bias_sync.py` fails if they differ. |
 | `joint_names.json` | Isaac Lab joint order. Superseded by `deploy.yaml`'s `joint_ids_map` for policies exported since the contract landed; still read for older ones — **verify before ground tests** |
 
 > `dump_isaac_joint_order.py` moved to the parent workspace
