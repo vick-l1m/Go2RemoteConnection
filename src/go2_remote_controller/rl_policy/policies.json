@@ -195,6 +195,16 @@
       "uses_heightmap": false,
       "runnable": true,
       "path": "policies/unitree_go2_flat_dr_omni_amp_uncond_2026-09-19/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_spec_lane_amp_2026-09-19",
+      "name": "Spec Lane + AMP warm start",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_spec_lane_amp \u00b7 2026-09-19_17-12-54 (3000 iterations)",
+      "type": "camera",
+      "obs_dim": 232,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_spec_lane_amp_2026-09-19/policy.onnx"
     }
   ]
 }
