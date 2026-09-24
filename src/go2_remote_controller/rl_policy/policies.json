@@ -230,6 +230,26 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_spec_lane_amp_2026-09-21/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_progressive_lane_2026-09-24",
+      "name": "Progressive Lane (from scratch)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_progressive_lane \u00b7 2026-09-24_00-31-18 (4000 iterations)",
+      "type": "camera",
+      "obs_dim": 232,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_progressive_lane_2026-09-24/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_progressive_lane_warm_2026-09-23",
+      "name": "Progressive Lane (AMP warm start)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_progressive_lane_warm \u00b7 2026-09-23_18-10-34 (4000 iterations)",
+      "type": "camera",
+      "obs_dim": 232,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_progressive_lane_warm_2026-09-23/policy.onnx"
     }
   ]
 }
