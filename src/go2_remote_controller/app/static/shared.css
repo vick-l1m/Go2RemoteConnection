@@ -108,6 +108,24 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 }
 .panel h2 { margin: 0 0 10px; font-size: 16px; }
 
+/* Robot Model viewer: centered in its panel, not pinned to the left edge.
+   resize: both + a non-"visible" overflow gives it a native drag handle in
+   the bottom-right corner; robot_viewer.js already watches its size with a
+   ResizeObserver and keeps the three.js camera/renderer in sync as it's
+   dragged. */
+#go2ViewerRoot {
+  width: 320px;
+  height: 260px;
+  min-width: 200px;
+  min-height: 160px;
+  max-width: 100%;
+  resize: both;
+  margin: 0 auto;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
 .btnGrid {
   display:grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

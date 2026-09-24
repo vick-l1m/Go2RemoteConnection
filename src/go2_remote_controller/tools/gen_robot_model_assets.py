@@ -11,17 +11,28 @@ checkout layout.
 Re-run this whenever go2_description's URDF or meshes change; the output
 directory is generated/vendored, never hand-edited.
 
-Up-axis note: the source .dae files declare <up_axis>Z_UP</up_axis>, matching
-go2.urdf's joint origins (which apply no corrective rotation, since they were
-authored assuming mesh vertices are already in the link's native Z-up frame).
-trimesh's COLLADA importer normalizes Z-up meshes to Y-up on load (a +90 deg
-rotation about X), which would silently misalign every mesh from the URDF's
-joint frames if exported as-is. So after loading, we apply the inverse
-rotation (-90 deg about X) to undo trimesh's normalization before exporting,
-restoring the mesh vertices to the exact coordinates the URDF expects. This
-was verified empirically: extracting a raw <float_array> from base.dae and
-comparing its bounds directly against trimesh's loaded-then-corrected bounds
-gives identical min/max per axis.
+Up-axis note: each .dae is a COLLADA <scene> whose node graph already carries
+the transform that reconciles the file's raw <float_array> data (long axis on
+Y, e.g. calf.dae spans ~0.27m in Y) with go2.urdf's joint origins (which
+expect the calf's long axis on -Z: FL_calf_joint's child FL_foot_joint sits at
+xyz="0 0 -0.213"). trimesh applies that node-graph transform automatically
+when a .dae is flattened with force="mesh" -- loading calf.dae that way puts
+its long axis on Z, range [-0.236, 0.031], matching the -0.213 foot offset
+almost exactly, with no extra rotation needed.
+
+Two earlier versions of this script got this wrong by calling
+`trimesh.load(dae_path)` with no `force="mesh"`, which for a multi-node
+COLLADA scene returns a Scene whose `.geometry` dict holds each mesh's raw,
+untransformed vertices (the node-graph transform lives separately, in
+`scene.graph`, and is invisible if you inspect `.geometry` directly). Both
+versions then bolted on their own guessed corrective rotation (+90 or -90 deg
+about X) to compensate for what looked like a missing transform -- but the
+correct transform was already sitting in the scene graph, so either guess
+just rotates an already-correctly-oriented mesh into a wrong one. This is
+what produced a robot that loads and animates (joint math was never wrong)
+but renders as a collapsed/scattered mesh instead of a standing quadruped.
+The fix is to let trimesh do the flattening (`force="mesh"`) and export that
+result as-is, applying no additional rotation at all.
 
 Usage:
     pip install trimesh pygltflib pycollada
@@ -36,20 +47,16 @@ import re
 import shutil
 from pathlib import Path
 
-import numpy as np
 import trimesh
-
-# Undo trimesh's Z-up -> Y-up COLLADA normalization (a +90 deg rotation about
-# X), restoring the exact vertex coordinates go2_description's meshes were
-# authored in and that go2.urdf's joint origins assume.
-_UNDO_ZUP_TO_YUP = trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0])
 
 
 def convert_mesh(dae_path: Path, glb_path: Path) -> None:
-    scene_or_mesh = trimesh.load(str(dae_path))
-    scene_or_mesh.apply_transform(_UNDO_ZUP_TO_YUP)
+    # force="mesh" flattens the .dae's COLLADA scene graph into the mesh's
+    # already-correct world-space vertices (see the module docstring's
+    # "Up-axis note") -- no additional rotation belongs here.
+    mesh = trimesh.load(str(dae_path), force="mesh")
     glb_path.parent.mkdir(parents=True, exist_ok=True)
-    scene_or_mesh.export(str(glb_path), file_type="glb")
+    mesh.export(str(glb_path), file_type="glb")
 
 
 def camera_urdf_block(camera_yaml: Path, go2_sim: Path) -> str:

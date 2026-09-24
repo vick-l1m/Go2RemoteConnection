@@ -27,9 +27,39 @@ const URDF_URL = "/app/static/robot_model/go2.urdf";
 const RECONNECT_DELAY_MS = 2000;
 const KEEPALIVE_MS = 10000;
 
+// The URDF's zero-position (all joint angles 0) is legs-extended, not standing --
+// Go2 needs a bent-knee pose to stand. Mirror of q_default in
+// go2_remote_viz/recording/record_session.sh's session_metadata.yaml (same
+// values used to seed the real robot's stand controller), so the viewer shows
+// a standing robot before any /ws/robot_pose telemetry arrives (e.g. no robot
+// connected, sim mode) instead of the collapsed rest pose.
+const DEFAULT_JOINT_ANGLES = {
+  FL_hip_joint: 0.1, RL_hip_joint: 0.1, FR_hip_joint: -0.1, RR_hip_joint: -0.1,
+  FL_thigh_joint: 0.8, FR_thigh_joint: 0.8, RL_thigh_joint: 1.0, RR_thigh_joint: 1.0,
+  FL_calf_joint: -1.5, FR_calf_joint: -1.5, RL_calf_joint: -1.5, RR_calf_joint: -1.5,
+};
+// base_link sits at the robot's own origin with the legs hanging *below* it --
+// without live /sportmodestate.position telemetry to lift it, the body renders
+// resting at ground level (y=0, same as the grid) with the bent legs poking
+// through the floor. 0.28m is Unitree's documented default standing body
+// height (HighState/HighCmd bodyHeight), which puts the feet at ~y=0 too.
+const DEFAULT_BASE = { position: [0, 0, 0.28], quaternion: [0, 0, 0, 1] };
+
 function authWsSuffix() {
   const token = encodeURIComponent(window.Go2Shared?.state?.AUTH_TOKEN || "");
   return (window.Go2Shared?.state?.AUTH_ENABLED && token) ? `?token=${token}` : "";
+}
+
+function showError(container, message, err) {
+  console.error(`mountGo2Viewer: ${message}`, err || "");
+  container.textContent = "";
+  const box = document.createElement("div");
+  box.style.cssText =
+    "display:flex; align-items:center; justify-content:center; height:100%; " +
+    "padding:8px; text-align:center; font-size:12px; color:#b00020; " +
+    "font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;";
+  box.textContent = `${message}${err ? `: ${err.message || err}` : ""}`;
+  container.appendChild(box);
 }
 
 export function mountGo2Viewer(containerId) {
@@ -43,6 +73,15 @@ export function mountGo2Viewer(containerId) {
   }
   container.dataset.go2ViewerMounted = "1";
 
+  try {
+    return mount(container);
+  } catch (err) {
+    showError(container, "Failed to start 3D viewer", err);
+    return null;
+  }
+}
+
+function mount(container) {
   const width = container.clientWidth || 320;
   const height = container.clientHeight || 260;
 
@@ -85,17 +124,16 @@ export function mountGo2Viewer(containerId) {
   let robot = null;
   const gltfLoader = new GLTFLoader();
 
+  // go2.urdf's per-link <material> is a flat white placeholder left over from
+  // its SolidWorks export -- every real link color (charcoal body/legs, black
+  // feet, same as RViz) lives in the .glb's own embedded material instead, so
+  // the URDF material is deliberately ignored here rather than stamped over
+  // each mesh (which is what made the viewer render a plain grey/white blob).
   const urdfLoader = new URDFLoader();
   urdfLoader.loadMeshCb = (path, manager, material, done) => {
     gltfLoader.load(
       path,
-      (gltf) => {
-        const obj = gltf.scene;
-        if (material) {
-          obj.traverse((c) => { if (c.isMesh) c.material = material; });
-        }
-        done(obj);
-      },
+      (gltf) => done(gltf.scene),
       undefined,
       (err) => done(null, err),
     );
@@ -106,9 +144,10 @@ export function mountGo2Viewer(containerId) {
     (result) => {
       robot = result;
       robotRoot.add(robot);
+      applyPose({ joints: DEFAULT_JOINT_ANGLES, base: DEFAULT_BASE });
     },
     undefined,
-    (err) => console.error("mountGo2Viewer: failed to load URDF", err),
+    (err) => showError(container, "Failed to load robot model", err),
   );
 
   // ---------------- Render loop ----------------
