@@ -106,8 +106,7 @@ Author: Victor Lim
 
       <div id="robotViewerPanel" class="panel">
         <h2>Robot Model</h2>
-        <div id="go2ViewerRoot"
-             style="width:320px; height:260px; border-radius:var(--radius-sm); overflow:hidden; border:1px solid var(--border);"></div>
+        <div id="go2ViewerRoot"></div>
       </div>
 
       <div id="panelMovement" class="panel">
@@ -504,6 +503,15 @@ Author: Victor Lim
     }
   </script>
 
+  <script>
+    // Import maps need a fairly modern browser (Chrome 89+/Firefox 108+/Safari
+    // 16.4+); without this check, an unsupported browser fails to resolve the
+    // module script's bare specifiers with no visible error at all.
+    if (!window.HTMLScriptElement || !HTMLScriptElement.supports || !HTMLScriptElement.supports("importmap")) {
+      const el = document.getElementById("go2ViewerRoot");
+      if (el) el.textContent = "3D viewer needs a newer browser (import map support required).";
+    }
+  </script>
   <script type="importmap">
   {
     "imports": {

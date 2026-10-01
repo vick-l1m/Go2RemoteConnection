@@ -59,6 +59,7 @@ def _load_registry():
             "uses_heightmap": bool(entry.get("uses_heightmap", False)),
             "runnable": bool(entry.get("runnable", True)),
             "available": path.exists(),      # onnx present on disk?
+            "group": entry.get("group", ""),
         })
     default_id = data.get("default") or (policies[0]["id"] if policies else "")
     return default_id, policies

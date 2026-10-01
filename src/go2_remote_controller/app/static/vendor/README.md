@@ -6,12 +6,19 @@ be a reliable always-on operational display, and the robot's network segment
 isn't guaranteed to reach the public internet.
 
 Pinned versions (extracted 2026-09-17):
-- `three@0.186.0` — `build/three.module.js`, plus from `examples/jsm/`:
-  `controls/OrbitControls.js`, `loaders/GLTFLoader.js`,
-  `utils/BufferGeometryUtils.js`, `utils/SkeletonUtils.js` (GLTFLoader's two
-  transitive deps). Directory structure under `three/addons/` mirrors
-  `examples/jsm/` exactly so their relative imports (`../utils/...js`) resolve
-  unchanged.
+- `three@0.186.0` — `build/three.module.js` **and `build/three.core.js`**,
+  plus from `examples/jsm/`: `controls/OrbitControls.js`,
+  `loaders/GLTFLoader.js`, `utils/BufferGeometryUtils.js`,
+  `utils/SkeletonUtils.js` (GLTFLoader's two transitive deps). Directory
+  structure under `three/addons/` mirrors `examples/jsm/` exactly so their
+  relative imports (`../utils/...js`) resolve unchanged.
+  **`three.core.js` is not optional**: since this version, `three.module.js`
+  is a thin re-export shim (`export { ... } from './three.core.js'`) — it was
+  missed on the initial 2026-09-17 vendoring, which left the viewer completely
+  blank with a browser console error ("disallowed MIME type" on
+  `three.core.js`, because the FastAPI static mount 404s as JSON for a missing
+  file, and browsers refuse to execute JSON as a module). Always vendor both
+  files together and verify with the check below.
 - `urdf-loader@0.13.1` — `src/URDFLoader.js` (patched, see below) and
   `src/URDFClasses.js` (unmodified).
 
@@ -39,3 +46,13 @@ tar xzf urdf-loader-<version>.tgz && mv package urdf-loader-package
 Then copy the same file set listed above into this directory, and re-apply
 the `URDFLoader.js` patch (diff against the previous vendored copy in git to
 see exactly what changed, since upstream may have moved lines around).
+
+After copying, verify every vendored file's relative imports actually resolve
+to a file that exists in this tree (this is what catches a missed file like
+`three.core.js` before it reaches a browser):
+
+```bash
+grep -ho "from '\.[^']*'" $(find . -name '*.js') | sort -u
+```
+
+Every path printed must exist relative to the file that imports it.

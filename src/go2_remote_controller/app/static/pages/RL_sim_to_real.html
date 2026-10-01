@@ -37,6 +37,11 @@ Author: Victor Lim
     let currentPolicy = "";    // id of the selected/loaded policy
     let rlPosture = "stand";   // latched sit/stand target for a posture policy
     let postureSupported = false;  // does the SELECTED policy take a posture command?
+    // Is the SELECTED policy forward-biased? Then the move stick's lateral axis is a
+    // turn-toward request, not a strafe (go2_rl_policy_node._shape_cmd converts it), so
+    // "Move (X/Y)" would be actively misleading. Registry field, not a live reading: the
+    // node warns if policies.json's `control` disagrees with the policy's deploy.yaml.
+    let forwardBiased = false;
 
     window.addEventListener("DOMContentLoaded", async () => {
       // Standalone page: no nav bar to the other UIs.
@@ -72,15 +77,25 @@ Author: Victor Lim
       const sel = document.getElementById("policySelect");
       if (!sel) return;
       sel.innerHTML = "";
+      let currentGroup = null;
+      let grp = null;
       for (const p of policies) {
+        const groupName = p.group || "";
+        if (groupName !== currentGroup) {
+          if (grp) sel.appendChild(grp);
+          grp = groupName ? document.createElement("optgroup") : null;
+          if (grp) grp.label = groupName;
+          currentGroup = groupName;
+        }
         const opt = document.createElement("option");
         opt.value = p.id;
         opt.textContent = policyLabel(p);
         // Camera/height-scan or missing policies stay visible but unselectable.
         if (!p.available || !p.runnable || p.uses_heightmap) opt.disabled = true;
         if (p.id === currentPolicy) opt.selected = true;
-        sel.appendChild(opt);
+        (grp || sel).appendChild(opt);
       }
+      if (grp) sel.appendChild(grp);
       applyControlModeUi();       // lock the dropdown while RL is engaged
       updatePolicyCaption();
     }
@@ -91,6 +106,8 @@ Author: Victor Lim
       // Track locally so the panel reacts the moment the dropdown changes, rather
       // than waiting on the /rl/posture round-trip that confirms it.
       postureSupported = !!p && p.control === "posture";
+      forwardBiased = !!p && p.control === "forward";
+      applyJoystickLabels();
       applyPostureUi();
       if (!cap) return;
       cap.textContent = p ? policyLabel(p) : "";
@@ -145,6 +162,18 @@ Author: Victor Lim
       );
       if (r.ok) { rlPosture = posture; applyPostureUi(); }
       await refreshPosture();
+    }
+
+    function applyJoystickLabels() {
+      const title = document.getElementById("joyLeftTitle");
+      if (!title) return;
+      // Left/right on this stick TURNS a forward-biased policy: it walks forward, and a
+      // sideways push asks it to face that way first. Pull straight back still reverses.
+      title.textContent = forwardBiased ? "Move / Turn toward" : "Move (X/Y)";
+      title.title = forwardBiased
+        ? "This policy only walks forward. Push sideways and it turns to face that way "
+          + "(it does not strafe); hold to keep turning, centre to walk straight."
+        : "";
     }
 
     function applyPostureUi() {
@@ -359,7 +388,7 @@ Author: Victor Lim
 
       <div class="joyRow">
         <div class="joyBox">
-          <div class="joyTitle">Move (X/Y)</div>
+          <div class="joyTitle" id="joyLeftTitle">Move (X/Y)</div>
           <canvas id="joyLeft" class="joyCanvas"></canvas>
         </div>
         <div class="joyBox">
@@ -375,8 +404,7 @@ Author: Victor Lim
 
       <div id="robotViewerPanel" class="panel">
         <h2>Robot Model</h2>
-        <div id="go2ViewerRoot"
-             style="width:320px; height:260px; border-radius:var(--radius-sm); overflow:hidden; border:1px solid var(--border);"></div>
+        <div id="go2ViewerRoot"></div>
       </div>
 
       <div class="status">
@@ -391,6 +419,15 @@ Author: Victor Lim
     </div>
   </div>
 
+  <script>
+    // Import maps need a fairly modern browser (Chrome 89+/Firefox 108+/Safari
+    // 16.4+); without this check, an unsupported browser fails to resolve the
+    // module script's bare specifiers with no visible error at all.
+    if (!window.HTMLScriptElement || !HTMLScriptElement.supports || !HTMLScriptElement.supports("importmap")) {
+      const el = document.getElementById("go2ViewerRoot");
+      if (el) el.textContent = "3D viewer needs a newer browser (import map support required).";
+    }
+  </script>
   <script type="importmap">
   {
     "imports": {

@@ -94,6 +94,20 @@ PAGES_DIR = os.path.join(STATIC_DIR, "pages")
 app.mount("/app/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+@app.middleware("http")
+async def no_cache_static(request, call_next):
+    # StaticFiles sends no Cache-Control at all, so browsers apply heuristic
+    # caching and can silently keep serving a stale JS/CSS file after a plain
+    # refresh -- this has already caused confusion while iterating on the
+    # robot viewer. "no-cache" forces revalidation (an ETag round-trip) on
+    # every load rather than disabling caching outright, so unchanged files
+    # still get a cheap 304.
+    response = await call_next(request)
+    if request.url.path.startswith("/app/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.get("/")
 async def index_page():
     return FileResponse(os.path.join(PAGES_DIR, "index.html"))
