@@ -271,6 +271,26 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_progressive_lane_warm_2026-09-23/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_progressive_lane_progress_2026-09-29-1250",
+      "name": "Progressive-lane-progress, masked scan, from-scratch control (4000 iters)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_progressive_lane_progress \u00b7 2026-09-29_12-50-28 (4000 iterations)",
+      "type": "camera",
+      "obs_dim": 232,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_progressive_lane_progress_2026-09-29-1250/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_progressive_lane_progress_2026-09-29-2131",
+      "name": "Progressive-lane-progress, masked scan, from-scratch resumed (6000 iters)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_progressive_lane_progress \u00b7 2026-09-29_21-31-27 (5999 iterations)",
+      "type": "camera",
+      "obs_dim": 232,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_progressive_lane_progress_2026-09-29-2131/policy.onnx"
     }
   ]
 }
