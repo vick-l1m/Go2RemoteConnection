@@ -22,6 +22,17 @@ set +u   # ROS setup files reference unbound vars; disable nounset while sourcin
 #    types exist in this shell (deserialising /lowstate etc. needs them).
 [ -f /opt/ros/humble/setup.bash ] && source /opt/ros/humble/setup.bash
 [ -f "$HOME/unitree_ros2/install/setup.bash" ] && source "$HOME/unitree_ros2/install/setup.bash"
+# RealSense: the Jetson's working wrapper is a SOURCE build in ~/ros2_ws, not the
+# apt package. /opt/ros/humble's ros-humble-realsense2-camera is linked against
+# librealsense2.so.2.58, but this machine has 2.57 (source-installed in
+# /usr/local/lib), so the apt node dies at startup with
+#   dlopen error: librealsense2.so.2.58: cannot open shared object file
+# ~/ros2_ws/install/realsense2_camera (4.57.6) is built against the 2.57 that is
+# actually here and runs. Sourcing it AFTER /opt/ros/humble makes it win the
+# ament lookup. Only the realsense2_* packages live in that workspace, so nothing
+# of ours is shadowed. Guarded, so a laptop without it is unaffected.
+[ -f "$HOME/ros2_ws/install/setup.bash" ] && source "$HOME/ros2_ws/install/setup.bash"
+
 # The repository root IS the colcon workspace since the Aug-2026 restructure; the
 # old go2_rl_workflow/ subdirectory no longer exists. Try both so an older checkout
 # on the robot still works.

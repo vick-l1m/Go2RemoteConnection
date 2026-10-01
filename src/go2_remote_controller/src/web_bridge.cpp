@@ -79,6 +79,7 @@ private:
   static constexpr double RX_TIMEOUT = 0.25;
 
   static constexpr int ZERO_FLUSH_TICKS = 10;   // 10 * 50ms = 500ms
+  static constexpr int IDLE_REASSERT_TICKS = 40; // 40 * 50ms = 2s
 
   static constexpr double VX_SCALE   = 1.0;
   static constexpr double VY_SCALE   = 1.0;
@@ -102,6 +103,7 @@ private:
   bool was_active_{false};
   int  zero_flush_left_{0};
   bool last_nonzero_{false};
+  int  idle_reassert_countdown_{IDLE_REASSERT_TICKS};
 
   std::atomic<bool> remote_enabled_{true};
   std::atomic<bool> rl_mode_{false};   // true while the low-level RL policy owns the motors
@@ -411,6 +413,22 @@ private:
       if (!specialLocomotionActive()) {
         sportClient_.StopMove(req);
       }
+    }
+
+    // Periodic reassert while idle. Unverified without hardware: it's not
+    // confirmed whether StopMove above, or the repeated zero-velocity Move()
+    // calls during the flush window, are what actually drop a persistent
+    // gait/special-locomotion selection on the firmware side. Reasserting
+    // periodically here self-heals either way, at the cost of one extra SDK
+    // call every couple of seconds while idle with something active.
+    if (specialLocomotionActive()) {
+      if (--idle_reassert_countdown_ <= 0) {
+        idle_reassert_countdown_ = IDLE_REASSERT_TICKS;
+        sendBaseGait(base_gait_, req);
+        reassertSpecialLocomotion(req);
+      }
+    } else {
+      idle_reassert_countdown_ = IDLE_REASSERT_TICKS;
     }
   }
 };

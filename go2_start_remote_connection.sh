@@ -301,6 +301,13 @@ warn_if_dead "front_camera_ros_bridge" "$front_cam_node_PID" "/tmp/front_camera_
 # ----------------------------
 echo "[run_all] Starting FastAPI (uvicorn) on :$API_PORT ..."
 cd "$PKG_DIR"
+if ! python3 -c "import rclpy" >/dev/null 2>&1; then
+  echo "[run_all] ❌ 'python3' ($(command -v python3)) can't import rclpy." >&2
+  echo "[run_all]    A conda env (e.g. env_isaaclab) is likely active in this shell and is" >&2
+  echo "[run_all]    shadowing the system Python 3.10 that ROS 2 Humble's rclpy needs." >&2
+  echo "[run_all]    Run 'conda deactivate' (possibly more than once) and try again." >&2
+  exit 1
+fi
 python3 -m uvicorn app.main:app --host "$API_HOST" --port "$API_PORT" \
   > /tmp/go2_fastapi.log 2>&1 &
 
