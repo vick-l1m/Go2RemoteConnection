@@ -38,6 +38,7 @@ and by ``Go2RemoteConnection``'s real-robot node, neither of which has Isaac Lab
 
 from __future__ import annotations
 
+import math
 import os
 
 import yaml
@@ -207,6 +208,13 @@ class DeployContract:
         such a policy must convert the operator's lateral stick into a turn rather than
         pass it through -- see :mod:`forward_bias`.
 
+        ``"forward_cone"`` means the lateral channel is real but the commanded velocity
+        was confined to a forward wedge -- the depth camera's horizontal FOV
+        (``go2_training.mdp.ForwardConeVelocityCommand``). The lateral axis range alone
+        does not say so: a per-axis clamp still admits the box corner (full lateral, zero
+        forward) that the wedge excludes, which is a 90 deg strafe the policy never saw.
+        A node driving such a policy must PROJECT the stick into the cone, not clamp it.
+
         Announced by the trainer rather than inferred from a zero lateral range, because
         the two failure modes are not equivalent: guessing wrong here means the robot
         silently ignores half the joystick, with nothing in any log to say why.
@@ -215,7 +223,7 @@ class DeployContract:
         if style is None:
             return None
         style = str(style)
-        if style not in ("forward_biased",):
+        if style not in ("forward_biased", "forward_cone"):
             raise DeployContractError(
                 f"{self.source}: commands.base_velocity.style is {style!r}, which this node "
                 "does not know how to drive. Update the node, or run a policy it supports."
@@ -226,6 +234,34 @@ class DeployContract:
     def is_forward_biased(self) -> bool:
         """True when the lateral stick must be converted to a turn, not forwarded."""
         return self.command_style == "forward_biased"
+
+    @property
+    def is_forward_cone(self) -> bool:
+        """True when the stick must be projected into a forward cone, not clamped per axis."""
+        return self.command_style == "forward_cone"
+
+    @property
+    def cone_half_angle(self) -> float:
+        """Half-angle of the trained forward cone, radians, off the body +x axis.
+
+        Only meaningful for a ``forward_cone`` policy. Defaults to pi/2 -- the whole
+        forward half-plane, i.e. no narrowing beyond "do not walk backwards" -- so that a
+        contract naming the style but omitting the angle degrades to the loosest *safe*
+        reading rather than silently inventing a tighter one and clipping commands the
+        policy was in fact trained on.
+        """
+        raw = ((self._d.get("commands") or {}).get("base_velocity") or {}).get(
+            "cone_half_angle"
+        )
+        if raw is None:
+            return math.pi / 2
+        angle = float(raw)
+        if not 0.0 < angle <= math.pi / 2:
+            raise DeployContractError(
+                f"{self.source}: commands.base_velocity.cone_half_angle is {angle}, which "
+                "must be in (0, pi/2] -- past pi/2 the cone would include backwards."
+            )
+        return angle
 
     @property
     def heading_stiffness(self) -> float:

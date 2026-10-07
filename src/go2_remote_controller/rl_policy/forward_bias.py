@@ -34,7 +34,12 @@ from __future__ import annotations
 
 import math
 
-__all__ = ["forward_gate", "stick_to_velocity_command", "wrap_to_pi"]
+__all__ = [
+    "forward_gate",
+    "stick_to_cone_command",
+    "stick_to_velocity_command",
+    "wrap_to_pi",
+]
 
 
 def wrap_to_pi(angle: float) -> float:
@@ -148,3 +153,93 @@ def stick_to_velocity_command(
 
     yaw = max(-yaw_max, min(yaw_max, stiffness * error))
     return forward, 0.0, yaw
+
+
+def stick_to_cone_command(
+    stick_x: float,
+    stick_y: float,
+    yaw_stick: float = 0.0,
+    *,
+    forward_max: float,
+    cone_half_angle: float,
+    lateral_max: float,
+    yaw_max: float,
+) -> tuple[float, float, float]:
+    """Project an operator's sticks into the FORWARD CONE a cone-trained policy expects.
+
+    The deployment half of :class:`go2_training.mdp.ForwardConeVelocityCommand`. That term
+    samples uniformly inside a wedge; this projects an arbitrary stick onto the same wedge,
+    so every command the policy sees on the robot is one its training distribution covers.
+
+    Projection, not clamping, and the difference is the whole point. deploy.yaml reports a
+    per-axis BOX, and a box clamp admits its corners: ``(vx, vy) = (0.0, 0.57)`` has both
+    axes in range and is a 90 degree strafe the policy was never trained on. Projecting
+    keeps the operator's intent -- the *nearest* direction the policy actually knows --
+    rather than producing a command that is in-range on paper and out-of-distribution in
+    fact.
+
+    Args:
+        stick_x: forward/back component of the move stick, m/s, body frame (``linear.x``).
+        stick_y: left/right component of the move stick, m/s, body frame (``linear.y``).
+        yaw_stick: the separate yaw request, rad/s (``angular.z``). Passed through, clipped.
+        forward_max: the cone's radius -- the trained forward speed ceiling (deploy.yaml
+            ``commands.base_velocity.ranges.lin_vel_x`` upper bound).
+        cone_half_angle: half-angle of the trained wedge, radians, off the body +x axis.
+        lateral_max: the trained ``lin_vel_y`` bound, as a positive number. A backstop only:
+            the cone already implies ``forward_max * sin(cone_half_angle)``, and this keeps
+            the result inside the exported envelope if the two ever disagree.
+        yaw_max: yaw-rate clip, matching the trained ``ang_vel_z`` bound.
+
+    Returns:
+        ``(vx, vy, wz)`` with ``vx >= 0`` and ``|atan2(vy, vx)| <= cone_half_angle``.
+
+    Behaviour, for a stick pushed to full deflection, at a 45 degree cone:
+
+    ==================  ==========================================================
+    stick direction     result
+    ==================  ==========================================================
+    forward             full speed straight ahead -- unchanged
+    forward-left 30     full speed at 30 deg -- inside the cone, passed through
+    left (90 deg)       full speed at 45 deg: the nearest direction in the cone
+    back                STOPPED (vx = vy = 0). The cone has no reverse; backing up
+                        is the one direction with no depth coverage at all, so the
+                        honest answer is to refuse it rather than fake it.
+    back + yaw stick    turns in place -- yaw survives, the linear command does not
+    ==================  ==========================================================
+
+    **Yaw is passed through, not folded into the direction** -- unlike the forward-biased
+    mapping, where a lateral stick *is* a turn request. Here the lateral channel is real:
+    the policy can strafe diagonally, so the move stick keeps meaning "travel this way" and
+    the yaw stick keeps meaning "turn". A cone-trained policy saw the two sampled
+    independently, so passing them through independently is what matches its training.
+
+    Rejecting a rearward stick rather than folding it to a turn is deliberate for the same
+    reason: the training distribution contains no rearward command at all, so there is no
+    "nearest trained direction" behind the robot. An operator who wants to turn around uses
+    the yaw stick, which still works at a standstill.
+    """
+    wz = max(-yaw_max, min(yaw_max, yaw_stick))
+
+    speed = math.hypot(stick_x, stick_y)
+    if speed < 1e-6:
+        return 0.0, 0.0, wz
+
+    theta = math.atan2(stick_y, stick_x)
+    if abs(theta) > math.pi / 2.0:
+        # Rearward: outside the half-plane the cone lives in. Stop the linear command and
+        # leave the yaw stick alone, so the operator can still spin to face where they want
+        # to go and then drive forward.
+        return 0.0, 0.0, wz
+
+    theta = max(-cone_half_angle, min(cone_half_angle, theta))
+    speed = min(speed, forward_max)
+
+    vx = speed * math.cos(theta)
+    vy = speed * math.sin(theta)
+    # Backstop against an exported lateral bound tighter than the cone implies; clamping vy
+    # alone would rotate the direction, so scale both and keep the bearing.
+    if lateral_max > 0.0 and abs(vy) > lateral_max:
+        scale = lateral_max / abs(vy)
+        vx *= scale
+        vy *= scale
+    return vx, vy, wz

@@ -247,7 +247,7 @@ class _StdLogger:
 
 
 from deploy_contract import DeployContract, DeployContractError  # noqa: E402
-from forward_bias import stick_to_velocity_command  # noqa: E402
+from forward_bias import stick_to_cone_command, stick_to_velocity_command  # noqa: E402
 
 
 def projected_gravity(quat_wxyz):
@@ -1430,12 +1430,34 @@ class Go2RLPolicyController:
         training side applies, so the sticks produce commands on the same curve the policy
         learned. See ``training/go2_training/envs/stepfield_fwd_env_cfg.py``.
 
+        Forward-cone policies (``style: forward_cone`` in deploy.yaml): the lateral axis is
+        real -- such a policy strafes diagonally -- but its trained commands fill a WEDGE
+        inside the exported box, not the box. The move stick is projected onto that wedge,
+        because :meth:`_clip_cmd` would pass the box's corner (zero forward, full lateral,
+        a 90 degree strafe) which is in range on every axis and outside the training
+        distribution on the only measure that matters: direction. A rearward stick stops
+        the robot rather than backing it up -- behind is where the depth camera sees
+        nothing, so the policy has no trained command there. The yaw stick still works, so
+        the operator turns to face a new direction and then drives forward. See
+        ``training/go2_training/envs/progressive_lane_fwdcone_env_cfg.py``.
+
         Keyed on the contract, not a launch flag: hot-swapping between an omnidirectional
         and a forward-biased policy changes the mapping on the next control tick.
         """
         contract = self.contract
-        if contract is None or not contract.is_forward_biased:
+        if contract is None or contract.command_style is None:
             return self._clip_cmd(cmd)
+
+        if contract.is_forward_cone:
+            vx, vy, wz = stick_to_cone_command(
+                float(cmd[0]), float(cmd[1]), float(cmd[2]),
+                forward_max=float(self.cmd_hi[0]),
+                cone_half_angle=contract.cone_half_angle,
+                # Backstop only; the cone already implies forward_max * sin(half_angle).
+                lateral_max=abs(float(self.cmd_hi[1])),
+                yaw_max=float(self.cmd_hi[2]),
+            )
+            return self._clip_cmd(np.array([vx, vy, wz], np.float32))
 
         # cmd_lo/cmd_hi come from the same contract's ranges (see _load_policy_file), so
         # this envelope is the trained one; the mapping clips to it internally and
