@@ -317,17 +317,26 @@ detect_realsense() {
   return 1
 }
 
-# Something already owns the camera? (a previous RL_start, a manual launch, or the
-# vip-realsense container) -- only ONE process may open a RealSense.
+# The VIP-Rescue vip-realsense container (restart=unless-stopped, so it comes up on
+# every boot) opens the camera itself and publishes under /camera/*, NOT /go2/camera/*.
+# Reusing it is impossible: heightmap_node would subscribe a depth topic nobody
+# publishes. It has to be stopped to free the camera.
+vip_realsense_running() {
+  command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^vip-realsense$'
+}
+
+# Something already owns the camera under OUR topic names? (a previous RL_start or a
+# manual launch) -- only ONE process may open a RealSense.
 realsense_driver_running() {
-  if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^vip-realsense$'; then
-    return 0
-  fi
   timeout 6 ros2 topic list 2>/dev/null | grep -q '^/go2/camera/depth/image_rect_raw$'
 }
 
+# A MESSAGE must arrive, not just the topic exist: heightmap_node advertises
+# /go2/height_scan the moment it starts, depth or no depth, so `ros2 topic list`
+# reported "publishing" for a scan that never carried a single frame.
 height_scan_flowing() {
-  timeout 6 ros2 topic list 2>/dev/null | grep -q '^/go2/height_scan$'
+  timeout 6 ros2 topic echo --once /go2/height_scan go2_msgs/msg/HeightScan \
+    --field header.stamp >/dev/null 2>&1
 }
 
 # Launch files are run BY PATH: go2_bringup depends on the sim/controller packages and
@@ -422,6 +431,20 @@ else
     *) echo "[run_all] ⚠️  Unknown GO2_PERCEPTION='$GO2_PERCEPTION' (auto|usb3|usb2|0); treating as auto."
        [ "$RS_FOUND" -eq 1 ] && PERCEPTION_USB="$RS_USB" ;;
   esac
+
+  if [ -n "$PERCEPTION_USB" ] && vip_realsense_running; then
+    if [ "${GO2_STOP_VIP_REALSENSE:-0}" = "1" ]; then
+      echo "[run_all] Stopping the vip-realsense container to free the camera (GO2_STOP_VIP_REALSENSE=1)."
+      echo "[run_all]   It stays stopped until reboot; 'docker start vip-realsense' brings it back."
+      docker stop vip-realsense >/dev/null 2>&1 || true
+      sleep 2
+    else
+      echo "[run_all] ❌ The vip-realsense Docker container owns the RealSense. It publishes /camera/*,"
+      echo "[run_all]    not /go2/camera/*, so the height map would get no depth. Perception SKIPPED."
+      echo "[run_all]    Free the camera:  docker stop vip-realsense   (or rerun with GO2_STOP_VIP_REALSENSE=1)"
+      PERCEPTION_USB=""
+    fi
+  fi
 
   if [ -z "$PERCEPTION_USB" ]; then
     echo "[run_all] Perception not started (blind policies only)."
@@ -548,14 +571,17 @@ fi
 if [ "$PERCEPTION_STARTED" -eq 1 ]; then
   echo "[run_all] Waiting for /go2/height_scan ..."
   SCAN_OK=0
-  for i in {1..10}; do
+  # Each check blocks up to 6 s waiting for a message, so 5 tries is ~35 s worst case.
+  for i in {1..5}; do
     if height_scan_flowing; then SCAN_OK=1; break; fi
     sleep 1
   done
   if [ "$SCAN_OK" -eq 1 ]; then
     echo "[run_all] /go2/height_scan is publishing -- perception policies can engage."
   else
-    echo "[run_all] ⚠️  /go2/height_scan not seen yet; perception policies will refuse to engage until it flows."
+    echo "[run_all] ⚠️  No /go2/height_scan message received; perception policies will refuse to engage until it flows."
+    echo "[run_all]    Usual causes: no depth reaching heightmap_node, or no /lowstate attitude (it drops"
+    echo "[run_all]    frames rather than publish an unlevelled scan) -- the log below says which."
     print_log_hint "$PERCEPTION_LOG"
   fi
 fi
