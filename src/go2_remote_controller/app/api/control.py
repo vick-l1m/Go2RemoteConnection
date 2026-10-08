@@ -16,7 +16,7 @@ Author: Victor Lim
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.auth import require_token
 from app.core.state import state
-from app.ros_bridge import get_bridge
+from app.ros_bridge import get_bridge, get_perception_status
 from app.api.rl_policy import _load_registry, _current_id
 
 router = APIRouter()
@@ -49,9 +49,14 @@ async def set_control_mode(mode: str, _=Depends(require_token)):
             raise HTTPException(status_code=409, detail="no RL policy selected")
         if not policy["available"]:
             raise HTTPException(status_code=409, detail=f"policy '{sel}' onnx not found on robot")
-        if not policy["runnable"] or policy["uses_heightmap"]:
+        if not policy["runnable"]:
+            raise HTTPException(status_code=409, detail=f"policy '{sel}' is not runnable on this robot")
+        # Perception policies: refuse unless height scans are flowing right now (same
+        # signal the page uses to un-grey them). go2_rl_policy_node._engage still
+        # re-checks scan age (HEIGHT_SCAN_TIMEOUT) and ESTOPs on a stale scan mid-run.
+        if policy["uses_heightmap"] and not get_perception_status()["height_scan_flowing"]:
             raise HTTPException(status_code=409,
-                                detail=f"policy '{sel}' needs the perception pipeline (not runnable here)")
+                                detail=f"policy '{sel}' needs a live height scan (perception not running)")
 
     bridge = get_bridge()
     # Order matters for safe mutual exclusion:
