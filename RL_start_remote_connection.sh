@@ -67,12 +67,30 @@ cleanup() {
   echo ""
   echo "[run_all] Stopping processes..."
   for pid in "${pids[@]:-}"; do
+    [ -n "$pid" ] || continue
     if kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
     fi
   done
+  # `ros2 launch` (perception: realsense driver + heightmap_node) needs a few seconds
+  # to shut its children down cleanly -- SIGKILLing the launch process after 0.5 s
+  # orphans realsense2_camera_node, which then keeps the camera open and blocks the
+  # next start. Non-critical pids get up to 5 s; everything else keeps the quick path.
+  local deadline=$((SECONDS + 5))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    local waiting=0
+    for pid in "${pids[@]:-}"; do
+      [ -n "$pid" ] || continue
+      if [ "${pid_critical[$pid]:-1}" = "0" ] && kill -0 "$pid" 2>/dev/null; then
+        waiting=1
+      fi
+    done
+    [ "$waiting" -eq 0 ] && break
+    sleep 0.25 || true
+  done
   sleep 0.5 || true
   for pid in "${pids[@]:-}"; do
+    [ -n "$pid" ] || continue
     if kill -0 "$pid" 2>/dev/null; then
       kill -9 "$pid" 2>/dev/null || true
     fi
@@ -147,6 +165,15 @@ for overlay in "$WS_DIR/install/setup.bash" "$HOME/go2_ws/Go2RemoteConnection/in
 done
 if [ "$OVERLAY_SOURCED" -eq 0 ]; then
   echo "[run_all] WARNING: no go2_remote_controller overlay found (did you colcon build?)"
+fi
+
+# RealSense: the Jetson's working realsense2_camera is a SOURCE build in ~/ros2_ws
+# (4.57.6 against the installed librealsense 2.57); /opt/ros/humble's apt node dies on
+# librealsense2.so.2.58. Sourcing it AFTER /opt/ros makes it win the ament lookup (same
+# as robot_env.sh). Guarded, so a laptop without it is unaffected.
+if [ -f "$HOME/ros2_ws/install/setup.bash" ]; then
+  echo "[run_all] Sourcing ~/ros2_ws overlay (realsense2_camera)"
+  source "$HOME/ros2_ws/install/setup.bash"
 fi
 
 # The OUTER Go2_RL_workflow workspace, if this checkout is a submodule of it. It builds
@@ -243,6 +270,177 @@ export CYCLONEDDS_URI="<CycloneDDS><Domain><General><Interfaces><NetworkInterfac
 
 echo "[run_all] Using UNITREE_IFACE=$UNITREE_IFACE"
 echo "[run_all] Using VENV_PYTHON=$VENV_PYTHON"
+
+# ----------------------------
+# 0) Perception: RealSense D435i + height map, auto-started when a camera is on USB
+# ----------------------------
+# The rough-terrain (uses_heightmap) policies need /go2/height_scan, built by the outer
+# workspace's go2_perception heightmap_node from the RealSense. Which launch is right
+# depends on the USB link the camera landed on:
+#   USB 3 (>= 5000 Mb/s)  real_perception.launch.py       depth + colour + driver cloud
+#   USB 2 (480 Mb/s)      real_perception_usb2.launch.py  depth ONLY; heightmap_node
+#                                                         back-projects the depth image
+#                                                         (the colour+cloud path stalls
+#                                                         and drops the camera off the bus)
+# Presence + speed come from sysfs (never opens the device, so no fight with the
+# driver); the web page's /perception/status reads the same sysfs independently.
+#   GO2_PERCEPTION=auto (default) detect + pick | usb3 | usb2 force a launch | 0 never
+#   GO2_HEIGHT_EMPTY_FILL=-1.0    value for cells the camera cannot see. MUST equal the
+#                                 selected policy's deploy.yaml unobserved_value (-1.0
+#                                 for recent exports, 0.0 for older ones); the policy
+#                                 node logs a mismatch but runs anyway.
+GO2_PERCEPTION="${GO2_PERCEPTION:-auto}"
+GO2_HEIGHT_EMPTY_FILL="${GO2_HEIGHT_EMPTY_FILL:--1.0}"
+PERCEPTION_STARTED=0
+PERCEPTION_LOG="/tmp/go2_perception.log"
+
+RS_FOUND=0; RS_SPEED_MBPS=""; RS_USB=""; RS_PRODUCT=""
+# detect_realsense: sysfs scan. Sets RS_FOUND/RS_USB(2|3)/RS_SPEED_MBPS/RS_PRODUCT.
+# Mirror of app/services/realsense_usb.py -- keep the two in step.
+detect_realsense() {
+  RS_FOUND=0; RS_SPEED_MBPS=""; RS_USB=""; RS_PRODUCT=""
+  local d prod speed
+  for d in /sys/bus/usb/devices/*; do
+    [ -f "$d/idVendor" ] || continue
+    [ "$(cat "$d/idVendor" 2>/dev/null)" = "8086" ] || continue
+    prod="$(cat "$d/product" 2>/dev/null || true)"
+    case "$prod" in *[Rr]eal[Ss]ense*) ;; *) continue ;; esac
+    speed="$(cat "$d/speed" 2>/dev/null || true)"
+    RS_FOUND=1; RS_PRODUCT="$prod"; RS_SPEED_MBPS="${speed%%.*}"
+    if [ -n "$RS_SPEED_MBPS" ] && [ "$RS_SPEED_MBPS" -ge 5000 ] 2>/dev/null; then
+      RS_USB=3
+    else
+      RS_USB=2
+    fi
+    return 0
+  done
+  return 1
+}
+
+# Something already owns the camera? (a previous RL_start, a manual launch, or the
+# vip-realsense container) -- only ONE process may open a RealSense.
+realsense_driver_running() {
+  if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^vip-realsense$'; then
+    return 0
+  fi
+  timeout 6 ros2 topic list 2>/dev/null | grep -q '^/go2/camera/depth/image_rect_raw$'
+}
+
+height_scan_flowing() {
+  timeout 6 ros2 topic list 2>/dev/null | grep -q '^/go2/height_scan$'
+}
+
+# Launch files are run BY PATH: go2_bringup depends on the sim/controller packages and
+# need not be built on the robot, which is exactly why both launches take camera_config.
+PERCEPTION_LAUNCH_DIR=""
+for cand in "$WS_DIR/../src/go2_bringup/launch" "$HOME/Go2_RL_workflow/src/go2_bringup/launch"; do
+  if [ -f "$cand/real_perception.launch.py" ]; then
+    PERCEPTION_LAUNCH_DIR="$(cd "$cand" && pwd)"
+    break
+  fi
+done
+CAMERA_YAML=""
+[ -n "$PERCEPTION_LAUNCH_DIR" ] && CAMERA_YAML="$PERCEPTION_LAUNCH_DIR/../config/camera.yaml"
+
+# start_heightmap_only <usb 2|3>: the driver is already up (someone else's), so add only
+# the missing half: heightmap_node (+ the base->camera_link mount TF from camera.yaml).
+start_heightmap_only() {
+  local usb="$1" mode tf_vals
+  if [ "$usb" = "3" ]; then mode="pointcloud"; else mode="depth_image"; fi
+  echo "[run_all] RealSense driver already running -> starting heightmap_node only (input_mode=$mode)"
+  tf_vals="$(python3 - "$CAMERA_YAML" <<'PY' 2>/dev/null || true
+import math, sys, yaml
+c = (yaml.safe_load(open(sys.argv[1])) or {}).get("camera", {})
+t = c.get("translation", [0.28, 0.0, 0.10])
+print(t[0], t[1], t[2],
+      math.radians(float(c.get("roll_deg", 0.0))),
+      math.radians(float(c.get("pitch_deg", 30.0))),
+      math.radians(float(c.get("yaw_deg", 0.0))))
+PY
+)"
+  if [ -n "$tf_vals" ]; then
+    # shellcheck disable=SC2086
+    set -- $tf_vals
+    ros2 run tf2_ros static_transform_publisher --x "$1" --y "$2" --z "$3" \
+      --roll "$4" --pitch "$5" --yaw "$6" --frame-id base --child-frame-id camera_link \
+      > /tmp/go2_camera_tf.log 2>&1 &
+    register_pid "$!" "camera mount TF" "/tmp/go2_camera_tf.log" 0
+    echo "[run_all] Published base->camera_link mount TF from $CAMERA_YAML (assumed; the running driver does not publish it)"
+  else
+    echo "[run_all] ⚠️  Could not read $CAMERA_YAML for the mount TF; heightmap_node will wait on TF."
+  fi
+  ros2 run go2_perception heightmap_node --ros-args \
+    -p input_mode:="$mode" \
+    -p pointcloud_topic:=/go2/camera/depth/color/points \
+    -p depth_topic:=/go2/camera/depth/image_rect_raw \
+    -p camera_info_topic:=/go2/camera/depth/camera_info \
+    -p base_frame:=base -p size_x:=1.6 -p size_y:=1.0 -p resolution:=0.1 -p center_x:=0.6 \
+    -p empty_fill:="$GO2_HEIGHT_EMPTY_FILL" \
+    > "$PERCEPTION_LOG" 2>&1 &
+  register_pid "$!" "heightmap_node" "$PERCEPTION_LOG" 0
+  PERCEPTION_STARTED=1
+  sleep 2.0
+  warn_if_dead "heightmap_node" "$!" "$PERCEPTION_LOG" || true
+}
+
+start_perception() {
+  local usb="$1" launch_file
+  if [ "$usb" = "3" ]; then
+    launch_file="real_perception.launch.py"
+  else
+    launch_file="real_perception_usb2.launch.py"
+  fi
+  echo "[run_all] Launching $launch_file (empty_fill=$GO2_HEIGHT_EMPTY_FILL -- must match the policy's unobserved_value)"
+  ros2 launch "$PERCEPTION_LAUNCH_DIR/$launch_file" \
+    camera_config:="$CAMERA_YAML" rviz:=false empty_fill:="$GO2_HEIGHT_EMPTY_FILL" \
+    > "$PERCEPTION_LOG" 2>&1 &
+  local pid=$!
+  register_pid "$pid" "perception (realsense USB $usb + heightmap)" "$PERCEPTION_LOG" 0
+  PERCEPTION_STARTED=1
+  sleep 3.0
+  warn_if_dead "perception ($launch_file)" "$pid" "$PERCEPTION_LOG" || true
+}
+
+if [ "$GO2_PERCEPTION" = "0" ]; then
+  echo "[run_all] Perception disabled (GO2_PERCEPTION=0)."
+else
+  if detect_realsense; then
+    if [ "$RS_USB" = "3" ]; then
+      echo "[run_all] RealSense on USB 3 ($RS_SPEED_MBPS Mb/s): $RS_PRODUCT"
+    else
+      echo "[run_all] ⚠️  RealSense on USB 2 ($RS_SPEED_MBPS Mb/s): $RS_PRODUCT -- depth-only mode; use a USB 3 port + cable for colour + cloud"
+    fi
+  else
+    echo "[run_all] No RealSense on USB."
+  fi
+
+  PERCEPTION_USB=""
+  case "$GO2_PERCEPTION" in
+    usb3) PERCEPTION_USB=3 ;;
+    usb2) PERCEPTION_USB=2 ;;
+    auto) [ "$RS_FOUND" -eq 1 ] && PERCEPTION_USB="$RS_USB" ;;
+    *) echo "[run_all] ⚠️  Unknown GO2_PERCEPTION='$GO2_PERCEPTION' (auto|usb3|usb2|0); treating as auto."
+       [ "$RS_FOUND" -eq 1 ] && PERCEPTION_USB="$RS_USB" ;;
+  esac
+
+  if [ -z "$PERCEPTION_USB" ]; then
+    echo "[run_all] Perception not started (blind policies only)."
+  elif [ -z "$PERCEPTION_LAUNCH_DIR" ] || [ ! -f "$CAMERA_YAML" ]; then
+    echo "[run_all] ⚠️  Perception launch files not found (looked beside $WS_DIR and in ~/Go2_RL_workflow/src/go2_bringup/launch); skipping."
+  elif ! ros2 pkg prefix realsense2_camera >/dev/null 2>&1; then
+    echo "[run_all] ⚠️  realsense2_camera not found in this ROS environment (source ~/ros2_ws, see robot_env.sh); perception skipped."
+  elif ! ros2 pkg prefix go2_perception >/dev/null 2>&1; then
+    echo "[run_all] ⚠️  go2_perception not found (build the outer Go2_RL_workflow workspace); perception skipped."
+  elif realsense_driver_running; then
+    if height_scan_flowing; then
+      echo "[run_all] Perception already running (driver + /go2/height_scan) -- reusing it."
+    else
+      start_heightmap_only "$PERCEPTION_USB"
+    fi
+  else
+    start_perception "$PERCEPTION_USB"
+  fi
+fi
 
 # ----------------------------
 # 1) Start FastAPI backend
@@ -347,6 +545,21 @@ else
   echo "[run_all] ⚠️  Skipping web_bridge, move_forward_meters_node and go2_rl_policy_node because Unitree sport topics are unavailable."
 fi
 
+if [ "$PERCEPTION_STARTED" -eq 1 ]; then
+  echo "[run_all] Waiting for /go2/height_scan ..."
+  SCAN_OK=0
+  for i in {1..10}; do
+    if height_scan_flowing; then SCAN_OK=1; break; fi
+    sleep 1
+  done
+  if [ "$SCAN_OK" -eq 1 ]; then
+    echo "[run_all] /go2/height_scan is publishing -- perception policies can engage."
+  else
+    echo "[run_all] ⚠️  /go2/height_scan not seen yet; perception policies will refuse to engage until it flows."
+    print_log_hint "$PERCEPTION_LOG"
+  fi
+fi
+
 echo ""
 echo "[run_all] ✅ Frontend/backend started."
 
@@ -367,6 +580,7 @@ echo "  sed -n '1,200p' /tmp/web_bridge.log"
 echo "  sed -n '1,200p' /tmp/move_forward_meters.log"
 echo "  sed -n '1,200p' /tmp/go2_rl_bridge.log"
 echo "  sed -n '1,200p' /tmp/go2_rl_policy.log"
+echo "  sed -n '1,200p' /tmp/go2_perception.log"
 
 set +e
 

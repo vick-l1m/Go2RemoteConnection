@@ -94,6 +94,8 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   background: var(--soft-2);
   font-size: 12px;
 }
+.pill.ok   { border-color: #8fd19e; background: #eefaf0; }
+.pill.warn { border-color: #f0c36d; background: #fff7e6; }
 .danger { background: var(--danger-bg); border-color: var(--danger-border); }
 .activeMode { border-color: var(--accent-border); background: var(--accent-bg); }
 .toggleOn { border-color: var(--accent-border); background: var(--accent-bg); }
@@ -262,3 +264,18 @@ canvas {
   min-height: 220px;
   padding: 8px;
 }
+/* RealSense panel (RL_sim_to_real.html): depth/colour preview below the robot
+   model, same Blob-URL <img> path as the front camera page. The height-map mode
+   buttons sit inline in the Robot Model heading. */
+#rsImg {
+  display: block;
+  width: 320px;
+  max-width: 100%;
+  min-height: 60px;
+  margin: 8px auto 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: #000;
+}
+.hmModes { float: right; font-weight: normal; display: inline-flex; gap: 4px; align-items: center; }
+.hmModes button { padding: 2px 8px; font-size: 12px; }

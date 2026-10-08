@@ -14,7 +14,20 @@ literal joint angles off the robot's LowState/SportModeState, so walking,
 turning, sitting/standing, and any custom RL action are all reflected
 automatically -- there is no per-action wiring here.
 
-Version 1.0
+Height map (v1.1): a second feed, /ws/height_map, carries the perception
+stack's /go2/height_scan (the 17x11 policy observation) and
+/go2/local_heightmap (GridMap elevation layers). Both are in the robot's
+`base` frame, so they are drawn as children of the robot object and ride with
+its pose. Two renderings, toggled with setHeightMapMode():
+  "cubes"   -- the policy's view, a flat tile per cell coloured blue->red by scan
+               value (mirror of go2_viz/height_scan_markers.py)
+  "columns" -- terrain boxes from min_elevation up to elevation, coloured by
+               top height (mirror of go2_viz/terrain_columns.py)
+Nothing is drawn until a frame arrives, and everything hides again 1.5 s after
+the last one -- so with no camera / perception running the viewer looks exactly
+as before.
+
+Version 1.1
 Author: Victor Lim
 */
 
@@ -26,6 +39,8 @@ import URDFLoader from "urdf-loader";
 const URDF_URL = "/app/static/robot_model/go2.urdf";
 const RECONNECT_DELAY_MS = 2000;
 const KEEPALIVE_MS = 10000;
+const HEIGHT_MAP_STALE_MS = 1500;
+const HEIGHT_MAP_MODES = ["cubes", "columns", "off"];
 
 // The URDF's zero-position (all joint angles 0) is legs-extended, not standing --
 // Go2 needs a bent-knee pose to stand. Mirror of q_default in
@@ -45,6 +60,11 @@ const DEFAULT_JOINT_ANGLES = {
 // height (HighState/HighCmd bodyHeight), which puts the feet at ~y=0 too.
 const DEFAULT_BASE = { position: [0, 0, 0.28], quaternion: [0, 0, 0, 1] };
 
+// Column colour ramp: go2_viz/terrain_columns.py _LOW/_HIGH over color_low_z..color_high_z.
+const COL_LOW_Z = -0.35, COL_HIGH_Z = 0.05;
+const COL_LOW = new THREE.Color(0.15, 0.35, 0.75);
+const COL_HIGH = new THREE.Color(0.90, 0.30, 0.20);
+
 function authWsSuffix() {
   const token = encodeURIComponent(window.Go2Shared?.state?.AUTH_TOKEN || "");
   return (window.Go2Shared?.state?.AUTH_ENABLED && token) ? `?token=${token}` : "";
@@ -62,7 +82,13 @@ function showError(container, message, err) {
   container.appendChild(box);
 }
 
-export function mountGo2Viewer(containerId) {
+/**
+ * mountGo2Viewer(containerId, opts)
+ *   opts.heightMap      (default true)   subscribe to /ws/height_map and draw it
+ *   opts.heightMapMode  (default "cubes") initial mode: "cubes" | "columns" | "off"
+ * Returns { destroy, setHeightMapMode, getHeightMapMode, getHeightMapState } or null.
+ */
+export function mountGo2Viewer(containerId, opts = {}) {
   const container = document.getElementById(containerId);
   if (!container) {
     console.warn(`mountGo2Viewer: missing container #${containerId}`);
@@ -74,16 +100,26 @@ export function mountGo2Viewer(containerId) {
   container.dataset.go2ViewerMounted = "1";
 
   try {
-    return mount(container);
+    return mount(container, opts);
   } catch (err) {
     showError(container, "Failed to start 3D viewer", err);
     return null;
   }
 }
 
-function mount(container) {
+// Cell centres exactly as go2_perception/height_grid.cell_axes:
+//   xs = cx - (n-1)*res/2 + arange(n)*res   (same for y), flatten x fastest.
+function cellAxis(n, res, c) {
+  const out = new Array(n);
+  const start = c - (n - 1) * res / 2;
+  for (let i = 0; i < n; i++) out[i] = start + i * res;
+  return out;
+}
+
+function mount(container, opts) {
   const width = container.clientWidth || 320;
   const height = container.clientHeight || 260;
+  const wantHeightMap = opts.heightMap !== false;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xe9edf2);
@@ -139,11 +175,168 @@ function mount(container) {
     );
   };
 
+  // ---------------- Height map (base-frame, child of the robot) ----------------
+  // Parented to `robot` once the URDF loads so the tiles follow the live base
+  // pose; until then they sit on a placeholder group at the robotRoot origin.
+  const terrainGroup = new THREE.Group();
+  terrainGroup.name = "heightMap";
+  terrainGroup.visible = false;
+  robotRoot.add(terrainGroup);
+
+  const hm = {
+    mode: HEIGHT_MAP_MODES.includes(opts.heightMapMode) ? opts.heightMapMode : "cubes",
+    lastFrameMs: 0,
+    scan: null,          // last /go2/height_scan frame
+    gridMap: null,       // last /go2/local_heightmap frame
+    cubesObs: null,      // InstancedMesh, observed cells
+    cubesUnobs: null,    // InstancedMesh, unobserved cells (translucent grey)
+    cubesKey: "",
+    columns: null,       // InstancedMesh, terrain boxes
+    columnsKey: "",
+  };
+  const dummy = new THREE.Object3D();
+  const tmpColor = new THREE.Color();
+
+  function disposeInstanced(mesh) {
+    if (!mesh) return;
+    terrainGroup.remove(mesh);
+    mesh.geometry.dispose();
+    mesh.material.dispose();
+  }
+
+  function ensureCubes(msg) {
+    const key = `${msg.num_x}x${msg.num_y}@${msg.resolution}`;
+    if (hm.cubesKey === key && hm.cubesObs) return;
+    disposeInstanced(hm.cubesObs);
+    disposeInstanced(hm.cubesUnobs);
+    const n = msg.num_x * msg.num_y;
+    const res = msg.resolution;
+    // height_scan_markers.py: x = y = res*cell_fill(0.85), z = max(res*0.1, 0.01)
+    const geo = new THREE.BoxGeometry(res * 0.85, res * 0.85, Math.max(res * 0.1, 0.01));
+    hm.cubesObs = new THREE.InstancedMesh(
+      geo, new THREE.MeshLambertMaterial({ transparent: true, opacity: 0.9 }), n);
+    hm.cubesUnobs = new THREE.InstancedMesh(
+      geo.clone(),
+      new THREE.MeshLambertMaterial({ color: 0x808080, transparent: true, opacity: 0.25, depthWrite: false }),
+      n);
+    hm.cubesObs.frustumCulled = false;
+    hm.cubesUnobs.frustumCulled = false;
+    terrainGroup.add(hm.cubesObs, hm.cubesUnobs);
+    hm.cubesKey = key;
+  }
+
+  function applyHeightScan(msg) {
+    hm.scan = msg;
+    hm.lastFrameMs = performance.now();
+    ensureCubes(msg);
+    const { num_x, num_y, resolution, center_x, center_y, offset, clip_min, clip_max } = msg;
+    const xs = cellAxis(num_x, resolution, center_x);
+    const ys = cellAxis(num_y, resolution, center_y);
+    const span = (clip_max - clip_min) || 1;
+    const unobs = msg.unobserved_value;
+    const obsMesh = hm.cubesObs, unMesh = hm.cubesUnobs;
+    for (let iy = 0; iy < num_y; iy++) {
+      for (let ix = 0; ix < num_x; ix++) {
+        const i = iy * num_x + ix;                 // x fastest, as HeightScan.heights
+        const h = msg.heights[i];
+        const isUnobs = (h === unobs) || !Number.isFinite(h);
+        // Undo the training convention: value = -z - offset  =>  z = -(value + offset).
+        // Unobserved cells carry the fill token, not a height; park them at the
+        // robot's standing-ground level (z = -offset) rather than where the token
+        // would put them (z = +0.5 above the base for fill -1.0).
+        const z = isUnobs ? -offset : -(h + offset);
+        dummy.position.set(xs[ix], ys[iy], z);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        if (isUnobs) {
+          unMesh.setMatrixAt(i, dummy.matrix);
+          dummy.scale.set(0, 0, 0); dummy.updateMatrix();
+          obsMesh.setMatrixAt(i, dummy.matrix);
+        } else {
+          const t = Math.min(1, Math.max(0, (h - clip_min) / span));
+          tmpColor.setRGB(t, 0.2, 1 - t);           // blue = low value, red = high (markers.py)
+          obsMesh.setColorAt(i, tmpColor);
+          obsMesh.setMatrixAt(i, dummy.matrix);
+          dummy.scale.set(0, 0, 0); dummy.updateMatrix();
+          unMesh.setMatrixAt(i, dummy.matrix);
+        }
+      }
+    }
+    obsMesh.instanceMatrix.needsUpdate = true;
+    unMesh.instanceMatrix.needsUpdate = true;
+    if (obsMesh.instanceColor) obsMesh.instanceColor.needsUpdate = true;
+    refreshVisibility();
+  }
+
+  function ensureColumns(msg) {
+    const key = `${msg.num_x}x${msg.num_y}`;
+    if (hm.columnsKey === key && hm.columns) return;
+    disposeInstanced(hm.columns);
+    const n = msg.num_x * msg.num_y;
+    hm.columns = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial(), n);
+    hm.columns.frustumCulled = false;
+    terrainGroup.add(hm.columns);
+    hm.columnsKey = key;
+  }
+
+  function applyGridMap(msg) {
+    hm.gridMap = msg;
+    hm.lastFrameMs = performance.now();
+    ensureColumns(msg);
+    const { num_x, num_y, resolution } = msg;
+    const elev = msg.layers?.elevation;
+    const minE = msg.layers?.min_elevation;
+    if (!elev) return;
+    const xs = cellAxis(num_x, resolution, msg.pose_x);
+    const ys = cellAxis(num_y, resolution, msg.pose_y);
+    const side = resolution * 0.96;                // terrain_columns.py's 4% gap
+    const mesh = hm.columns;
+    for (let iy = 0; iy < num_y; iy++) {
+      for (let ix = 0; ix < num_x; ix++) {
+        const i = iy * num_x + ix;
+        const top = elev[i];
+        if (top === null || top === undefined || !Number.isFinite(top)) {
+          dummy.scale.set(0, 0, 0); dummy.updateMatrix();
+          mesh.setMatrixAt(i, dummy.matrix);
+          continue;
+        }
+        let bottom = (minE && Number.isFinite(minE[i]) && minE[i] !== null) ? minE[i] : top - 0.01;
+        if (bottom > top) bottom = top - 0.005;
+        const hgt = Math.max(top - bottom, 0.005);
+        dummy.position.set(xs[ix], ys[iy], (top + bottom) / 2);
+        dummy.scale.set(side, side, hgt);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+        const t = Math.min(1, Math.max(0, (top - COL_LOW_Z) / (COL_HIGH_Z - COL_LOW_Z)));
+        tmpColor.copy(COL_LOW).lerp(COL_HIGH, t);
+        mesh.setColorAt(i, tmpColor);
+      }
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    refreshVisibility();
+  }
+
+  function refreshVisibility() {
+    const fresh = hm.lastFrameMs > 0 && (performance.now() - hm.lastFrameMs) < HEIGHT_MAP_STALE_MS;
+    const showCubes = fresh && hm.mode === "cubes" && !!hm.scan;
+    const showCols = fresh && hm.mode === "columns" && !!hm.gridMap;
+    if (hm.cubesObs) hm.cubesObs.visible = showCubes;
+    if (hm.cubesUnobs) hm.cubesUnobs.visible = showCubes;
+    if (hm.columns) hm.columns.visible = showCols;
+    terrainGroup.visible = showCubes || showCols;
+  }
+
+  // Hide the tiles when the feed goes quiet (camera unplugged, perception down).
+  const staleTimer = setInterval(refreshVisibility, 500);
+
   urdfLoader.load(
     URDF_URL,
     (result) => {
       robot = result;
       robotRoot.add(robot);
+      robot.add(terrainGroup);        // reparent: now follows the live base pose
       applyPose({ joints: DEFAULT_JOINT_ANGLES, base: DEFAULT_BASE });
     },
     undefined,
@@ -170,11 +363,7 @@ function mount(container) {
   });
   resizeObserver.observe(container);
 
-  // ---------------- Pose WebSocket ----------------
-  let ws = null;
-  let keepalive = null;
-  let reconnectTimer = null;
-
+  // ---------------- WebSocket feeds ----------------
   function applyPose(msg) {
     if (!robot) return;
     if (msg.joints) {
@@ -191,49 +380,89 @@ function mount(container) {
     }
   }
 
-  function connect() {
-    if (stopped) return;
-    const base = window.Go2Shared?.apiWsBase?.();
-    if (!base) {
-      reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
-      return;
+  // One auto-reconnecting JSON feed; used for /ws/robot_pose and /ws/height_map.
+  function openFeed(path, onMessage) {
+    let ws = null;
+    let keepalive = null;
+    let reconnectTimer = null;
+    let closed = false;
+
+    function connect() {
+      if (closed || stopped) return;
+      const base = window.Go2Shared?.apiWsBase?.();
+      if (!base) {
+        reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
+        return;
+      }
+      ws = new WebSocket(`${base}${path}${authWsSuffix()}`);
+      ws.onopen = () => {
+        keepalive = setInterval(() => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            try { ws.send("ping"); } catch (_) {}
+          }
+        }, KEEPALIVE_MS);
+      };
+      ws.onmessage = (ev) => {
+        if (typeof ev.data !== "string") return;
+        try { onMessage(JSON.parse(ev.data)); } catch (_) {}
+      };
+      ws.onclose = () => {
+        if (keepalive) { clearInterval(keepalive); keepalive = null; }
+        ws = null;
+        if (!closed && !stopped) reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
+      };
+      ws.onerror = () => {
+        try { ws?.close(); } catch (_) {}
+      };
     }
+    connect();
 
-    ws = new WebSocket(`${base}/ws/robot_pose${authWsSuffix()}`);
-
-    ws.onopen = () => {
-      keepalive = setInterval(() => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          try { ws.send("ping"); } catch (_) {}
-        }
-      }, KEEPALIVE_MS);
-    };
-
-    ws.onmessage = (ev) => {
-      if (typeof ev.data !== "string") return;
-      try {
-        applyPose(JSON.parse(ev.data));
-      } catch (_) {}
-    };
-
-    ws.onclose = () => {
-      if (keepalive) { clearInterval(keepalive); keepalive = null; }
-      ws = null;
-      if (!stopped) reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
-    };
-
-    ws.onerror = () => {
-      try { ws?.close(); } catch (_) {}
+    return {
+      close() {
+        closed = true;
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        if (keepalive) clearInterval(keepalive);
+        try { ws?.close(); } catch (_) {}
+      },
     };
   }
-  connect();
+
+  const poseFeed = openFeed("/ws/robot_pose", applyPose);
+  const heightFeed = wantHeightMap
+    ? openFeed("/ws/height_map", (msg) => {
+        if (msg.t === "height_scan") applyHeightScan(msg);
+        else if (msg.t === "grid_map") applyGridMap(msg);
+      })
+    : null;
 
   return {
+    setHeightMapMode(mode) {
+      if (!HEIGHT_MAP_MODES.includes(mode)) return hm.mode;
+      hm.mode = mode;
+      refreshVisibility();
+      return hm.mode;
+    },
+    getHeightMapMode() { return hm.mode; },
+    getHeightMapState() {
+      return {
+        mode: hm.mode,
+        fresh: hm.lastFrameMs > 0 && (performance.now() - hm.lastFrameMs) < HEIGHT_MAP_STALE_MS,
+        hasScan: !!hm.scan,
+        hasGridMap: !!hm.gridMap,
+        scanInfo: hm.scan ? {
+          num_x: hm.scan.num_x, num_y: hm.scan.num_y, resolution: hm.scan.resolution,
+          unobserved_count: hm.scan.unobserved_count, unobserved_value: hm.scan.unobserved_value,
+        } : null,
+      };
+    },
     destroy() {
       stopped = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (keepalive) clearInterval(keepalive);
-      try { ws?.close(); } catch (_) {}
+      clearInterval(staleTimer);
+      poseFeed.close();
+      heightFeed?.close();
+      disposeInstanced(hm.cubesObs);
+      disposeInstanced(hm.cubesUnobs);
+      disposeInstanced(hm.columns);
       resizeObserver.disconnect();
       renderer.dispose();
       container.dataset.go2ViewerMounted = "0";

@@ -85,6 +85,10 @@ chmod +x RL_start_remote_connection.sh
 ./RL_start_remote_connection.sh
 ```
 
+Perception (RealSense D435i + height map) starts automatically when a camera is on USB
+-- see [4.5 RealSense + height map](#45-realsense--height-map-on-the-rl-page) for the
+`GO2_PERCEPTION` / `GO2_HEIGHT_EMPTY_FILL` switches.
+
 To run on the Issac Sim:
 ```bash
 use_fastrtps
@@ -268,6 +272,57 @@ You can explore and test everything using FastAPI’s built-in UI:
 - Opens a websocket to the robot API at /ws/terminal?token=...
 - Streams keystrokes to backend, and streams output back to the browser
 - Up to 3 terminals can be accessed at a time
+
+#### 4.4. Robot Model (3D viewer)
+- `robot_viewer.js` loads the Go2 URDF with three.js and drives it from `/ws/robot_pose`
+  (25 Hz joint angles + base pose off `/lowstate` / `/sportmodestate`)
+
+#### 4.5. RealSense + height map on the RL page
+`/rl_sim_to_real` shows what the rough-terrain policy sees, without RViz. Everything here
+is hidden when no camera is present, so the page is unchanged for blind policies.
+
+- **Launcher.** `RL_start_remote_connection.sh` scans sysfs (`/sys/bus/usb/devices`,
+  Intel vendor `8086`, product *RealSense*) before FastAPI starts and reads the link
+  speed:
+  - `>= 5000 Mb/s` (USB 3) → `real_perception.launch.py` (depth + colour + driver cloud)
+  - `480 Mb/s` (USB 2) → `real_perception_usb2.launch.py` (depth only; `heightmap_node`
+    back-projects the depth image -- the colour+cloud path stalls on USB 2)
+
+  Both launches live in the outer repo's `src/go2_bringup/launch/` and are run **by path**
+  with `camera_config:=.../camera.yaml`, so `go2_bringup` need not be built on the robot.
+  If a driver is already publishing (`/go2/camera/depth/image_rect_raw`, or the
+  `vip-realsense` container), the script does not start a second one: it reuses the
+  stack if `/go2/height_scan` is flowing, otherwise it starts only `heightmap_node` plus
+  the `base→camera_link` mount TF from `camera.yaml`.
+  - `GO2_PERCEPTION=auto` (default) detect + pick, `usb3` / `usb2` force a launch, `0` never.
+  - `GO2_HEIGHT_EMPTY_FILL=-1.0` value for cells the camera cannot see. **Must equal the
+    selected policy's `deploy.yaml` `unobserved_value`** (`-1.0` recent exports, `0.0`
+    older ones). The policy node logs a mismatch but runs anyway.
+  - Log: `/tmp/go2_perception.log`. Needs `~/ros2_ws` (the Jetson's realsense2_camera
+    source build, sourced automatically) and the outer workspace's `go2_perception`.
+- **Backend** (`app/ros_bridge.py`, `app/api/perception_routes.py`):
+  - `GET /perception/status` — sysfs presence + `USB 2`/`USB 3` + link speed, whether the
+    driver publishes, which launch is running (`mode: usb3|usb2`, inferred from the live
+    colour topic), per-topic Hz for depth / colour / `/go2/height_scan` /
+    `/go2/local_heightmap`, the scan geometry (17×11 @ 0.1 m, unobserved count/fill).
+  - `WS /ws/height_map` — JSON `height_scan` (the 187-cell policy observation) and
+    `grid_map` (GridMap `elevation` / `min_elevation`, unpacked x-fastest) frames at ≤15 Hz.
+  - `WS /ws/cam_realsense?stream=depth|color` — JSON header + JPEG bytes (same wire format
+    as `/ws/cam_front`), encoded only while someone is watching, ≤10 Hz, 320 px wide.
+    Depth is colourised (turbo ramp, 0.2–4 m).
+- **Page.**
+  - The height map is drawn **on the Go2 model** (child of the robot, `base` frame).
+    Heading buttons toggle **Policy cells** (flat tile per cell, blue→red by scan value,
+    translucent grey for unobserved -- mirror of RViz `height_scan_markers`) / **Terrain**
+    (columns from `min_elevation` to `elevation`, mirror of `terrain_columns`) / **Off**.
+    Tiles vanish 1.5 s after the last frame.
+  - A **RealSense D435i** panel below the model: link pill (`USB 3 · 5000 Mb/s · cloud
+    mode` or `USB 2 · 480 Mb/s · depth-only mode ⚠`), the four frame rates, Depth/Colour
+    toggle (Colour disabled on the USB 2 launch), the image, and the scan caption.
+  - Camera policies (`uses_heightmap: true`) in the dropdown unlock once
+    `/go2/height_scan` is flowing instead of being permanently disabled.
+- **Tests:** `cd src/go2_remote_controller && python3 -m pytest tests -q` (sysfs scan,
+  GridMap unpack round-trip, depth/colour JPEG encode, rate meter -- no ROS needed).
 
 ## 5. Authentication Overview
 

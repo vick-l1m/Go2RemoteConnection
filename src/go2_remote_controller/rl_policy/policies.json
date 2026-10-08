@@ -291,6 +291,16 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_progressive_lane_progress_2026-09-29-2131/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_progressive_lane_fwdcone_2026-10-02",
+      "name": "Progressive-lane forward-cone, masked scan (4000 iters)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_progressive_lane_fwdcone \u00b7 2026-10-02_07-56-51 (4000 iterations)",
+      "type": "camera",
+      "obs_dim": 232,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_progressive_lane_fwdcone_2026-10-02/policy.onnx"
     }
   ]
 }

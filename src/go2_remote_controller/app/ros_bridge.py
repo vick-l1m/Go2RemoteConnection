@@ -16,8 +16,9 @@ import asyncio
 import gzip
 import json
 import threading
+import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, Optional, Set, Tuple
 
 import rclpy
 from fastapi import WebSocket
@@ -26,12 +27,32 @@ from map_msgs.msg import OccupancyGridUpdate
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import Bool, Float32
 from std_msgs.msg import String as RosString
 from unitree_go.msg import LowState, SportModeState
 
 from app.core.state import state
+from app.services.perception_codec import (HAVE_CV2, color_image_to_jpeg,
+                                           depth_image_to_jpeg, unpack_grid_map_layer)
+from app.services.rate_meter import RateMeter
+
+# Perception message types live in the OUTER Go2_RL_workflow workspace (go2_msgs) and
+# in ros-humble-grid-map-msgs. Neither is required for the blind-policy page, so both
+# imports are guarded exactly like go2_rl_bridge_node.py's: without them the matching
+# subscription is skipped and /perception/status says so.
+try:
+    from go2_msgs.msg import HeightScan  # type: ignore
+    HAVE_HEIGHT_SCAN = True
+except Exception:  # pragma: no cover - depends on the sourced overlays
+    HeightScan = None
+    HAVE_HEIGHT_SCAN = False
+try:
+    from grid_map_msgs.msg import GridMap  # type: ignore
+    HAVE_GRID_MAP = True
+except Exception:  # pragma: no cover
+    GridMap = None
+    HAVE_GRID_MAP = False
 
 
 # SDK motor_state[0..11] order -> URDF joint names (SDK name + "_joint").
@@ -174,6 +195,78 @@ def get_robot_pose_store() -> RobotPoseStore:
 
 
 # ============================================================
+# PERCEPTION STORE (RealSense previews + height map for the RL page)
+# ============================================================
+# Real-robot topics from go2_bringup/launch/real_perception*.launch.py. The USB 2
+# launch streams depth only, so the colour topic may simply never publish.
+RS_DEPTH_TOPIC = "/go2/camera/depth/image_rect_raw"
+RS_COLOR_TOPIC = "/go2/camera/color/image_raw"
+HEIGHT_SCAN_TOPIC = "/go2/height_scan"
+GRID_MAP_TOPIC = "/go2/local_heightmap"
+PREVIEW_MIN_PERIOD_S = 0.1        # JPEG encode cap per stream (10 Hz)
+HEIGHT_MAP_BROADCAST_HZ = 15.0
+
+
+@dataclass
+class PerceptionStore:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    height_clients: Set[WebSocket] = field(default_factory=set)
+    depth_clients: Set[WebSocket] = field(default_factory=set)
+    color_clients: Set[WebSocket] = field(default_factory=set)
+    seq_height: int = 0
+    seq_cam: Dict[str, int] = field(default_factory=lambda: {"depth": 0, "color": 0})
+    last_height_scan: Optional[Dict[str, Any]] = None
+    last_grid_map: Optional[Dict[str, Any]] = None
+    last_jpg: Dict[str, Optional[Tuple[bytes, Dict[str, Any]]]] = field(
+        default_factory=lambda: {"depth": None, "color": None})
+    rates: Dict[str, RateMeter] = field(default_factory=lambda: {
+        "depth": RateMeter(), "color": RateMeter(),
+        "height_scan": RateMeter(), "grid_map": RateMeter(),
+    })
+    scan_info: Optional[Dict[str, Any]] = None
+
+
+_perception_store: Optional[PerceptionStore] = None
+
+
+def get_perception_store() -> PerceptionStore:
+    global _perception_store
+    if _perception_store is None:
+        _perception_store = PerceptionStore()
+    return _perception_store
+
+
+def get_perception_status() -> Dict[str, Any]:
+    """JSON for GET /perception/status (the route adds the sysfs USB scan)."""
+    st = get_perception_store()
+    rates = {k: round(m.hz(), 1) for k, m in st.rates.items()}
+    ages = {k: (None if m.age_s() is None else round(m.age_s(), 2)) for k, m in st.rates.items()}
+    depth_alive = st.rates["depth"].alive()
+    color_alive = st.rates["color"].alive()
+    # Which launch is running: the USB 3 launch publishes colour, the USB 2 (depth-only)
+    # launch cannot. Inferred from live topics, so it reports reality, not the link speed.
+    mode = "usb3" if color_alive else ("usb2" if depth_alive else None)
+    return {
+        "driver_up": depth_alive or color_alive,
+        "mode": mode,
+        "height_scan_flowing": st.rates["height_scan"].alive(),
+        "rates": rates,
+        "ages_s": ages,
+        "height_scan": st.scan_info,
+        "topics": {
+            "depth": RS_DEPTH_TOPIC, "color": RS_COLOR_TOPIC,
+            "height_scan": HEIGHT_SCAN_TOPIC, "grid_map": GRID_MAP_TOPIC,
+        },
+        "available": {
+            "height_scan_msg": HAVE_HEIGHT_SCAN,
+            "grid_map_msg": HAVE_GRID_MAP,
+            "cv2": HAVE_CV2,
+        },
+        "bridge_started": _bridge is not None,
+    }
+
+
+# ============================================================
 # ROS <-> WEB BRIDGE NODE
 # ============================================================
 class WebRosBridge(Node):
@@ -262,6 +355,49 @@ class WebRosBridge(Node):
             SportModeState, "/sportmodestate", self._on_sportmodestate, cam_qos
         )
         self.create_timer(1.0 / 25.0, self._broadcast_robot_pose)
+
+        # ---------------- RealSense previews + height map (RL page) ----------------
+        # Raw images are subscribed whenever the driver publishes so the page can show
+        # frame rates; JPEG encoding only happens while a /ws/cam_realsense client is
+        # watching that stream, capped at 10 Hz. The height scan / GridMap callbacks
+        # just cache; a 15 Hz timer broadcasts, like the robot pose above.
+        self.declare_parameter("rs_depth_topic", RS_DEPTH_TOPIC)
+        self.declare_parameter("rs_color_topic", RS_COLOR_TOPIC)
+        self.declare_parameter("height_scan_topic", HEIGHT_SCAN_TOPIC)
+        self.declare_parameter("grid_map_topic", GRID_MAP_TOPIC)
+        rs_depth_topic = self.get_parameter("rs_depth_topic").value
+        rs_color_topic = self.get_parameter("rs_color_topic").value
+        height_scan_topic = self.get_parameter("height_scan_topic").value
+        grid_map_topic = self.get_parameter("grid_map_topic").value
+
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self._rs_last_encode: Dict[str, float] = {"depth": 0.0, "color": 0.0}
+        self._hm_pending: Dict[str, bool] = {"height_scan": False, "grid_map": False}
+        self.sub_rs_depth = self.create_subscription(
+            Image, rs_depth_topic, lambda m: self._on_rs_image("depth", m), sensor_qos)
+        self.sub_rs_color = self.create_subscription(
+            Image, rs_color_topic, lambda m: self._on_rs_image("color", m), sensor_qos)
+        if HAVE_HEIGHT_SCAN:
+            self.sub_height_scan = self.create_subscription(
+                HeightScan, height_scan_topic, self._on_height_scan, sensor_qos)
+        else:
+            self.get_logger().warn(
+                "go2_msgs not importable: /go2/height_scan view disabled "
+                "(source the outer Go2_RL_workflow install/setup.bash)")
+        if HAVE_GRID_MAP:
+            self.sub_grid_map = self.create_subscription(
+                GridMap, grid_map_topic, self._on_grid_map, sensor_qos)
+        else:
+            self.get_logger().warn(
+                "grid_map_msgs not importable: /go2/local_heightmap columns view disabled")
+        if not HAVE_CV2:
+            self.get_logger().warn("cv2 not importable: RealSense image preview disabled")
+        self.create_timer(1.0 / HEIGHT_MAP_BROADCAST_HZ, self._broadcast_height_map)
 
         # ---------------- RL policy liveness watchdog ----------------
         # If we are in RL control mode but go2_rl_policy_node stops sending its
@@ -617,6 +753,149 @@ class WebRosBridge(Node):
                 async with store.lock:
                     for ws in dead:
                         store.clients.discard(ws)
+
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(fanout(), self._loop)
+
+
+    # ---------------- RealSense preview callbacks ----------------
+    def _on_rs_image(self, stream: str, msg: Image):
+        store = get_perception_store()
+        store.rates[stream].tick()
+
+        clients = store.depth_clients if stream == "depth" else store.color_clients
+        if not clients or not HAVE_CV2:
+            return
+        now = time.monotonic()
+        if now - self._rs_last_encode[stream] < PREVIEW_MIN_PERIOD_S:
+            return
+        self._rs_last_encode[stream] = now
+
+        data = bytes(msg.data)
+        if stream == "depth":
+            jpg = depth_image_to_jpeg(data, msg.height, msg.width, msg.encoding,
+                                      msg.step, bool(msg.is_bigendian))
+        else:
+            jpg = color_image_to_jpeg(data, msg.height, msg.width, msg.encoding, msg.step)
+        if jpg is None:
+            return
+        meta = {
+            "stamp": {"sec": int(msg.header.stamp.sec), "nanosec": int(msg.header.stamp.nanosec)},
+            "frame_id": msg.header.frame_id,
+            "encoding": msg.encoding,
+            "width": int(msg.width),
+            "height": int(msg.height),
+        }
+
+        async def update_and_send():
+            async with store.lock:
+                store.seq_cam[stream] += 1
+                store.last_jpg[stream] = (jpg, meta)
+                seq = store.seq_cam[stream]
+                targets = list(clients)
+            header = {"t": "cam", "stream": stream, "seq": seq, "meta": meta, "n": len(jpg)}
+            dead = []
+            for ws in targets:
+                try:
+                    await ws.send_text(json.dumps(header))
+                    await ws.send_bytes(jpg)
+                except Exception:
+                    dead.append(ws)
+            if dead:
+                async with store.lock:
+                    for ws in dead:
+                        clients.discard(ws)
+
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(update_and_send(), self._loop)
+
+    # ---------------- Height map callbacks ----------------
+    def _on_height_scan(self, msg):
+        store = get_perception_store()
+        store.rates["height_scan"].tick()
+        heights = [round(float(h), 3) for h in msg.heights]
+        info = {
+            "num_x": int(msg.num_x), "num_y": int(msg.num_y),
+            "resolution": float(msg.resolution),
+            "center_x": float(msg.center_x), "center_y": float(msg.center_y),
+            "offset": float(msg.offset),
+            "clip_min": float(msg.clip_min), "clip_max": float(msg.clip_max),
+            "unobserved_value": float(msg.unobserved_value),
+            "unobserved_count": int(msg.unobserved_count),
+            "frame_id": msg.header.frame_id,
+        }
+        store.scan_info = info
+        store.last_height_scan = {
+            "t": "height_scan",
+            "stamp": {"sec": int(msg.header.stamp.sec), "nanosec": int(msg.header.stamp.nanosec)},
+            **info,
+            "heights": heights,
+        }
+        self._hm_pending["height_scan"] = True
+
+    def _on_grid_map(self, msg):
+        store = get_perception_store()
+        store.rates["grid_map"].tick()
+        layers = list(msg.layers)
+        if not layers or not msg.data:
+            return
+        dims = msg.data[0].layout.dim
+        if len(dims) < 2:
+            return
+        n_y, n_x = int(dims[0].size), int(dims[1].size)   # column_index, row_index
+        out: Dict[str, Any] = {
+            "t": "grid_map",
+            "stamp": {"sec": int(msg.header.stamp.sec), "nanosec": int(msg.header.stamp.nanosec)},
+            "frame_id": msg.header.frame_id,
+            "num_x": n_x, "num_y": n_y,
+            "resolution": float(msg.info.resolution),
+            "length_x": float(msg.info.length_x), "length_y": float(msg.info.length_y),
+            "pose_x": float(msg.info.pose.position.x),
+            "pose_y": float(msg.info.pose.position.y),
+            "layers": {},
+        }
+        for name in ("elevation", "min_elevation"):
+            if name in layers:
+                try:
+                    out["layers"][name] = unpack_grid_map_layer(
+                        msg.data[layers.index(name)].data, n_x, n_y)
+                except ValueError as e:
+                    self.get_logger().warn(f"grid_map layer {name}: {e}", throttle_duration_sec=5.0)
+        if "elevation" not in out["layers"]:
+            return
+        store.last_grid_map = out
+        self._hm_pending["grid_map"] = True
+
+    def _broadcast_height_map(self):
+        store = get_perception_store()
+        msgs = []
+        if self._hm_pending["height_scan"] and store.last_height_scan:
+            self._hm_pending["height_scan"] = False
+            msgs.append(store.last_height_scan)
+        if self._hm_pending["grid_map"] and store.last_grid_map:
+            self._hm_pending["grid_map"] = False
+            msgs.append(store.last_grid_map)
+        if not msgs or not store.height_clients:
+            return
+
+        async def fanout():
+            async with store.lock:
+                store.seq_height += 1
+                clients = list(store.height_clients)
+            if not clients:
+                return
+            payloads = [json.dumps(m) for m in msgs]
+            dead = []
+            for ws in clients:
+                try:
+                    for p in payloads:
+                        await ws.send_text(p)
+                except Exception:
+                    dead.append(ws)
+            if dead:
+                async with store.lock:
+                    for ws in dead:
+                        store.height_clients.discard(ws)
 
         if self._loop:
             asyncio.run_coroutine_threadsafe(fanout(), self._loop)

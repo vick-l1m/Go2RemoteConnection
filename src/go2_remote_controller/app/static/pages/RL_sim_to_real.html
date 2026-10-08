@@ -51,14 +51,189 @@ Author: Victor Lim
       setTimeout(loadPolicies, 300);
       setTimeout(refreshPosture, 350);
       initJoysticks();
+      setTimeout(pollPerceptionStatus, 400);
+      setInterval(pollPerceptionStatus, 2000);
     });
+
+    // ---- RealSense D435i + height map (perception) ----------------------
+    // Driven by GET /perception/status every 2 s (app/api/perception_routes.py):
+    //   * is a RealSense on USB (sysfs), USB 2 or USB 3, is the driver publishing
+    //   * per-topic frame rates, which launch is running (usb3 cloud / usb2 depth-only)
+    // The RealSense panel is hidden unless a camera is present or the driver is up,
+    // the height-map mode buttons appear only while /go2/height_scan flows, and the
+    // image socket (/ws/cam_realsense?stream=depth|color) is open only while the
+    // panel is visible -- so with no camera the page looks exactly as before.
+    let perceptionReady = false;        // height scan flowing -> camera policies selectable
+    let rsStream = "depth";
+    let rsWs = null, rsKeepalive = null, rsBlobUrl = "", rsFrames = 0;
+    let rsPanelVisible = false;
+    let hmMode = "cubes";
+
+    function rsAuthWsSuffix() {
+      const token = encodeURIComponent(Go2Shared.state?.AUTH_TOKEN || "");
+      return (Go2Shared.state?.AUTH_ENABLED && token) ? `&token=${token}` : "";
+    }
+
+    function fmtHz(v) { return (v === undefined || v === null) ? "–" : `${Number(v).toFixed(v >= 10 ? 0 : 1)} Hz`; }
+
+    function rsSetStatusText(id, text) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = text;
+    }
+
+    function rsCloseStream() {
+      if (rsKeepalive) { clearInterval(rsKeepalive); rsKeepalive = null; }
+      try { rsWs?.close(); } catch (_) {}
+      rsWs = null;
+      if (rsBlobUrl) { URL.revokeObjectURL(rsBlobUrl); rsBlobUrl = ""; }
+      const img = document.getElementById("rsImg");
+      if (img) img.removeAttribute("src");
+      rsFrames = 0;
+    }
+
+    function rsOpenStream() {
+      rsCloseStream();
+      const base = Go2Shared.apiWsBase?.();
+      if (!base) return;
+      const ws = new WebSocket(`${base}/ws/cam_realsense?stream=${rsStream}${rsAuthWsSuffix()}`);
+      ws.binaryType = "arraybuffer";
+      rsWs = ws;
+      ws.onopen = () => {
+        rsKeepalive = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) { try { ws.send("ping"); } catch (_) {} }
+        }, 10000);
+      };
+      ws.onmessage = async (ev) => {
+        if (typeof ev.data === "string") return;          // JSON header; the bytes follow
+        let u8;
+        if (ev.data instanceof ArrayBuffer) u8 = new Uint8Array(ev.data);
+        else if (ev.data instanceof Blob) u8 = new Uint8Array(await ev.data.arrayBuffer());
+        else return;
+        const url = URL.createObjectURL(new Blob([u8], { type: "image/jpeg" }));
+        if (rsBlobUrl) URL.revokeObjectURL(rsBlobUrl);
+        rsBlobUrl = url;
+        rsFrames++;
+        const img = document.getElementById("rsImg");
+        if (img) img.src = url;
+      };
+      ws.onclose = () => {
+        if (rsKeepalive) { clearInterval(rsKeepalive); rsKeepalive = null; }
+        if (rsWs === ws) rsWs = null;       // the 2 s status poll reopens it if still wanted
+      };
+      ws.onerror = () => { try { ws.close(); } catch (_) {} };
+    }
+
+    function rsSelectStream(stream) {
+      if (stream !== "depth" && stream !== "color") return;
+      const changed = stream !== rsStream;
+      rsStream = stream;
+      document.getElementById("rsStreamDepth")?.classList.toggle("toggleOn", stream === "depth");
+      document.getElementById("rsStreamColor")?.classList.toggle("toggleOn", stream === "color");
+      if (changed && rsPanelVisible && rsWs) rsOpenStream();
+    }
+
+    function setHeightMapMode(mode) {
+      const viewer = window.go2Viewer;
+      hmMode = viewer ? viewer.setHeightMapMode(mode) : mode;
+      for (const m of ["cubes", "columns", "off"]) {
+        const btn = document.getElementById(`hmMode_${m}`);
+        if (btn) btn.classList.toggle("toggleOn", m === hmMode);
+      }
+    }
+
+    function rsShowPanel(show) {
+      const panel = document.getElementById("realsensePanel");
+      if (panel) panel.style.display = show ? "" : "none";
+      rsPanelVisible = show;
+      if (!show) rsCloseStream();
+    }
+
+    async function pollPerceptionStatus() {
+      // Before login httpGet fails (401) and the panel simply stays hidden.
+      const r = await Go2Shared.httpGet("/perception/status", { bypassCommsGate: true });
+      if (!r || !r.ok) { rsShowPanel(false); return; }
+      let st;
+      try { st = JSON.parse(r.text); } catch (_) { return; }
+      const rs = st.realsense || {};
+      const rates = st.rates || {};
+      const avail = st.available || {};
+      const driverUp = !!st.driver_up;
+      const usb2 = rs.usb_class === "USB 2" || st.mode === "usb2";
+
+      // ---- panel visibility: nothing at all without a camera ----
+      rsShowPanel(!!rs.connected || driverUp);
+
+      // ---- link pill ----
+      const pill = document.getElementById("rsLinkPill");
+      if (pill) {
+        let text, cls = "pill";
+        const link = rs.connected
+          ? `${rs.usb_class || "USB ?"}${rs.speed_mbps ? ` · ${rs.speed_mbps} Mb/s` : ""}`
+          : "device not in sysfs";
+        if (driverUp) {
+          text = `${link} · ${st.mode === "usb2" ? "depth-only mode" : "cloud mode"}`;
+          cls += usb2 ? " warn" : " ok";
+          if (usb2) text += " ⚠";
+        } else if (rs.connected) {
+          text = `${link} · driver not running`;
+          cls += " warn";
+        } else {
+          text = `${link} · driver up`;
+          cls += " warn";
+        }
+        pill.textContent = text;
+        pill.className = cls;
+      }
+
+      // ---- rates ----
+      const colourOff = st.mode === "usb2" || !rates.color;
+      rsSetStatusText("rsRates",
+        `depth ${fmtHz(rates.depth)} · colour ${colourOff ? "–" : fmtHz(rates.color)} · ` +
+        `scan ${fmtHz(rates.height_scan)} · grid ${fmtHz(rates.grid_map)}`);
+
+      // ---- scan geometry caption ----
+      const hs = st.height_scan;
+      rsSetStatusText("rsScanInfo", hs
+        ? `height scan ${hs.num_x}×${hs.num_y} @ ${Number(hs.resolution).toFixed(2)} m · ` +
+          `unobserved ${hs.unobserved_count}/${hs.num_x * hs.num_y} · fill ${hs.unobserved_value}`
+        : (driverUp ? "height scan: not yet received (heightmap_node running?)" : ""));
+
+      // ---- colour button: the USB 2 launch streams depth only ----
+      const colBtn = document.getElementById("rsStreamColor");
+      if (colBtn) {
+        colBtn.disabled = colourOff;
+        colBtn.title = colourOff ? "colour stream off (USB 2 depth-only launch)" : "";
+      }
+      if (colourOff && rsStream === "color") rsSelectStream("depth");
+
+      // ---- hint ----
+      let hint = "";
+      if (!avail.cv2) hint = "cv2 not importable on the robot's system python3: image preview unavailable";
+      else if (usb2) hint = "USB 2 link: depth-only 640×360 @ 30 Hz; move to a USB 3 port + cable for colour + cloud";
+      else if (rs.connected && !driverUp) hint = "RealSense present but realsense2_camera is not publishing (see /tmp/go2_perception.log)";
+      rsSetStatusText("rsHint", hint);
+
+      // ---- image socket: only while visible and the driver publishes ----
+      const wantStream = rsPanelVisible && driverUp && !!avail.cv2;
+      if (wantStream && !rsWs) rsOpenStream();
+      else if (!wantStream && rsWs) rsCloseStream();
+
+      // ---- height-map mode buttons + camera-policy gate ----
+      const flowing = !!st.height_scan_flowing;
+      const modes = document.getElementById("hmModes");
+      if (modes) modes.style.display = flowing ? "" : "none";
+      if (flowing !== perceptionReady) {
+        perceptionReady = flowing;
+        renderPolicyOptions();
+      }
+    }
 
     // ---- RL policy dropdown -------------------------------------------
     function policyLabel(p) {
       const kind = p.type === "camera" ? "camera" : "blind";
       let s = `${p.name} · ${p.model || "—"} · ${kind}`;
       if (!p.available) s += "  (onnx missing)";
-      else if (!p.runnable || p.uses_heightmap) s += "  (needs perception)";
+      else if (!p.runnable || (p.uses_heightmap && !perceptionReady)) s += "  (needs perception)";
       return s;
     }
 
@@ -90,8 +265,11 @@ Author: Victor Lim
         const opt = document.createElement("option");
         opt.value = p.id;
         opt.textContent = policyLabel(p);
-        // Camera/height-scan or missing policies stay visible but unselectable.
-        if (!p.available || !p.runnable || p.uses_heightmap) opt.disabled = true;
+        // Missing policies stay visible but unselectable; camera/height-scan ones
+        // unlock once /perception/status reports /go2/height_scan flowing (the
+        // backend already allows them -- the controller refuses on its own if the
+        // scan is missing or stale, see go2_rl_policy_node._engage).
+        if (!p.available || !p.runnable || (p.uses_heightmap && !perceptionReady)) opt.disabled = true;
         if (p.id === currentPolicy) opt.selected = true;
         (grp || sel).appendChild(opt);
       }
@@ -403,8 +581,32 @@ Author: Victor Lim
       </div>
 
       <div id="robotViewerPanel" class="panel">
-        <h2>Robot Model</h2>
+        <h2>Robot Model
+          <span id="hmModes" class="hmModes" style="display:none" title="Height map drawn under the robot">
+            <span class="small">height map:</span>
+            <button id="hmMode_cubes" class="toggleOn" onclick="setHeightMapMode('cubes')"
+                    title="The policy's 17x11 /go2/height_scan observation (blue low value, red high)">Policy cells</button>
+            <button id="hmMode_columns" onclick="setHeightMapMode('columns')"
+                    title="/go2/local_heightmap terrain columns (min_elevation to elevation)">Terrain</button>
+            <button id="hmMode_off" onclick="setHeightMapMode('off')">Off</button>
+          </span>
+        </h2>
         <div id="go2ViewerRoot"></div>
+      </div>
+
+      <div id="realsensePanel" class="panel" style="display:none">
+        <h2>RealSense D435i</h2>
+        <div class="row" style="align-items:center; gap:8px;">
+          <span id="rsLinkPill" class="pill">…</span>
+          <span id="rsRates" class="mono small">depth – · colour – · scan – · grid –</span>
+        </div>
+        <div class="row" style="align-items:center; gap:8px; margin-top:6px;">
+          <button id="rsStreamDepth" class="toggleOn" onclick="rsSelectStream('depth')">Depth</button>
+          <button id="rsStreamColor" onclick="rsSelectStream('color')">Colour</button>
+          <span id="rsHint" class="small" style="color:#555;"></span>
+        </div>
+        <img id="rsImg" alt="RealSense stream" />
+        <div id="rsScanInfo" class="small" style="color:#555; text-align:center; margin-top:6px;"></div>
       </div>
 
       <div class="status">
@@ -439,7 +641,9 @@ Author: Victor Lim
   </script>
   <script type="module">
     import { mountGo2Viewer } from "/app/static/robot_viewer.js";
-    window.addEventListener("DOMContentLoaded", () => mountGo2Viewer("go2ViewerRoot"));
+    window.addEventListener("DOMContentLoaded", () => {
+      window.go2Viewer = mountGo2Viewer("go2ViewerRoot", { heightMap: true, heightMapMode: "cubes" });
+    });
   </script>
 </body>
 </html>
