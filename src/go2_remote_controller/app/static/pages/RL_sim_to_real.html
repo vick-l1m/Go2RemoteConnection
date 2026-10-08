@@ -150,7 +150,7 @@ Author: Victor Lim
 
     async function pollPerceptionStatus() {
       // Before login httpGet fails (401) and the panel simply stays hidden.
-      const r = await Go2Shared.httpGet("/perception/status", { bypassCommsGate: true });
+      const r = await Go2Shared.httpGet("/perception/status", { bypassCommsGate: true, suppressStatus: true });
       if (!r || !r.ok) { rsShowPanel(false); return; }
       let st;
       try { st = JSON.parse(r.text); } catch (_) { return; }

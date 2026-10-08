@@ -104,7 +104,11 @@ async def no_cache_static(request, call_next):
     # every load rather than disabling caching outright, so unchanged files
     # still get a cheap 304.
     response = await call_next(request)
-    if request.url.path.startswith("/app/static/"):
+    # The HTML pages themselves (FileResponse routes such as /rl_sim_to_real) need the
+    # same treatment: without it a browser kept serving the pre-perception RL page from
+    # cache after a robot-side update, so new panels never appeared.
+    if (request.url.path.startswith("/app/static/")
+            or response.headers.get("content-type", "").startswith("text/html")):
         response.headers["Cache-Control"] = "no-cache"
     return response
 

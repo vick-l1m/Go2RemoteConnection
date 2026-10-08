@@ -373,9 +373,14 @@ function mount(container, opts) {
       }
     }
     if (msg.base) {
-      const [x, y, z] = msg.base.position;
+      // Keep the robot centred: /sportmodestate.position is odometry in the robot's
+      // world frame, so after a few metres of walking the model simply left the
+      // 320 px canvas. Height (z) and orientation are what the viewer is for; the
+      // horizontal travel is dropped. The height-map tiles are children of the robot,
+      // so they stay correctly placed relative to the body either way.
+      const z = msg.base.position[2];
       const [qx, qy, qz, qw] = msg.base.quaternion;
-      robot.position.set(x, y, z);
+      robot.position.set(0, 0, z);
       robot.quaternion.set(qx, qy, qz, qw);
     }
   }
