@@ -384,7 +384,7 @@ PY
     -p depth_topic:=/go2/camera/depth/image_rect_raw \
     -p camera_info_topic:=/go2/camera/depth/camera_info \
     -p base_frame:=base -p size_x:=1.6 -p size_y:=1.0 -p resolution:=0.1 -p center_x:=0.6 \
-    -p empty_fill:="$GO2_HEIGHT_EMPTY_FILL" \
+    -p empty_fill:="$GO2_HEIGHT_EMPTY_FILL" -p gridmap_every_n:=3 \
     > "$PERCEPTION_LOG" 2>&1 &
   register_pid "$!" "heightmap_node" "$PERCEPTION_LOG" 0
   PERCEPTION_STARTED=1

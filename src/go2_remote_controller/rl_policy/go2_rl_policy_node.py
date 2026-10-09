@@ -342,6 +342,9 @@ class Go2RLPolicyController:
         # Sentinel the active policy trained on; None if its contract predates the
         # field, in which case the check below is skipped rather than guessed at.
         self._scan_unobserved_expected = None
+        # Cells the policy could see in training (contract trained_mask); everything
+        # else is blanked to the unobserved token before it reaches the policy.
+        self._scan_mask = None
         self.action_scale = ACTION_SCALE
         self.kp, self.kd = KP, KD
         self.include_base_lin_vel = True
@@ -575,6 +578,16 @@ class Go2RLPolicyController:
                     f"height scan unobserved_value {got} != trained {want}; the policy "
                     f"will run with a wrong terrain view. Set heightmap_node's "
                     f"empty_fill to {want}.")
+            mask = self._scan_mask
+            if mask is not None and mask.size == heights.size and want is not None:
+                extra = int(np.count_nonzero(~mask & (np.abs(heights - want) > 1e-6)))
+                self.get_logger().info(
+                    f"trained mask: {int(mask.sum())}/{mask.size} cells; blanking {extra} "
+                    f"observed cell(s) outside it to {want}")
+            elif self._scan_unobserved_expected is not None and mask is None:
+                self.get_logger().warn(
+                    "policy contract has no trained_mask: cells the camera fills outside "
+                    "the training FOV reach the policy (run backfill_trained_mask.py)")
 
     def _height_scan_for_obs(self):
         """(scan, age_s) for the control loop, or (None, inf) if nothing has arrived."""
@@ -717,6 +730,8 @@ class Go2RLPolicyController:
             # a stacked scan gets one frame at the wrong width and is refused.
             self.obs_history = {n: k for n, k in contract.obs_history.items() if k > 1}
             self._scan_unobserved_expected = contract.height_scan_unobserved
+            self._scan_mask = (None if contract.height_scan_mask is None
+                               else np.asarray(contract.height_scan_mask, dtype=bool))
             self._scan_logged = False      # re-log and re-check for the new policy
             self.obs_scales = dict(contract.obs_scales)
             self.obs_clips = dict(contract.obs_clips)
@@ -1506,6 +1521,9 @@ class Go2RLPolicyController:
             # the failure this whole path is built to prevent.
             if scan is None:
                 raise RuntimeError("policy needs a height scan but none has ever arrived")
+            if self._scan_mask is not None and self._scan_mask.size == scan.size:
+                scan = np.where(self._scan_mask, scan,
+                                np.float32(self._scan_unobserved_expected)).astype(np.float32)
             raw["height_scan"] = scan
         parts = []
         for name in self.obs_terms:

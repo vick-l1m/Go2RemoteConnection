@@ -397,6 +397,23 @@ class DeployContract:
             self.height_scan_unobserved = (
                 LEGACY_UNOBSERVED if raw_unobs is None else float(raw_unobs))
 
+        # Cells the policy's camera could see in TRAINING (RayCaster order, one frame;
+        # 1 = seen). Deploy blanks every other cell to height_scan_unobserved: a real
+        # camera a few degrees off the trained mount -- or a frustum model that is
+        # conservative at the near edge -- fills cells the policy only ever saw as
+        # "unknown", and it has no learnt response to a height there (measured
+        # 2026-10-08: 9 such cells live on the Go2). None = the contract predates the
+        # field, or the policy trained on a full scan: nothing is blanked.
+        self.height_scan_mask: list[bool] | None = None
+        if hs is not None and hs.get("trained_mask") is not None:
+            mask = [bool(v) for v in hs["trained_mask"]]
+            width = len(hs.get("scale") or [])
+            if width and len(mask) != width:
+                raise DeployContractError(
+                    f"{self.source}: height_scan trained_mask has {len(mask)} cells, "
+                    f"the term is {width} wide")
+            self.height_scan_mask = mask
+
         self.obs_widths: dict[str, int] = {}
         # Frames of history per term (1 = no history). Isaac Lab stacks oldest ->
         # newest and flattens; the builder has to reproduce that exactly, so the
