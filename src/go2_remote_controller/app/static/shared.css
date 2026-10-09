@@ -134,16 +134,17 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   gap: 10px;
 }
 
-/* Speed-limit sliders */
-.speedRow { flex-wrap: nowrap; }
-.speedLabel { min-width: 130px; font-size: 13px; color: #333; }
-.speedSlider { flex: 1; min-width: 100px; padding: 0; }
-.speedValue { min-width: 68px; text-align: right; white-space: nowrap; }
-
-@media (max-width: 560px) {
-  .speedRow { flex-wrap: wrap; }
-  .speedLabel { min-width: 100%; }
+/* Speed-limit boxes: three steppers on one row */
+.speedBoxes { display: flex; flex-wrap: nowrap; gap: 10px; }
+.speedBox {
+  flex: 1; min-width: 0; text-align: center;
+  border: 1px solid #ccc; border-radius: 10px; padding: 8px 6px;
 }
+.speedLabel { font-size: 12px; color: #333; margin-bottom: 4px; }
+.speedStepper { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.speedArrow { padding: 4px 8px; min-width: 0; line-height: 1; }
+.speedValue { min-width: 36px; font-size: 18px; text-align: center; }
+.speedUnit { font-size: 11px; color: #777; }
 
 /* Status box */
 .status {

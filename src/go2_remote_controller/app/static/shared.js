@@ -24,9 +24,9 @@ window.Go2Shared = {
     AUTH_ENABLED: true,
     COMMS_ENABLED: true,
     SHOW_AUTH_BUTTONS: true,
-    MAX_LIN_X: 1.5,
-    MAX_LIN_Y: 1.5,
-    MAX_ANG: 1.5,
+    MAX_LIN_X: 0.6,
+    MAX_LIN_Y: 0.6,
+    MAX_ANG: 0.6,
   },
 
   // Speed-limit sliders: shared spec so every joystick page renders/persists
@@ -38,7 +38,7 @@ window.Go2Shared = {
   ],
   SPEED_LIMIT_MIN: 0.1,
   SPEED_LIMIT_MAX: 3.0,
-  SPEED_LIMIT_STEP: 0.05,
+  SPEED_LIMIT_STEP: 0.1,
 
   async init(opts = {}) {
     const defaultApi = opts.defaultApi ?? window.location.origin;
@@ -669,25 +669,32 @@ window.Go2Shared = {
     const min = this.SPEED_LIMIT_MIN;
     const max = this.SPEED_LIMIT_MAX;
     const step = this.SPEED_LIMIT_STEP;
+    const fmt = (v) => v.toFixed(1);
 
-    container.innerHTML = this.SPEED_LIMIT_SPECS.map((spec) => `
-      <div class="row speedRow">
-        <label for="${spec.id}" class="speedLabel">${spec.label}</label>
-        <input type="range" id="${spec.id}" class="speedSlider"
-               min="${min}" max="${max}" step="${step}" value="${this.state[spec.stateKey]}" />
-        <span id="${spec.id}Val" class="mono speedValue">${this.state[spec.stateKey].toFixed(2)} m/s</span>
+    container.innerHTML = `<div class="speedBoxes">` + this.SPEED_LIMIT_SPECS.map((spec) => `
+      <div class="speedBox">
+        <div class="speedLabel">${spec.label}</div>
+        <div class="speedStepper">
+          <button type="button" class="speedArrow" id="${spec.id}Dn" aria-label="Decrease ${spec.label}">&#9664;</button>
+          <span id="${spec.id}Val" class="mono speedValue">${fmt(this.state[spec.stateKey])}</span>
+          <button type="button" class="speedArrow" id="${spec.id}Up" aria-label="Increase ${spec.label}">&#9654;</button>
+        </div>
+        <div class="speedUnit">m/s</div>
       </div>
-    `).join("");
+    `).join("") + `</div>`;
 
     for (const spec of this.SPEED_LIMIT_SPECS) {
-      const input = document.getElementById(spec.id);
       const valEl = document.getElementById(`${spec.id}Val`);
-      input.addEventListener("input", () => {
-        const v = parseFloat(input.value);
+      const adjust = (dir) => {
+        // Work in integer steps so repeated +/-0.1 never drifts (0.30000000000000004).
+        const n = Math.round(this.state[spec.stateKey] / step) + dir;
+        const v = Math.min(max, Math.max(min, Math.round(n * step * 1000) / 1000));
         this.state[spec.stateKey] = v;
-        valEl.textContent = `${v.toFixed(2)} m/s`;
-        localStorage.setItem(spec.storageKey, String(v));
-      });
+        valEl.textContent = fmt(v);
+        try { localStorage.setItem(spec.storageKey, String(v)); } catch (e) {}
+      };
+      document.getElementById(`${spec.id}Dn`).addEventListener("click", () => adjust(-1));
+      document.getElementById(`${spec.id}Up`).addEventListener("click", () => adjust(1));
     }
 
     return { specs: this.SPEED_LIMIT_SPECS };
