@@ -412,8 +412,8 @@ class DeployContract:
 
         # Token the policy was trained to read as "camera could not see this cell".
         #
-        # None only when the policy carries no height scan at all. A contract that
-        # HAS a scan but no recorded value was exported before the field existed,
+        # None when the policy carries no height scan, or a FULL scan (below). A contract
+        # with a MASKED scan but no recorded value was exported before the field existed,
         # and that code hardcoded 0.0 -- so absent means 0.0, not "unknown". That
         # distinction matters: heightmap_node's fill has since moved to -1.0, so
         # treating absent as unknown would silently feed every pre-existing
@@ -421,10 +421,21 @@ class DeployContract:
         # half the scan. Inferring the legacy value makes that a loud mismatch.
         LEGACY_UNOBSERVED = 0.0
         hs = obs.get("height_scan")
-        if hs is None:
+        raw_unobs = None if hs is None else (hs.get("params") or {}).get("unobserved_value")
+        # FULL-SCAN policy (mdp.height_scan, every cell always valid): no sentinel AND no
+        # trained_mask. Its unobserved value is None, which is what both nodes gate
+        # fill_unseen_for_full_scan on. Before this, "no sentinel" always became the
+        # legacy 0.0, the gate never opened, and a full-scan policy was handed
+        # heightmap_node's -1.0 in the ~90 cells the camera cannot see -- a wall half a
+        # metre above the body, all round it. Measured 2026-10-09: first action 3.6 (a
+        # masked policy in the same pose: 0.4), ESTOP on saturation 0.7 s after engage.
+        # Masked contracts exported before the sentinel existed carry trained_mask since
+        # backfill_trained_mask.py, and keep the legacy 0.0.
+        self.height_scan_full = (hs is not None and raw_unobs is None
+                                 and hs.get("trained_mask") is None)
+        if hs is None or self.height_scan_full:
             self.height_scan_unobserved = None
         else:
-            raw_unobs = (hs.get("params") or {}).get("unobserved_value")
             self.height_scan_unobserved = (
                 LEGACY_UNOBSERVED if raw_unobs is None else float(raw_unobs))
 
