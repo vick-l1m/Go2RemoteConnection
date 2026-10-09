@@ -301,6 +301,26 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_progressive_lane_fwdcone_2026-10-02/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_progressive_lane_fullscan_stage1_2026-10-08",
+      "name": "Stage 1 fullscan forward-cone, world-anchored (0-15 cm)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_progressive_lane_fullscan_stage1 \u00b7 2026-10-08_08-29-12 (4000 iterations)",
+      "type": "camera",
+      "obs_dim": 232,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_progressive_lane_fullscan_stage1_2026-10-08/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_progressive_lane_fullscan_stage1_omni_2026-10-08",
+      "name": "Stage 1 fullscan OMNI box, world-anchored (0-15 cm)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_progressive_lane_fullscan_stage1_omni \u00b7 2026-10-08_19-45-42 (4000 iterations)",
+      "type": "camera",
+      "obs_dim": 232,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_progressive_lane_fullscan_stage1_omni_2026-10-08/policy.onnx"
     }
   ]
 }

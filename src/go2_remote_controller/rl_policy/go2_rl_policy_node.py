@@ -246,7 +246,7 @@ class _StdLogger:
         self._l.error(m)
 
 
-from deploy_contract import DeployContract, DeployContractError  # noqa: E402
+from deploy_contract import DeployContract, DeployContractError, fill_unseen_for_full_scan  # noqa: E402
 from forward_bias import stick_to_cone_command, stick_to_velocity_command  # noqa: E402
 
 
@@ -1524,6 +1524,13 @@ class Go2RLPolicyController:
             if self._scan_mask is not None and self._scan_mask.size == scan.size:
                 scan = np.where(self._scan_mask, scan,
                                 np.float32(self._scan_unobserved_expected)).astype(np.float32)
+            elif self._scan_unobserved_expected is None:
+                # Full-scan policy (no unobserved sentinel in its contract): it never
+                # saw heightmap_node's empty_fill, so unseen cells become nominal flat
+                # ground instead of a -1.0 "hole". See deploy_contract.fill_unseen_for_full_scan.
+                geom = self.scan_geom
+                sentinel = geom.get("unobserved") if geom else None
+                scan = fill_unseen_for_full_scan(scan, sentinel)
             raw["height_scan"] = scan
         parts = []
         for name in self.obs_terms:

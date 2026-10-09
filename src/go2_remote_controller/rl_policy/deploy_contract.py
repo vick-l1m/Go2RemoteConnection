@@ -44,6 +44,37 @@ import os
 import yaml
 
 
+#: Height-scan value of nominal flat ground under a standing Go2: ``-elev - 0.5`` with
+#: the ground 0.35 m below the base (the same nominal the camera-FOV mask tooling uses).
+NOMINAL_FLAT_SCAN_VALUE = -0.15
+
+
+def fill_unseen_for_full_scan(scan, sentinel, fill=NOMINAL_FLAT_SCAN_VALUE):
+    """Present cells the perception stack could not observe to a FULL-SCAN policy.
+
+    A policy trained on ``mdp.height_scan`` (every cell always valid, no
+    ``unobserved_value`` in its contract) has never seen the sentinel heightmap_node
+    writes into unobserved cells. With the default ``empty_fill=-1.0`` such a cell reads
+    as a one-metre hole, which is the worst possible thing to show a policy that is about
+    to step there. Masked policies are different: they trained with the sentinel and read
+    it as "unknown", so this must NOT be applied to them -- callers gate on the contract
+    having no ``height_scan_unobserved``.
+
+    Replaces every cell equal to ``sentinel`` with ``fill`` (nominal flat ground) and
+    returns a new float32 array. ``sentinel`` None means the wire carried no sentinel;
+    the scan is returned unchanged.
+    """
+    import numpy as _np
+
+    scan = _np.asarray(scan, dtype=_np.float32)
+    if sentinel is None:
+        return scan
+    unseen = _np.abs(scan - _np.float32(sentinel)) <= 1e-6
+    if not unseen.any():
+        return scan
+    return _np.where(unseen, _np.float32(fill), scan).astype(_np.float32)
+
+
 class DeployContractError(RuntimeError):
     """Raised when the contract is missing, unreadable, or internally inconsistent."""
 
