@@ -466,6 +466,38 @@ else
 fi
 
 # ----------------------------
+# Session recording (GO2_RECORD=1)
+# ----------------------------
+# Two halves, one folder (sessions/<UTC>_rl/):
+#   flight/  the policy node's own per-step log -- the exact obs vector, raw and
+#            commanded actions, scan + scan age, events (flight_recorder.py). Written
+#            only while the policy drives. This is what the evaluation replays.
+#   bag/     rosbag2 of robot state, motor commands, height scan + map, TF, operator
+#            input, logs -- for RViz replay and anything the policy did not see.
+# Evaluate afterwards (on the PC):
+#   python3 src/go2_remote_controller/tools/eval_rl_flight.py sessions/<...>/flight/<run>
+# GO2_RECORD_DEPTH=1 also bags the raw depth/cloud (~14 MB/s; mind the Jetson's disk).
+RECORD_SESSION_DIR=""
+if [ "${GO2_RECORD:-0}" = "1" ]; then
+  RECORD_SESSION_DIR="$WS_DIR/sessions/$(date -u +%Y%m%d-%H%M%S)_rl"
+  mkdir -p "$RECORD_SESSION_DIR/flight"
+  export GO2_RL_RECORD_DIR="$RECORD_SESSION_DIR/flight"
+  BAG_TOPICS="/lowstate /lowcmd /go2/height_scan /go2/local_heightmap /go2/mount_monitor \
+/tf /tf_static /go2/camera/depth/camera_info /web_teleop /web_control_mode /web_estop \
+/web_rl_policy /web_rl_active_policy /rosout"
+  if [ "${GO2_RECORD_DEPTH:-0}" = "1" ]; then
+    BAG_TOPICS="$BAG_TOPICS /go2/camera/depth/image_rect_raw /go2/camera/depth/color/points"
+  fi
+  # rosbag2 finalises its metadata on SIGINT; cleanup() sends SIGTERM. The wrapper
+  # translates, so stopping RL_start leaves a bag that opens without a reindex.
+  # shellcheck disable=SC2086
+  bash -c 'ros2 bag record -o "$1" $2 & b=$!; trap "kill -INT $b 2>/dev/null; wait $b" TERM INT; wait $b' \
+    _ "$RECORD_SESSION_DIR/bag" "$BAG_TOPICS" > /tmp/go2_record.log 2>&1 &
+  register_pid "$!" "session bag" "/tmp/go2_record.log" 0
+  echo "[run_all] 🔴 Recording session -> $RECORD_SESSION_DIR (bag + policy flight log)"
+fi
+
+# ----------------------------
 # 1) Start FastAPI backend
 # ----------------------------
 echo "[run_all] Starting FastAPI (uvicorn) on :$API_PORT ..."
@@ -588,6 +620,9 @@ fi
 
 echo ""
 echo "[run_all] ✅ Frontend/backend started."
+if [ -n "$RECORD_SESSION_DIR" ]; then
+  echo "[run_all] 🔴 Recording to $RECORD_SESSION_DIR -- policy steps are logged while RL drives."
+fi
 
 HOST_IP="$(get_best_ip || true)"
 if [ -z "$HOST_IP" ]; then

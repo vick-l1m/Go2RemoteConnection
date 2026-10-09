@@ -248,6 +248,7 @@ class _StdLogger:
 
 from deploy_contract import DeployContract, DeployContractError, fill_unseen_for_full_scan  # noqa: E402
 from forward_bias import stick_to_cone_command, stick_to_velocity_command  # noqa: E402
+from flight_recorder import FlightRecorder  # noqa: E402
 
 
 def projected_gravity(quat_wxyz):
@@ -428,6 +429,11 @@ class Go2RLPolicyController:
         self._flip_cooldown_until = 0.0        # suppress re-trigger after a recovery
         self._tilt_since = None                # monotonic t when excess tilt first held
         self._sat_steps = 0                    # consecutive steps with a clipped action
+        # Per-step log of obs/actions/state while the policy drives (GO2_RL_RECORD_DIR;
+        # None when unset). See flight_recorder.py and tools/eval_rl_flight.py.
+        self.recorder = FlightRecorder.from_env(self.get_logger())
+        self._rec_phase = None
+        self.policy_path = None
         # STOP-always-wins plumbing. _sport_owns tracks who currently holds the
         # motors so ESTOP/RESUME damp/stand through the right controller. _abort_recover
         # is raised by STOP to tear down an in-flight flip recovery; _estop_pending asks
@@ -668,6 +674,7 @@ class Go2RLPolicyController:
         """
         path = pathlib.Path(path)
         contract = DeployContract.load(str(path.parent))
+        self.policy_path = str(path)
 
         sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
         onnx_dim = int(sess.get_inputs()[0].shape[1])
@@ -1171,12 +1178,15 @@ class Go2RLPolicyController:
             self._send({"t": "heartbeat"})
         with self._lock:
             phase = self.phase
+        if self.recorder is not None:
+            self._recorder_phase(phase)
         # Bridge-link deadman: if the rclpy bridge (our only path to the web STOP
         # button and mode switch) goes silent while we own the motors, fail safe
         # to ESTOP -- a soft collapse -- rather than keep driving blind. Mirrors
         # the web-side watchdog that reverts to sport when our heartbeat stops.
         if phase in (ENGAGE, RL_RUN) and (self._now() - self.last_bridge_t) > BRIDGE_TIMEOUT:
             self.get_logger().error("bridge link lost; ESTOP (soft collapse)")
+            self._rec_event("estop", reason="bridge link lost")
             with self._lock:
                 self.phase = ESTOP
             phase = ESTOP
@@ -1189,6 +1199,7 @@ class Go2RLPolicyController:
             if age > HEIGHT_SCAN_TIMEOUT:
                 self.get_logger().error(
                     f"height scan stale ({age:.2f} s > {HEIGHT_SCAN_TIMEOUT} s); ESTOP (soft collapse)")
+                self._rec_event("estop", reason="height scan stale", age=float(age))
                 with self._lock:
                     self.phase = ESTOP
                 phase = ESTOP
@@ -1202,6 +1213,7 @@ class Go2RLPolicyController:
             elif phase == RL_RUN:
                 tilted = self._tilt_abort_detected()
                 if self.flip_recovery and (tilted or self._flip_detected()):
+                    self._rec_event("recover", reason="tilt" if tilted else "flip")
                     self.get_logger().warn(
                         "tilt past the trained envelope; starting auto-recovery" if tilted
                         else "flip detected (robot inverted and settled); starting auto-recovery")
@@ -1217,6 +1229,7 @@ class Go2RLPolicyController:
                 return                            # sport svc (being) restored; do not drive
         except Exception as e:               # noqa: BLE001 - never let the loop die mid-flight
             self.get_logger().error(f"control step fault: {e}; damping")
+            self._rec_event("fault", error=str(e))
             self._damp()
 
     def _ramp_step(self):
@@ -1268,6 +1281,7 @@ class Go2RLPolicyController:
             self._damp()
             return
         action = self.session.run(None, {self.in_name: obs[None]})[0][0]
+        action_raw = np.array(action, dtype=np.float32, copy=True)
         if not np.all(np.isfinite(action)):
             self.get_logger().error("non-finite action; damping")
             self._damp()
@@ -1279,7 +1293,11 @@ class Go2RLPolicyController:
                 self.get_logger().warn(
                     f"action saturating (|a|max={peak:.1f} > {ACTION_CLIP}); clipping "
                     f"[{self._sat_steps} step(s)]")
+            if self._sat_steps == 1 or self._sat_steps % 10 == 0:
+                self._rec_event("saturating", peak=peak, steps=self._sat_steps)
             if self._sat_steps >= ACTION_SAT_STEPS:
+                self._rec_step(obs, action_raw, action_raw * 0.0, None, 0.0, 0.0, 0.0)
+                self._rec_event("estop", reason="action saturated", peak=peak)
                 self.get_logger().error(
                     f"action saturated for {self._sat_steps} steps (|a|max={peak:.1f}); "
                     "ESTOP. This is what a wrong observation looks like, not a hot gait -- "
@@ -1310,9 +1328,62 @@ class Go2RLPolicyController:
         # the next posture command is acted on immediately and from consistent state.
         # Its q_target simply stops being enforced while kp is on its way to zero.
         damp = self._sit_damp_blend()
-        self._publish(q_target_sdk,
-                      (1.0 - damp) * kp_run,
-                      (1.0 - damp) * kd_run + damp * SIT_DAMP_KD)
+        kp_out = (1.0 - damp) * kp_run
+        kd_out = (1.0 - damp) * kd_run + damp * SIT_DAMP_KD
+        self._publish(q_target_sdk, kp_out, kd_out)
+        self._rec_step(obs, action_raw, action, q_target_sdk, kp_out, kd_out, alpha)
+
+    # ---- flight recorder (no-ops unless GO2_RL_RECORD_DIR is set) ----
+    def _recorder_phase(self, phase):
+        """Open a recording when the policy takes over, close it when it lets go."""
+        prev, self._rec_phase = self._rec_phase, phase
+        if phase == prev:
+            return
+        if phase == RL_RUN and not self.recorder.active:
+            c = self.contract
+            self.recorder.start(self.active_policy_id or "policy", {
+                "policy_path": self.policy_path,
+                "contract": getattr(c, "source", None),
+                "obs_terms": list(self.obs_terms),
+                "obs_widths": dict(c.obs_widths) if c is not None else {},
+                "obs_history": dict(c.obs_history) if c is not None else {},
+                "obs_dim": int(self.obs_dim),
+                "action_scale": self.action_scale,
+                "action_clip": ACTION_CLIP,
+                "kp": self.kp, "kd": self.kd,
+                "scan_unobserved": self._scan_unobserved_expected,
+                "scan_mask": (None if self._scan_mask is None
+                              else self._scan_mask.astype(int).tolist()),
+                "scan_geom": self.scan_geom,
+                "dry_run": self.dry_run,
+                "control_dt": CONTROL_DT,
+            })
+        self.recorder.event("phase", prev=str(prev), now=str(phase))
+        if phase not in (RL_RUN,) and self.recorder.active:
+            self.recorder.stop(f"phase {phase}")
+
+    def _rec_event(self, kind, **info):
+        if self.recorder is not None:
+            self.recorder.event(kind, **info)
+
+    def _rec_step(self, obs, action_raw, action_cmd, q_target_sdk, kp, kd, alpha):
+        rec = self.recorder
+        if rec is None or not rec.active:
+            return
+        ls = self.low_state
+        scan, age = self._height_scan_for_obs()
+        rec.step(
+            obs=obs, action_raw=action_raw, action_cmd=action_cmd,
+            q_target_sdk=(np.full(12, np.nan, np.float32) if q_target_sdk is None
+                          else q_target_sdk),
+            kp=kp, kd=kd, alpha=alpha,
+            q=[ls.motor_state[i].q for i in range(12)],
+            dq=[ls.motor_state[i].dq for i in range(12)],
+            quat=list(ls.imu_state.quaternion), gyro=list(ls.imu_state.gyroscope),
+            cmd=self.cmd,
+            scan_raw=(scan if scan is not None else np.zeros(0, np.float32)),
+            scan_age=(age if np.isfinite(age) else -1.0),
+        )
 
     def _sit_damp_blend(self):
         """0..1 blend toward limp motors once a commanded sit has settled.
@@ -1650,6 +1721,12 @@ class Go2RLPolicyController:
             self.ctrl_thread.Wait(timeout=1.5)
         except Exception:  # noqa: BLE001
             pass
+        # Flush the flight recorder now the loop has stopped writing to it.
+        if self.recorder is not None:
+            try:
+                self.recorder.close()
+            except Exception:  # noqa: BLE001
+                pass
 
         # 2. if we released the sport service, bring it back (else the robot is
         #    left with no controller = limp). Falls back to a damp on failure.
