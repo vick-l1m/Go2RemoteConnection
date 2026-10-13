@@ -321,6 +321,36 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_progressive_lane_fullscan_stage1_omni_2026-10-08/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_progressive_lane_stage1_omni_2026-10-09",
+      "name": "Masked stage 1, omni (anchored)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_progressive_lane_stage1_omni \u00b7 2026-10-09_17-55-05 (4000 iterations)",
+      "type": "camera",
+      "obs_dim": 232,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_progressive_lane_stage1_omni_2026-10-09/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_progressive_lane_stage1_2026-10-10",
+      "name": "Masked stage 1, forward cone",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_progressive_lane_stage1 \u00b7 2026-10-10_22-09-32 (4000 iterations)",
+      "type": "camera",
+      "obs_dim": 232,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_progressive_lane_stage1_2026-10-10/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_progressive_lane_stage2_omni_2026-10-11",
+      "name": "Masked stage 2, omni (full ladder)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_progressive_lane_stage2_omni \u00b7 2026-10-11_04-35-44 (4000 iterations)",
+      "type": "camera",
+      "obs_dim": 232,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_progressive_lane_stage2_omni_2026-10-11/policy.onnx"
     }
   ]
 }
