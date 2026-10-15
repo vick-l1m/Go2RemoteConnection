@@ -69,7 +69,7 @@ def camera_urdf_block(camera_yaml: Path, go2_sim: Path) -> str:
     be joined into the tree directly, with the pose read from the same
     camera.yaml the sim and the static TF use.
 
-    Geometry comes from the outer repo's ``go2_sim.camera_geometry`` (stdlib
+    Geometry comes from the outer repo's ``go2_sim_isaaclab.camera_geometry`` (stdlib
     only, imported by path), so the web viewer, RViz and the Isaac scene cannot
     drift apart. Note ``front_camera`` in go2.urdf is the Go2's OWN built-in
     camera on the head -- unrelated to this.
@@ -79,7 +79,7 @@ def camera_urdf_block(camera_yaml: Path, go2_sim: Path) -> str:
     import yaml
 
     sys.path.insert(0, str(go2_sim))
-    from go2_sim import camera_geometry as cg   # noqa: E402
+    from go2_sim_isaaclab import camera_geometry as cg   # noqa: E402
 
     cam = yaml.safe_load(camera_yaml.read_text(encoding="utf-8"))["camera"]
     t = cam.get("translation", [0.28, 0.0, 0.10])
@@ -163,8 +163,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--go2-sim", default=None,
-        help="go2_sim package, for camera_geometry "
-             "(default: <src>/../go2_sim)",
+        help="go2_sim_isaaclab package, for camera_geometry "
+             "(default: <src>/../go2_sim_isaaclab)",
     )
     parser.add_argument(
         "--no-camera", action="store_true",
@@ -188,12 +188,12 @@ def main() -> None:
         camera_yaml = Path(args.camera_yaml).resolve() if args.camera_yaml else (
             src.parent / "go2_bringup" / "config" / "camera.yaml")
         go2_sim = Path(args.go2_sim).resolve() if args.go2_sim else (
-            src.parent / "go2_sim")
-        if camera_yaml.is_file() and (go2_sim / "go2_sim" / "camera_geometry.py").is_file():
+            src.parent / "go2_sim_isaaclab")
+        if camera_yaml.is_file() and (go2_sim / "go2_sim_isaaclab" / "camera_geometry.py").is_file():
             print(f"Adding D435i + bracket from {camera_yaml}")
             camera_block = camera_urdf_block(camera_yaml, go2_sim)
         else:
-            print(f"[WARN] no camera.yaml/go2_sim beside {src}; "
+            print(f"[WARN] no camera.yaml/go2_sim_isaaclab beside {src}; "
                   "generating without the D435i (pass --no-camera to silence)")
 
     print(f"Rewriting URDF: {src_urdf} -> {out_urdf}")
