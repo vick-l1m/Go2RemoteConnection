@@ -14,3 +14,6 @@ class TeleopCommand(BaseModel):
     linear_x: float = Field(0.0)
     linear_y: float = Field(0.0)
     angular_z: float = Field(0.0)
+    # Per-page id (shared.js attaches it). The /teleop arbiter uses it to drop an idle
+    # page's zeros while another page is driving; empty = legacy sender, always published.
+    client: str = Field("")

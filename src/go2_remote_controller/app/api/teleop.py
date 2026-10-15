@@ -15,8 +15,12 @@ from app.core.state import state
 from app.models.teleop import TeleopCommand
 from app.utils.math_utils import clamp
 from app.ros_bridge import get_bridge
+from app.core.teleop_arbiter import TeleopArbiter
 
 router = APIRouter()
+# One driver at a time: an idle page's zero commands are dropped while another page is
+# driving (see teleop_arbiter.py for the 2026-10-15 start/stop chatter this fixes).
+arbiter = TeleopArbiter(hold_s=0.5)
 
 @router.post("/teleop")
 async def teleop(cmd: TeleopCommand, _=Depends(require_token)):
@@ -31,5 +35,15 @@ async def teleop(cmd: TeleopCommand, _=Depends(require_token)):
     ly = clamp(cmd.linear_y, -MAX_LIN, MAX_LIN)
     az = clamp(cmd.angular_z, -MAX_ANG, MAX_ANG)
 
+    if not arbiter.accept(cmd.client, lx, ly, az):
+        return {"ok": True, "published": False, "reason": "another client is driving",
+                "driver": arbiter.driver}
+
     get_bridge().publish_teleop(lx, ly, az)
-    return {"ok": True, "linear_x": lx, "linear_y": ly, "angular_z": az}
+    return {"ok": True, "published": True, "linear_x": lx, "linear_y": ly, "angular_z": az}
+
+
+@router.get("/teleop/arbiter")
+async def teleop_arbiter(_=Depends(require_token)):
+    """Who is driving, and how many idle-page zeros were dropped."""
+    return arbiter.status()

@@ -18,6 +18,10 @@ Author: Victor Lim
 */
 
 window.Go2Shared = {
+  // One id per page load. Every /teleop post carries it so the server can tell an idle
+  // page's zeros from the driving page's commands (app/core/teleop_arbiter.py).
+  clientId: (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+            : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
   state: {
     API_BASE: "",
     AUTH_TOKEN: "",
@@ -417,6 +421,9 @@ window.Go2Shared = {
 
     const base = this.apiBase();
     const url = `${base}${path}`;
+    if (path === "/teleop" && body && typeof body === "object" && !body.client) {
+      body = { ...body, client: this.clientId };
+    }
 
     try {
       const r = await fetch(url, {

@@ -266,6 +266,12 @@ You can explore and test everything using FastAPI’s built-in UI:
 - Renders two canvas joysticks
 - Converts joystick position into a command {linear_x, linear_y, angular_z}
 - Sends that command to the robot API at /teleop 20 times per second while the stick is active
+- **One driver at a time.** Every page tags its /teleop posts with a per-page `client` id
+  (`shared.js`), and the server-side arbiter (`app/core/teleop_arbiter.py`) drops an idle
+  page's zero commands while another page has sent a non-zero command within 0.5 s. Without
+  this, two open pages (phone + laptop, or two tabs) interleave 0.75 and 0 at ~8 Hz each
+  and the RL policy sees its command toggling (2026-10-15 fall). `GET /teleop/arbiter`
+  shows the current driver and the dropped count.
 
 #### 4.3. Terminal
 - Creates an xterm.js terminal
