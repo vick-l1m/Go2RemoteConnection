@@ -291,6 +291,24 @@ echo "[run_all] Using VENV_PYTHON=$VENV_PYTHON"
 #                                 node logs a mismatch but runs anyway.
 GO2_PERCEPTION="${GO2_PERCEPTION:-auto}"
 GO2_HEIGHT_EMPTY_FILL="${GO2_HEIGHT_EMPTY_FILL:--1.0}"
+# Mount calibration before the scan is built (2026-10-15: the bracket had moved 10.6 deg
+# since its last calibration and a whole day of stepfield runs fed the policy a tilted
+# floor). With GO2_CALIBRATE=1 (default) RL_start brings up the RealSense DRIVER ONLY,
+# runs go2_perception's calibrate_camera_mount against the floor the robot is standing on
+# (robot STILL, flat clear floor ahead, ~8 s), writes the measured pitch/roll/z into a LIVE
+# copy of camera.yaml (sessions/camera_live.yaml; the repo file is never touched on the
+# robot), and only then starts the mount TF + heightmap_node from that copy.
+#   GO2_CALIBRATE=1       calibrate; on a failed fit (no floor, feet uneven, no /lowstate)
+#                         warn and fall back to the repo camera.yaml
+#   GO2_CALIBRATE=strict  same, but a failed fit aborts RL_start
+#   GO2_CALIBRATE=0       skip (bench, or the robot is not on a flat floor at start)
+# If the measured mount differs from the repo yaml by more than GO2_CALIBRATE_MASK_DEG the
+# training-side FOV mask (built from the repo yaml on the PC) no longer matches what the
+# camera sees; the script says so and prints the values to commit.
+GO2_CALIBRATE="${GO2_CALIBRATE:-1}"
+GO2_CALIBRATE_MASK_DEG="${GO2_CALIBRATE_MASK_DEG:-2.0}"
+CALIBRATE_LOG="/tmp/go2_calibrate.log"
+CAMERA_YAML_USED=""          # the yaml the mount TF + heightmap_node actually run on
 PERCEPTION_STARTED=0
 PERCEPTION_LOG="/tmp/go2_perception.log"
 
@@ -356,7 +374,7 @@ CAMERA_YAML=""
 start_heightmap_only() {
   local usb="$1" mode tf_vals
   if [ "$usb" = "3" ]; then mode="pointcloud"; else mode="depth_image"; fi
-  echo "[run_all] RealSense driver already running -> starting heightmap_node only (input_mode=$mode)"
+  echo "[run_all] Starting mount TF + heightmap_node on the running RealSense driver (input_mode=$mode, mount from $CAMERA_YAML)"
   tf_vals="$(python3 - "$CAMERA_YAML" <<'PY' 2>/dev/null || true
 import math, sys, yaml
 c = (yaml.safe_load(open(sys.argv[1])) or {}).get("camera", {})
@@ -392,22 +410,93 @@ PY
   warn_if_dead "heightmap_node" "$!" "$PERCEPTION_LOG" || true
 }
 
+# start_perception <usb 2|3> [heightmap true|false]: the perception launch. With
+# heightmap=false only the RealSense driver comes up (calibration runs in between and
+# start_heightmap_only adds the TF + heightmap_node from the calibrated yaml).
 start_perception() {
-  local usb="$1" launch_file
+  local usb="$1" heightmap="${2:-true}" launch_file
   if [ "$usb" = "3" ]; then
     launch_file="real_perception.launch.py"
   else
     launch_file="real_perception_usb2.launch.py"
   fi
-  echo "[run_all] Launching $launch_file (empty_fill=$GO2_HEIGHT_EMPTY_FILL -- must match the policy's unobserved_value)"
+  echo "[run_all] Launching $launch_file (heightmap=$heightmap, empty_fill=$GO2_HEIGHT_EMPTY_FILL -- must match the policy's unobserved_value)"
   ros2 launch "$PERCEPTION_LAUNCH_DIR/$launch_file" \
     camera_config:="$CAMERA_YAML" rviz:=false empty_fill:="$GO2_HEIGHT_EMPTY_FILL" \
+    heightmap:="$heightmap" \
     > "$PERCEPTION_LOG" 2>&1 &
   local pid=$!
-  register_pid "$pid" "perception (realsense USB $usb + heightmap)" "$PERCEPTION_LOG" 0
+  register_pid "$pid" "perception (realsense USB $usb$([ "$heightmap" = "true" ] && echo ' + heightmap'))" "$PERCEPTION_LOG" 0
   PERCEPTION_STARTED=1
   sleep 3.0
   warn_if_dead "perception ($launch_file)" "$pid" "$PERCEPTION_LOG" || true
+  [ "$heightmap" = "true" ] && CAMERA_YAML_USED="$CAMERA_YAML"
+}
+
+# wait_for_depth [seconds]: the driver takes a few seconds to open the camera.
+wait_for_depth() {
+  local deadline=$((SECONDS + ${1:-25}))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    realsense_driver_running && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# calibrate_mount_live: measure the mount from the floor and write it into a LIVE copy of
+# camera.yaml. Sets CAMERA_YAML_USED to that copy on success, to the repo yaml otherwise.
+# Returns 1 only when GO2_CALIBRATE=strict and the fit failed (caller aborts).
+calibrate_mount_live() {
+  local live="$WS_DIR/sessions/camera_live.yaml" mount floor spread
+  mkdir -p "$WS_DIR/sessions"
+  cp "$CAMERA_YAML" "$live"
+  CAMERA_YAML_USED="$CAMERA_YAML"
+  echo "[run_all] 📐 Calibrating the camera mount from the floor (keep the robot STILL on flat, clear ground; ~8 s)..."
+  if ! wait_for_depth 25; then
+    echo "[run_all] ⚠️  No depth from the RealSense within 25 s; mount NOT calibrated, using $CAMERA_YAML"
+    [ "$GO2_CALIBRATE" = "strict" ] && return 1
+    return 0
+  fi
+  timeout 60 ros2 run go2_perception calibrate_camera_mount --ros-args \
+    -p camera_yaml:="$live" -p write:=true -p duration_s:=5.0 \
+    > "$CALIBRATE_LOG" 2>&1 || true
+  mount="$(grep -E '^MOUNT ' "$CALIBRATE_LOG" | tail -1)"
+  floor="$(grep -oE 'floor plane: [0-9]+%' "$CALIBRATE_LOG" | grep -oE '[0-9]+' | tail -1)"
+  spread="$(grep -oE 'foot spread [0-9]+ mm' "$CALIBRATE_LOG" | grep -oE '[0-9]+' | tail -1)"
+  if [ -z "$mount" ] || ! grep -q '^WROTE' "$CALIBRATE_LOG"; then
+    echo "[run_all] ⚠️  Mount calibration FAILED (no MOUNT solution -- no /lowstate, no floor, or the driver stalled)."
+    print_log_hint "$CALIBRATE_LOG"
+    [ "$GO2_CALIBRATE" = "strict" ] && return 1
+    return 0
+  fi
+  if [ -n "$floor" ] && [ "$floor" -lt 60 ]; then
+    echo "[run_all] ⚠️  Mount calibration REJECTED: only ${floor}% of depth points lie on one plane (clutter or no flat floor ahead). Using $CAMERA_YAML"
+    print_log_hint "$CALIBRATE_LOG"
+    [ "$GO2_CALIBRATE" = "strict" ] && return 1
+    return 0
+  fi
+  if [ -n "$spread" ] && [ "$spread" -gt 20 ]; then
+    echo "[run_all] ⚠️  Mount calibration REJECTED: foot spread ${spread} mm (a foot is off the floor or the floor is uneven). Using $CAMERA_YAML"
+    [ "$GO2_CALIBRATE" = "strict" ] && return 1
+    return 0
+  fi
+  echo "[run_all] $mount"
+  CAMERA_YAML_USED="$live"
+  # Mask check: the training-side FOV mask is built from the REPO yaml on the PC.
+  local d_pitch
+  d_pitch="$(python3 - "$CAMERA_YAML" "$live" <<'PY' 2>/dev/null || echo 0
+import sys, yaml
+a = yaml.safe_load(open(sys.argv[1]))["camera"]; b = yaml.safe_load(open(sys.argv[2]))["camera"]
+print(abs(float(a.get("pitch_deg", 30)) - float(b.get("pitch_deg", 30))))
+PY
+)"
+  if python3 -c "import sys; sys.exit(0 if float('$d_pitch') > float('$GO2_CALIBRATE_MASK_DEG') else 1)" 2>/dev/null; then
+    echo "[run_all] ⚠️  Measured mount differs from the repo camera.yaml by ${d_pitch} deg pitch (> $GO2_CALIBRATE_MASK_DEG):"
+    echo "[run_all]    the scan is correct for THIS run, but the training FOV mask no longer matches the camera."
+    echo "[run_all]    Either re-tilt the bracket to the yaml value, or commit these values on the PC:"
+    grep -E '^\s*(translation|pitch_deg|roll_deg):' "$live" | sed 's/^/[run_all]      /'
+  fi
+  return 0
 }
 
 if [ "$GO2_PERCEPTION" = "0" ]; then
@@ -457,12 +546,38 @@ else
   elif realsense_driver_running; then
     if height_scan_flowing; then
       echo "[run_all] Perception already running (driver + /go2/height_scan) -- reusing it."
+      CAMERA_YAML_USED="$([ -f "$WS_DIR/sessions/camera_live.yaml" ] && echo "$WS_DIR/sessions/camera_live.yaml" || echo "$CAMERA_YAML")"
+      if [ "$GO2_CALIBRATE" != "0" ]; then
+        # Cannot swap the TF under a running heightmap_node; check the mount instead and
+        # say so if it has moved since that stack was started.
+        timeout 60 ros2 run go2_perception calibrate_camera_mount --ros-args \
+          -p camera_yaml:="$CAMERA_YAML_USED" -p duration_s:=5.0 > "$CALIBRATE_LOG" 2>&1 || true
+        mount="$(grep -E '^MOUNT ' "$CALIBRATE_LOG" | tail -1)"
+        echo "[run_all] mount check against the running stack's yaml: ${mount:-no solution (see $CALIBRATE_LOG)}"
+        if echo "$mount" | grep -qE 'err [-+]?([2-9]|[1-9][0-9])\.'; then
+          echo "[run_all] ⚠️  The mount has MOVED since that perception stack was started. Stop it and rerun RL_start so it is recalibrated."
+        fi
+      fi
     else
+      if [ "$GO2_CALIBRATE" != "0" ]; then
+        calibrate_mount_live || { echo "[run_all] ❌ GO2_CALIBRATE=strict: aborting."; exit 1; }
+        CAMERA_YAML="$CAMERA_YAML_USED"
+      fi
       start_heightmap_only "$PERCEPTION_USB"
+      CAMERA_YAML_USED="$CAMERA_YAML"
     fi
   else
-    start_perception "$PERCEPTION_USB"
+    if [ "$GO2_CALIBRATE" != "0" ]; then
+      start_perception "$PERCEPTION_USB" false          # driver only
+      calibrate_mount_live || { echo "[run_all] ❌ GO2_CALIBRATE=strict: aborting."; exit 1; }
+      CAMERA_YAML="$CAMERA_YAML_USED"
+      start_heightmap_only "$PERCEPTION_USB"            # mount TF + heightmap from the calibrated yaml
+      CAMERA_YAML_USED="$CAMERA_YAML"
+    else
+      start_perception "$PERCEPTION_USB"
+    fi
   fi
+  [ -n "$CAMERA_YAML_USED" ] && echo "[run_all] Height scan mount: $CAMERA_YAML_USED"
 fi
 
 # ----------------------------
@@ -491,8 +606,12 @@ if [ "${GO2_RECORD:-0}" = "1" ]; then
   if [ "${GO2_RECORD_DEPTH:-0}" = "1" ]; then
     BAG_TOPICS="$BAG_TOPICS /go2/camera/depth/image_rect_raw /go2/camera/depth/color/points"
   fi
-  CAM_YAML="$(ros2 pkg prefix go2_bringup 2>/dev/null)/share/go2_bringup/config/camera.yaml"
+  # The yaml the mount TF + heightmap_node are running on (the calibrated live copy when
+  # GO2_CALIBRATE did its job), plus the calibration report, so the scan in the bag can
+  # be trusted or rebuilt later.
+  CAM_YAML="${CAMERA_YAML_USED:-$CAMERA_YAML}"
   [ -f "$CAM_YAML" ] && cp "$CAM_YAML" "$RECORD_SESSION_DIR/camera.yaml"
+  [ -f "$CALIBRATE_LOG" ] && cp "$CALIBRATE_LOG" "$RECORD_SESSION_DIR/calibration.txt"
   cat > "$RECORD_SESSION_DIR/session_metadata.yaml" <<YAML
 # Auto-generated by RL_start_remote_connection.sh (GO2_RECORD=1).
 session:
@@ -505,6 +624,8 @@ session:
   git_sha_submodule: "$(git -C "$WS_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   git_sha_workspace: "$(git -C "$WS_DIR/.." rev-parse --short HEAD 2>/dev/null || echo unknown)"
   perception_usb: "${PERCEPTION_USB:-}"
+  calibrate: "${GO2_CALIBRATE}"
+  camera_yaml_used: "${CAMERA_YAML_USED:-$CAMERA_YAML}"
 layout:
   bag: bag/                 # rosbag2 of the topics below
   flight: flight/<run>/     # policy node's per-step obs/action log (flight_recorder.py)

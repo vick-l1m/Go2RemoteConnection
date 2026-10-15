@@ -298,6 +298,15 @@ is hidden when no camera is present, so the page is unchanged for blind policies
   - `GO2_HEIGHT_EMPTY_FILL=-1.0` value for cells the camera cannot see. **Must equal the
     selected policy's `deploy.yaml` `unobserved_value`** (`-1.0` recent exports, `0.0`
     older ones). The policy node logs a mismatch but runs anyway.
+  - `GO2_CALIBRATE=1` (default) calibrates the camera mount before the scan is built:
+    the driver comes up alone, `calibrate_camera_mount` fits the floor the robot is
+    standing on (**robot still, flat clear floor ahead, ~8 s**), the measured pitch/roll/z
+    go into `sessions/camera_live.yaml` (the repo `camera.yaml` is never written on the
+    robot), and the mount TF + `heightmap_node` start from that file. A failed fit warns
+    and falls back to the repo yaml; `strict` aborts instead; `0` skips. A mount more than
+    `GO2_CALIBRATE_MASK_DEG` (2.0) from the repo yaml prints the values to commit on the
+    PC, since the training FOV mask is built from the repo file. Report: `/tmp/go2_calibrate.log`,
+    copied into recorded sessions as `calibration.txt`.
   - Log: `/tmp/go2_perception.log`. Needs `~/ros2_ws` (the Jetson's realsense2_camera
     source build, sourced automatically) and the outer workspace's `go2_perception`.
 - **Backend** (`app/ros_bridge.py`, `app/api/perception_routes.py`):
