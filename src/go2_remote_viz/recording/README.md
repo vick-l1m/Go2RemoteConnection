@@ -15,6 +15,22 @@ it alone with `record_camera.sh`, or fold it into a joint-state session with
 depth cloud **and** the sim-matched `/go2/height_scan` (the 187-cell mask the
 rough policy trained on).
 
+## 0. Recording an RL stepfield attempt (bag + policy flight log)
+
+For an RL run the policy's own inputs are not on any topic, so use the wrapper that turns
+on both halves at once:
+
+```bash
+./record_stepfield_run.sh --name field15_a --block 0.15 --terrain "0/15 field" [--dry-run] [--no-depth]
+```
+
+It is `RL_start_remote_connection.sh` with `GO2_RECORD=1 GO2_RECORD_DEPTH=1` and the labels
+`GO2_RECORD_NAME/TERRAIN/NOTES`. Output `sessions/<UTC>_<name>/`: `bag/`, `flight/<run>/`
+(obs/action log), `camera.yaml` (the mount the scan used), `session_metadata.yaml`.
+Analyse with `tools/analyze_stepfield_session.py <session>` (scan health, tilt, bumps,
+swing-apex-vs-seen-block anticipation test) and `tools/eval_rl_flight.py <session>/flight/<run>`
+(counterfactual replay). See `docs/plans/perceptive_stepfield_plan.md` section 3.
+
 ## 1. Record (on the Go2 / Jetson)
 
 Source ROS 2 Humble + the `unitree_ros2` overlay first (or just run the script —
