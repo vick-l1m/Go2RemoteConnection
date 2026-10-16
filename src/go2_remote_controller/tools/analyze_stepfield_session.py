@@ -222,8 +222,12 @@ def main():
                         f"extra med {np.median([s['extra'] for s in st]):.0f}" if mask is not None else ""))
         lines.append(f"    flat-floor median {np.nanmedian(med):+.3f}  (training {args.train_flat:+.3f}, "
                      f"offset {100 * (np.nanmedian(med) - args.train_flat):+.1f} cm of apparent floor drop)")
-        lines.append(f"    near->far tilt {np.nanmedian(slope):+.1f} deg (|tilt| > 3 deg means the mount or "
-                     f"levelling is wrong; see /go2/mount_monitor below)")
+        clear_view = max_rise < 0.03
+        tilt_txt = (f"{np.nanmedian(slope[clear_view]):+.1f} deg over {int(clear_view.sum())} block-free frames"
+                    if clear_view.sum() >= 5 else "n/a (a block was in view in every frame; tilt is only "
+                    "meaningful on bare floor)")
+        lines.append(f"    near->far tilt {tilt_txt} (|tilt| > 3 deg means the mount or levelling is wrong; "
+                     f"see /go2/mount_monitor below)")
         lines.append(f"    frames with a block in view (rise > {100 * BLOCK_SEEN_M:.0f} cm): "
                      f"{100 * np.nanmean(max_rise > BLOCK_SEEN_M):.0f}%, tallest {100 * np.nanmax(max_rise):.0f} cm")
     mm = bag["/go2/mount_monitor"]
@@ -255,9 +259,17 @@ def main():
         up = np.array([up_in_base(qq) for qq in quat])
         feet = np.array([feet_sdk(qq) for qq in q])                 # (T, 4, 3) base frame
         foot_h = np.einsum("tfk,tk->tf", feet, up)                  # height along gravity, base-relative
-        floor = foot_h.min(axis=1, keepdims=True)
-        clear = foot_h - floor                                       # clearance above the lowest foot
-        contact = ff > CONTACT_N
+        # Clearance of each foot above ITS OWN last stance height (lift-off point), so a
+        # foot stepping off a block does not read block height + lift. Stance height is
+        # held while the foot is in contact and frozen through the swing.
+        contact_all = ff > CONTACT_N
+        stance_h = np.empty_like(foot_h)
+        last = foot_h[0].copy()
+        for i in range(len(foot_h)):
+            last = np.where(contact_all[i], foot_h[i], last)
+            stance_h[i] = last
+        clear = foot_h - stance_h
+        contact = contact_all
         lines.append(f"\n[2] BODY  {len(ls)} lowstate samples over {t_ls[-1] - t_ls[0]:.1f} s  "
                      f"roll rms {np.sqrt(np.mean(roll ** 2)):.1f} deg  pitch rms {np.sqrt(np.mean(pitch ** 2)):.1f} deg")
         # bumps: pitch drop > BUMP_DEG inside BUMP_WIN
