@@ -378,6 +378,8 @@ class Go2RLPolicyController:
         self._policy_lock = threading.Lock()      # guards the session swap on hot-reload
         self.session = None
         self.in_name = None
+        self.rnn_inputs = []       # [(name, shape)] of h_in[, c_in] for a recurrent export
+        self.rnn_state = {}
         self.obs_dim = None
         self.active_policy_id = None
         start_entry = self.policies.get(self.default_policy_id) if self.default_policy_id else None
@@ -724,6 +726,14 @@ class Go2RLPolicyController:
         with self._policy_lock:
             self.session = sess
             self.in_name = sess.get_inputs()[0].name
+            # Recurrent export (rsl_rl RNNModel): h_in[, c_in] of shape (layers, 1, hidden),
+            # carried across steps and zeroed on every engage (_reset_rnn).
+            self.rnn_inputs = [(i.name, [d if isinstance(d, int) else 1 for d in i.shape])
+                               for i in sess.get_inputs()[1:]]
+            self._reset_rnn()
+            if self.rnn_inputs:
+                self.get_logger().info("recurrent policy: carrying "
+                                       + ", ".join(f"{n}{tuple(sh)}" for n, sh in self.rnn_inputs))
             self.obs_dim = onnx_dim
             self.contract = contract
             self.action_scale = contract.action_scale
@@ -918,7 +928,13 @@ class Go2RLPolicyController:
             elif req == "rl" and phase == SPORT:
                 self._engage()
 
+    def _reset_rnn(self):
+        """Zero the recurrent state: a GRU/LSTM policy must start every engagement fresh,
+        not from whatever it remembered of the last run (or of standing in PD-hold)."""
+        self.rnn_state = {name: np.zeros(shape, dtype=np.float32) for name, shape in self.rnn_inputs}
+
     def _engage(self):
+        self._reset_rnn()
         # Defence in depth: the web backend already blocks engaging a policy that
         # needs perception, but never release the sport service for one we cannot
         # feed. Revert the web toggle to sport instead of stranding the robot.
@@ -1280,7 +1296,12 @@ class Go2RLPolicyController:
             self.get_logger().error("non-finite obs; damping")
             self._damp()
             return
-        action = self.session.run(None, {self.in_name: obs[None]})[0][0]
+        feeds = {self.in_name: obs[None]}
+        feeds.update(self.rnn_state)
+        outs = self.session.run(None, feeds)
+        action = outs[0][0]
+        for (name, _), val in zip(self.rnn_inputs, outs[1:]):
+            self.rnn_state[name] = np.asarray(val, dtype=np.float32)
         action_raw = np.array(action, dtype=np.float32, copy=True)
         if not np.all(np.isfinite(action)):
             self.get_logger().error("non-finite action; damping")

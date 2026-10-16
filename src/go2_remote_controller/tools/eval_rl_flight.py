@@ -212,9 +212,26 @@ def main():
         name = sess.get_inputs()[0].name
 
         batch = sess.get_inputs()[0].shape[0]
+        # Recurrent export (GRU/LSTM student): h_in[, c_in] carried step by step, zeroed
+        # at the start of the engagement exactly as the robot node does on engage.
+        rnn_inputs = [(i.name, [d if isinstance(d, int) else 1 for d in i.shape])
+                      for i in sess.get_inputs()[1:]]
+        if rnn_inputs:
+            say(f"  recurrent policy: {', '.join(f'{n}{tuple(sh)}' for n, sh in rnn_inputs)}")
 
         def run(obs):
             obs = obs.astype(np.float32)
+            if rnn_inputs:
+                state = {n: np.zeros(sh, np.float32) for n, sh in rnn_inputs}
+                out = []
+                for o in obs:
+                    feeds = {name: o[None]}
+                    feeds.update(state)
+                    r = sess.run(None, feeds)
+                    out.append(r[0])
+                    for (n, _), v in zip(rnn_inputs, r[1:]):
+                        state[n] = np.asarray(v, np.float32)
+                return np.concatenate(out)
             if isinstance(batch, int) and batch == 1:   # exported with a fixed batch of 1
                 return np.concatenate([sess.run(None, {name: o[None]})[0] for o in obs])
             return sess.run(None, {name: obs})[0]
