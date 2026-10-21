@@ -4,6 +4,79 @@ set -eo pipefail
 
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+usage() {
+  cat <<'EOF'
+Usage: [VAR=value ...] ./RL_start_remote_connection.sh [-h|--help]
+
+Starts the RL-only real-robot stack: web API (uvicorn, port 8000), web_bridge,
+go2_rl_bridge_node and go2_rl_policy_node (idle until 'RL' is chosen on the
+/rl_sim_to_real page), plus the RealSense height-map perception if a camera is
+on USB. The script takes no positional arguments; everything is configured with
+environment variables, e.g.
+
+  GO2_RECORD=1 GO2_RECORD_NAME=stepfield GO2_CALIBRATE=1 ./RL_start_remote_connection.sh
+  GO2_RL_DRY_RUN=1 ./RL_start_remote_connection.sh      # no torque, safe bench check
+
+Options:
+  -h, --help                 Show this help and exit.
+
+Networking / ROS
+  ROS_DOMAIN_ID=0            DDS domain. Must match the other side.
+  RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+                             ROS middleware.
+  UNITREE_IFACE=<iface>      Network interface to the robot. Default: enP8p1s0 on the
+                             Jetson (hostname unitree*/jetson*/go2*); on a laptop the
+                             interface routing to 192.168.123.161, else enp0s31f6.
+                             Also written into CYCLONEDDS_URI.
+  GO2_WS_DIR=<dir>           Run the RL nodes from a different checkout (the dir that
+                             contains src/go2_remote_controller). Default: this one.
+
+Authentication
+  GO2_AUTH_ENABLED=0|1|true  Require an API token. Default: 0 (off).
+  GO2_TOKEN_FILE=<path>      Token file read when auth is on. Default: ~/go2_token.
+
+RL policy node
+  GO2_RL_POLICY=1|0          Start the RL bridge + policy nodes. Default: 1.
+  GO2_RL_DRY_RUN=0|1         1 = compute obs/actions, publish lowcmd with kp=kd=0
+                             (no torque). Default: 0.
+
+Perception (RealSense D435i -> /go2/height_scan)
+  GO2_PERCEPTION=auto|usb3|usb2|0
+                             auto (default) detects the camera and USB speed; usb3 /
+                             usb2 force that launch; 0 disables perception.
+  GO2_HEIGHT_EMPTY_FILL=-1.0 Value for cells the camera cannot see. Must equal the
+                             policy's deploy.yaml unobserved_value (-1.0 recent
+                             exports, 0.0 older ones). Default: -1.0.
+  GO2_STOP_VIP_REALSENSE=0|1 1 = docker stop the vip-realsense container if it holds
+                             the camera. Default: 0 (perception is skipped instead).
+  GO2_CALIBRATE=0|1|strict   Calibrate the camera mount against the floor at start
+                             (robot still, flat floor ahead). 1 = fall back to the
+                             repo camera.yaml on failure; strict = abort on failure;
+                             0 = skip. Default: 0.
+  GO2_CALIBRATE_MASK_DEG=2.0 Warn when the measured mount differs from the repo
+                             camera.yaml by more than this many degrees. Default: 2.0.
+
+Session recording (writes sessions/<UTC>_<name>/{flight,bag})
+  GO2_RECORD=0|1             Record a flight log + rosbag. Default: 0.
+  GO2_RECORD_NAME=rl         Label appended to the session folder name.
+  GO2_RECORD_TERRAIN=<text>  Terrain label stored in session_metadata.yaml.
+  GO2_RECORD_NOTES=<text>    Free-text notes stored in session_metadata.yaml.
+  GO2_RECORD_DEPTH=0|1       Also bag raw depth/cloud (~14 MB/s; mind the disk).
+  GO2_RECORD_TOPICS="<t1 t2>" Extra topics to add to the bag.
+
+Logs are written to /tmp/ (web_bridge.log, go2_rl_bridge.log, go2_rl_policy.log,
+go2_perception.log, go2_calibrate.log). Stop everything with Ctrl-C.
+EOF
+}
+
+case "${1:-}" in
+  "") ;;
+  -h|--help) usage; exit 0 ;;
+  *) echo "[run_all] Unknown argument: $1 (this script is configured via environment variables)" >&2
+     echo "[run_all] Run with --help to list them." >&2
+     exit 2 ;;
+esac
+
 # If the script is in workspace root:
 if [ -d "$WS_DIR/src/go2_remote_controller" ]; then
   PKG_DIR="$WS_DIR/src/go2_remote_controller"
