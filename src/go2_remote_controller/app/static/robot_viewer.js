@@ -23,6 +23,10 @@ its pose. Two renderings, toggled with setHeightMapMode():
                value (mirror of go2_viz/height_scan_markers.py)
   "columns" -- terrain boxes from min_elevation up to elevation, coloured by
                top height (mirror of go2_viz/terrain_columns.py)
+  "fit"     -- stepfield_map_node's terrace plane fit (/go2/stepfield_fit, also on
+               /ws/height_map): one translucent plane per level, the terrain boxes
+               coloured by the level each cell snapped to, and a caption with the
+               fitted floor, tilt, inliers and residual
 Nothing is drawn until a frame arrives, and everything hides again 1.5 s after
 the last one -- so with no camera / perception running the viewer looks exactly
 as before.
@@ -40,7 +44,10 @@ const URDF_URL = "/app/static/robot_model/go2.urdf";
 const RECONNECT_DELAY_MS = 2000;
 const KEEPALIVE_MS = 10000;
 const HEIGHT_MAP_STALE_MS = 1500;
-const HEIGHT_MAP_MODES = ["cubes", "columns", "off"];
+const HEIGHT_MAP_MODES = ["cubes", "columns", "fit", "off"];
+// Plane-fit colours, by level index: floor slate, then one hue per block height.
+const LEVEL_COLORS = [0x7f8fa6, 0xf0a030, 0xd9534f, 0x3fae5a, 0x8e5bc2, 0x2a9fd6]
+  .map((c) => new THREE.Color(c));
 
 // The URDF's zero-position (all joint angles 0) is legs-extended, not standing --
 // Go2 needs a bent-knee pose to stand. Mirror of q_default in
@@ -193,7 +200,19 @@ function mount(container, opts) {
     cubesKey: "",
     columns: null,       // InstancedMesh, terrain boxes
     columnsKey: "",
+    fit: null,           // last /go2/stepfield_fit frame
+    fitMs: 0,
+    fitPlanes: [],       // one translucent Mesh per level
   };
+
+  // Plane-fit caption, overlaid on the canvas; shown in "fit" mode only.
+  if (getComputedStyle(container).position === "static") container.style.position = "relative";
+  const fitCaption = document.createElement("div");
+  fitCaption.style.cssText =
+    "position:absolute; left:6px; bottom:6px; right:6px; padding:3px 6px; " +
+    "font:11px/1.35 ui-monospace,monospace; color:#1d2733; background:rgba(255,255,255,0.82); " +
+    "border-radius:4px; pointer-events:none; display:none; white-space:pre-wrap;";
+  container.appendChild(fitCaption);
   const dummy = new THREE.Object3D();
   const tmpColor = new THREE.Color();
 
@@ -280,13 +299,15 @@ function mount(container, opts) {
     hm.columnsKey = key;
   }
 
-  function applyGridMap(msg) {
+  function applyGridMap(msg, isRepaint = false) {
     hm.gridMap = msg;
-    hm.lastFrameMs = performance.now();
+    if (!isRepaint) hm.lastFrameMs = performance.now();
     ensureColumns(msg);
     const { num_x, num_y, resolution } = msg;
     const elev = msg.layers?.elevation;
     const minE = msg.layers?.min_elevation;
+    const levels = msg.layers?.level;
+    const byLevel = hm.mode === "fit" && !!levels;
     if (!elev) return;
     const xs = cellAxis(num_x, resolution, msg.pose_x);
     const ys = cellAxis(num_y, resolution, msg.pose_y);
@@ -308,8 +329,13 @@ function mount(container, opts) {
         dummy.scale.set(side, side, hgt);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
-        const t = Math.min(1, Math.max(0, (top - COL_LOW_Z) / (COL_HIGH_Z - COL_LOW_Z)));
-        tmpColor.copy(COL_LOW).lerp(COL_HIGH, t);
+        const lv = levels ? levels[i] : null;
+        if (byLevel && lv !== null && lv !== undefined && Number.isFinite(lv)) {
+          tmpColor.copy(LEVEL_COLORS[Math.min(lv, LEVEL_COLORS.length - 1)]);
+        } else {
+          const t = Math.min(1, Math.max(0, (top - COL_LOW_Z) / (COL_HIGH_Z - COL_LOW_Z)));
+          tmpColor.copy(COL_LOW).lerp(COL_HIGH, t);
+        }
         mesh.setColorAt(i, tmpColor);
       }
     }
@@ -318,14 +344,93 @@ function mount(container, opts) {
     refreshVisibility();
   }
 
+  // Footprint the planes span: the GridMap's when it has arrived, else the scan's.
+  function fitFootprint() {
+    const g = hm.gridMap, sc = hm.scan;
+    if (g) return { cx: g.pose_x, cy: g.pose_y, lx: g.length_x || g.num_x * g.resolution,
+                    ly: g.length_y || g.num_y * g.resolution };
+    if (sc) return { cx: sc.center_x, cy: sc.center_y, lx: sc.num_x * sc.resolution,
+                     ly: sc.num_y * sc.resolution };
+    return null;
+  }
+
+  function disposeFitPlanes() {
+    for (const m of hm.fitPlanes) {
+      terrainGroup.remove(m);
+      m.geometry.dispose();
+      m.material.dispose();
+    }
+    hm.fitPlanes = [];
+  }
+
+  const UP = new THREE.Vector3(0, 0, 1);
+  function applyStepfieldFit(msg) {
+    hm.fit = msg;
+    hm.fitMs = performance.now();
+    const fp = fitFootprint();
+    const heights = msg.heights || [];
+    if (!fp || !heights.length) { refreshVisibility(); return; }
+    if (hm.fitPlanes.length !== heights.length) {
+      disposeFitPlanes();
+      heights.forEach((_, k) => {
+        const mesh = new THREE.Mesh(
+          new THREE.PlaneGeometry(1, 1),
+          new THREE.MeshBasicMaterial({
+            color: LEVEL_COLORS[Math.min(k, LEVEL_COLORS.length - 1)],
+            transparent: true, opacity: k === 0 ? 0.22 : 0.3,
+            side: THREE.DoubleSide, depthWrite: false,
+          }));
+        mesh.frustumCulled = false;
+        mesh.renderOrder = 2;                       // after the opaque boxes
+        terrainGroup.add(mesh);
+        hm.fitPlanes.push(mesh);
+      });
+    }
+    // Level k is the plane n.p = floor + h_k. With assume_level (the node's
+    // default) the published cells treat it as horizontal, so draw it that way;
+    // otherwise draw the fitted tilt.
+    const n = msg.assume_level ? UP : new THREE.Vector3(...msg.normal).normalize();
+    const q = new THREE.Quaternion().setFromUnitVectors(UP, n);
+    heights.forEach((h, k) => {
+      const mesh = hm.fitPlanes[k];
+      const z = (msg.floor_z + h - n.x * fp.cx - n.y * fp.cy) / n.z;
+      mesh.position.set(fp.cx, fp.cy, z);
+      mesh.quaternion.copy(q);
+      mesh.scale.set(fp.lx, fp.ly, 1);
+    });
+    refreshVisibility();
+  }
+
+  function fitCaptionText() {
+    const f = hm.fit;
+    const fresh = f && (performance.now() - hm.fitMs) < HEIGHT_MAP_STALE_MS;
+    if (!fresh) {
+      return f ? "plane fit: no recent fit (fit failing, or the camera stopped)"
+               : "plane fit: no /go2/stepfield_fit (heightmap_node running instead of stepfield_map_node?)";
+    }
+    const cm = f.heights.map((h) => Math.round(h * 1000) / 10).join(" / ");
+    const warn = [];
+    if (f.inlier_fraction < 0.7) warn.push("low inliers: block heights match the course?");
+    if (f.normal_fallback) warn.push("tilt over limit, fell back to level");
+    return `floor ${f.floor_z >= 0 ? "+" : ""}${f.floor_z.toFixed(3)} m · tilt ${f.tilt_deg.toFixed(2)}° · ` +
+      `${Math.round(f.inlier_fraction * 100)}% inliers · rms ${(f.residual_rms * 1000).toFixed(1)} mm\n` +
+      `levels ${cm} cm` + (warn.length ? `  ⚠ ${warn.join("; ")}` : "");
+  }
+
   function refreshVisibility() {
-    const fresh = hm.lastFrameMs > 0 && (performance.now() - hm.lastFrameMs) < HEIGHT_MAP_STALE_MS;
+    const now = performance.now();
+    const fresh = hm.lastFrameMs > 0 && (now - hm.lastFrameMs) < HEIGHT_MAP_STALE_MS;
+    const fitFresh = hm.fitMs > 0 && (now - hm.fitMs) < HEIGHT_MAP_STALE_MS;
     const showCubes = fresh && hm.mode === "cubes" && !!hm.scan;
-    const showCols = fresh && hm.mode === "columns" && !!hm.gridMap;
+    const showCols = fresh && (hm.mode === "columns" || hm.mode === "fit") && !!hm.gridMap;
+    const showPlanes = fitFresh && hm.mode === "fit";
     if (hm.cubesObs) hm.cubesObs.visible = showCubes;
     if (hm.cubesUnobs) hm.cubesUnobs.visible = showCubes;
     if (hm.columns) hm.columns.visible = showCols;
-    terrainGroup.visible = showCubes || showCols;
+    for (const m of hm.fitPlanes) m.visible = showPlanes;
+    terrainGroup.visible = showCubes || showCols || showPlanes;
+    fitCaption.style.display = hm.mode === "fit" ? "block" : "none";
+    if (hm.mode === "fit") fitCaption.textContent = fitCaptionText();
   }
 
   // Hide the tiles when the feed goes quiet (camera unplugged, perception down).
@@ -437,6 +542,7 @@ function mount(container, opts) {
     ? openFeed("/ws/height_map", (msg) => {
         if (msg.t === "height_scan") applyHeightScan(msg);
         else if (msg.t === "grid_map") applyGridMap(msg);
+        else if (msg.t === "stepfield_fit") applyStepfieldFit(msg);
       })
     : null;
 
@@ -444,6 +550,7 @@ function mount(container, opts) {
     setHeightMapMode(mode) {
       if (!HEIGHT_MAP_MODES.includes(mode)) return hm.mode;
       hm.mode = mode;
+      if (hm.gridMap) applyGridMap(hm.gridMap, true);   // recolour: by height or by level
       refreshVisibility();
       return hm.mode;
     },
@@ -454,6 +561,7 @@ function mount(container, opts) {
         fresh: hm.lastFrameMs > 0 && (performance.now() - hm.lastFrameMs) < HEIGHT_MAP_STALE_MS,
         hasScan: !!hm.scan,
         hasGridMap: !!hm.gridMap,
+        stepfieldFit: hm.fit,
         scanInfo: hm.scan ? {
           num_x: hm.scan.num_x, num_y: hm.scan.num_y, resolution: hm.scan.resolution,
           unobserved_count: hm.scan.unobserved_count, unobserved_value: hm.scan.unobserved_value,
@@ -468,6 +576,8 @@ function mount(container, opts) {
       disposeInstanced(hm.cubesObs);
       disposeInstanced(hm.cubesUnobs);
       disposeInstanced(hm.columns);
+      disposeFitPlanes();
+      fitCaption.remove();
       resizeObserver.disconnect();
       renderer.dispose();
       container.dataset.go2ViewerMounted = "0";

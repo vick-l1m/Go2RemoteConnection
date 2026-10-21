@@ -28,7 +28,7 @@ from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage, Image
-from std_msgs.msg import Bool, Float32
+from std_msgs.msg import Bool, Float32, Float32MultiArray
 from std_msgs.msg import String as RosString
 from unitree_go.msg import LowState, SportModeState
 
@@ -203,6 +203,7 @@ RS_DEPTH_TOPIC = "/go2/camera/depth/image_rect_raw"
 RS_COLOR_TOPIC = "/go2/camera/color/image_raw"
 HEIGHT_SCAN_TOPIC = "/go2/height_scan"
 GRID_MAP_TOPIC = "/go2/local_heightmap"
+STEPFIELD_FIT_TOPIC = "/go2/stepfield_fit"   # stepfield_map_node only (go2_perception)
 PREVIEW_MIN_PERIOD_S = 0.1        # JPEG encode cap per stream (10 Hz)
 HEIGHT_MAP_BROADCAST_HZ = 15.0
 
@@ -217,11 +218,13 @@ class PerceptionStore:
     seq_cam: Dict[str, int] = field(default_factory=lambda: {"depth": 0, "color": 0})
     last_height_scan: Optional[Dict[str, Any]] = None
     last_grid_map: Optional[Dict[str, Any]] = None
+    last_stepfield_fit: Optional[Dict[str, Any]] = None
     last_jpg: Dict[str, Optional[Tuple[bytes, Dict[str, Any]]]] = field(
         default_factory=lambda: {"depth": None, "color": None})
     rates: Dict[str, RateMeter] = field(default_factory=lambda: {
         "depth": RateMeter(), "color": RateMeter(),
         "height_scan": RateMeter(), "grid_map": RateMeter(),
+        "stepfield_fit": RateMeter(),
     })
     scan_info: Optional[Dict[str, Any]] = None
 
@@ -253,9 +256,15 @@ def get_perception_status() -> Dict[str, Any]:
         "rates": rates,
         "ages_s": ages,
         "height_scan": st.scan_info,
+        # Latest terrace plane fit while stepfield_map_node publishes one (None under
+        # heightmap_node, or when the fit is failing and nothing is published).
+        "stepfield_fit": ({k: v for k, v in st.last_stepfield_fit.items() if k != "t"}
+                          if st.last_stepfield_fit and st.rates["stepfield_fit"].alive()
+                          else None),
         "topics": {
             "depth": RS_DEPTH_TOPIC, "color": RS_COLOR_TOPIC,
             "height_scan": HEIGHT_SCAN_TOPIC, "grid_map": GRID_MAP_TOPIC,
+            "stepfield_fit": STEPFIELD_FIT_TOPIC,
         },
         "available": {
             "height_scan_msg": HAVE_HEIGHT_SCAN,
@@ -377,7 +386,8 @@ class WebRosBridge(Node):
             depth=1,
         )
         self._rs_last_encode: Dict[str, float] = {"depth": 0.0, "color": 0.0}
-        self._hm_pending: Dict[str, bool] = {"height_scan": False, "grid_map": False}
+        self._hm_pending: Dict[str, bool] = {"height_scan": False, "grid_map": False,
+                                             "stepfield_fit": False}
         self.sub_rs_depth = self.create_subscription(
             Image, rs_depth_topic, lambda m: self._on_rs_image("depth", m), sensor_qos)
         self.sub_rs_color = self.create_subscription(
@@ -395,6 +405,8 @@ class WebRosBridge(Node):
         else:
             self.get_logger().warn(
                 "grid_map_msgs not importable: /go2/local_heightmap columns view disabled")
+        self.sub_stepfield_fit = self.create_subscription(
+            Float32MultiArray, STEPFIELD_FIT_TOPIC, self._on_stepfield_fit, sensor_qos)
         if not HAVE_CV2:
             self.get_logger().warn("cv2 not importable: RealSense image preview disabled")
         self.create_timer(1.0 / HEIGHT_MAP_BROADCAST_HZ, self._broadcast_height_map)
@@ -854,7 +866,9 @@ class WebRosBridge(Node):
             "pose_y": float(msg.info.pose.position.y),
             "layers": {},
         }
-        for name in ("elevation", "min_elevation"):
+        # "level" (stepfield_map_node only): each cell's terrace index, for the
+        # viewer's plane-fit colouring.
+        for name in ("elevation", "min_elevation", "level"):
             if name in layers:
                 try:
                     out["layers"][name] = unpack_grid_map_layer(
@@ -866,6 +880,31 @@ class WebRosBridge(Node):
         store.last_grid_map = out
         self._hm_pending["grid_map"] = True
 
+    def _on_stepfield_fit(self, msg):
+        """stepfield_map_node's fit summary; layout in its module docstring. The level
+        heights (index 12 on) were appended later, so older publishers fall back to
+        the uniform ``k * step`` levels up to max_level_seen."""
+        d = [float(v) for v in msg.data]
+        if len(d) < 10:
+            return
+        store = get_perception_store()
+        store.rates["stepfield_fit"].tick()
+        if len(d) >= 12 and len(d) >= 12 + int(d[11]):
+            heights = d[12:12 + int(d[11])]
+        else:
+            heights = [k * d[5] for k in range(max(1, int(d[8])) + 1)]
+        store.last_stepfield_fit = {
+            "t": "stepfield_fit",
+            "floor_z": round(d[0], 4), "tilt_deg": round(d[1], 3),
+            "normal": [round(v, 5) for v in d[2:5]],
+            "step": round(d[5], 4),
+            "inlier_fraction": round(d[6], 3), "residual_rms": round(d[7], 4),
+            "max_level_seen": int(d[8]), "normal_fallback": bool(d[9]),
+            "assume_level": bool(d[10]) if len(d) > 10 else True,
+            "heights": [round(h, 4) for h in heights],
+        }
+        self._hm_pending["stepfield_fit"] = True
+
     def _broadcast_height_map(self):
         store = get_perception_store()
         msgs = []
@@ -875,6 +914,9 @@ class WebRosBridge(Node):
         if self._hm_pending["grid_map"] and store.last_grid_map:
             self._hm_pending["grid_map"] = False
             msgs.append(store.last_grid_map)
+        if self._hm_pending["stepfield_fit"] and store.last_stepfield_fit:
+            self._hm_pending["stepfield_fit"] = False
+            msgs.append(store.last_stepfield_fit)
         if not msgs or not store.height_clients:
             return
 

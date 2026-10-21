@@ -289,11 +289,52 @@ echo "[run_all] Using VENV_PYTHON=$VENV_PYTHON"
 #                                 selected policy's deploy.yaml unobserved_value (-1.0
 #                                 for recent exports, 0.0 for older ones); the policy
 #                                 node logs a mismatch but runs anyway.
+#   GO2_HEIGHTMAP_MODE=stepfield  (default) stepfield_map_node: terrace plane fit, every
+#                                 cell snapped to floor + k * step of the preset. Same
+#                                 /go2/height_scan contract, so every policy runs on it.
+#                       voxel     heightmap_node: max z per cell, continuous (old default).
+#   GO2_STEPFIELD_PRESET=lab_blocks  stepfield only, MUST match the course: lab_blocks
+#                                 (10 cm), half_cubic (15/30 cm), full_cubic (30 cm). A
+#                                 wrong step snaps block tops to the wrong height; watch
+#                                 the inlier fraction on /go2/stepfield_fit.
+#   GO2_BLOCK_HEIGHTS_CM=         stepfield only: the course's block-top heights in CM
+#                                 above the floor, replacing GO2_STEPFIELD_PRESET.
+#                                   GO2_BLOCK_HEIGHTS_CM=11      all blocks 11 cm
+#                                   GO2_BLOCK_HEIGHTS_CM=10,15   10 cm and 15 cm blocks
+#                                   GO2_BLOCK_HEIGHTS_CM=10,20   10 cm blocks, some stacked
+#                                 Every top the course has must be listed: an unlisted
+#                                 height is rejected as clutter and reads as unseen.
 GO2_PERCEPTION="${GO2_PERCEPTION:-auto}"
 GO2_HEIGHT_EMPTY_FILL="${GO2_HEIGHT_EMPTY_FILL:--1.0}"
+GO2_HEIGHTMAP_MODE="${GO2_HEIGHTMAP_MODE:-stepfield}"
+GO2_STEPFIELD_PRESET="${GO2_STEPFIELD_PRESET:-lab_blocks}"
+GO2_BLOCK_HEIGHTS_CM="${GO2_BLOCK_HEIGHTS_CM:-}"
+BLOCK_HEIGHTS_M=""
+if [ -n "$GO2_BLOCK_HEIGHTS_CM" ]; then
+  if ! BLOCK_HEIGHTS_M="$(python3 -c '
+import sys
+cm = [float(v) for v in sys.argv[1].replace(" ", "").split(",") if v]
+assert cm and all(0 < v <= 100 for v in cm)
+print(",".join(f"{v / 100:.4f}" for v in sorted(set(cm))))' "$GO2_BLOCK_HEIGHTS_CM" 2>/dev/null)"; then
+    echo "[run_all] ❌ GO2_BLOCK_HEIGHTS_CM='$GO2_BLOCK_HEIGHTS_CM' is not a comma-separated list of heights in cm (e.g. 10 or 10,15)."
+    exit 1
+  fi
+fi
+case "$GO2_HEIGHTMAP_MODE" in
+  stepfield) HEIGHTMAP_EXE="stepfield_map_node"; HEIGHTMAP_EXTRA=(-p terrain_preset:="$GO2_STEPFIELD_PRESET") ;;
+  voxel)     HEIGHTMAP_EXE="heightmap_node";     HEIGHTMAP_EXTRA=() ;;
+  *) echo "[run_all] ⚠️  Unknown GO2_HEIGHTMAP_MODE='$GO2_HEIGHTMAP_MODE' (stepfield|voxel); using stepfield."
+     GO2_HEIGHTMAP_MODE="stepfield"; HEIGHTMAP_EXE="stepfield_map_node"; HEIGHTMAP_EXTRA=(-p terrain_preset:="$GO2_STEPFIELD_PRESET") ;;
+esac
+if [ "$HEIGHTMAP_EXE" = "stepfield_map_node" ] && [ -n "$BLOCK_HEIGHTS_M" ]; then
+  HEIGHTMAP_EXTRA+=(-p "block_heights:=$BLOCK_HEIGHTS_M")
+  STEPFIELD_DESC="blocks ${GO2_BLOCK_HEIGHTS_CM} cm"
+else
+  STEPFIELD_DESC="$GO2_STEPFIELD_PRESET"
+fi
 # Mount calibration before the scan is built (2026-10-15: the bracket had moved 10.6 deg
 # since its last calibration and a whole day of stepfield runs fed the policy a tilted
-# floor). With GO2_CALIBRATE=1 (default) RL_start brings up the RealSense DRIVER ONLY,
+# floor). Off by default; with GO2_CALIBRATE=1 RL_start brings up the RealSense DRIVER ONLY,
 # runs go2_perception's calibrate_camera_mount against the floor the robot is standing on
 # (robot STILL, flat clear floor ahead, ~8 s), writes the measured pitch/roll/z into a LIVE
 # copy of camera.yaml (sessions/camera_live.yaml; the repo file is never touched on the
@@ -301,11 +342,12 @@ GO2_HEIGHT_EMPTY_FILL="${GO2_HEIGHT_EMPTY_FILL:--1.0}"
 #   GO2_CALIBRATE=1       calibrate; on a failed fit (no floor, feet uneven, no /lowstate)
 #                         warn and fall back to the repo camera.yaml
 #   GO2_CALIBRATE=strict  same, but a failed fit aborts RL_start
-#   GO2_CALIBRATE=0       skip (bench, or the robot is not on a flat floor at start)
+#   GO2_CALIBRATE=0       skip (default; bench, or the robot is not on a flat floor at start)
+#                         -- uses the repo camera.yaml as-is
 # If the measured mount differs from the repo yaml by more than GO2_CALIBRATE_MASK_DEG the
 # training-side FOV mask (built from the repo yaml on the PC) no longer matches what the
 # camera sees; the script says so and prints the values to commit.
-GO2_CALIBRATE="${GO2_CALIBRATE:-1}"
+GO2_CALIBRATE="${GO2_CALIBRATE:-0}"
 GO2_CALIBRATE_MASK_DEG="${GO2_CALIBRATE_MASK_DEG:-2.0}"
 CALIBRATE_LOG="/tmp/go2_calibrate.log"
 CAMERA_YAML_USED=""          # the yaml the mount TF + heightmap_node actually run on
@@ -374,7 +416,7 @@ CAMERA_YAML=""
 start_heightmap_only() {
   local usb="$1" mode tf_vals
   if [ "$usb" = "3" ]; then mode="pointcloud"; else mode="depth_image"; fi
-  echo "[run_all] Starting mount TF + heightmap_node on the running RealSense driver (input_mode=$mode, mount from $CAMERA_YAML)"
+  echo "[run_all] Starting mount TF + $HEIGHTMAP_EXE on the running RealSense driver (input_mode=$mode, mount from $CAMERA_YAML)"
   tf_vals="$(python3 - "$CAMERA_YAML" <<'PY' 2>/dev/null || true
 import math, sys, yaml
 c = (yaml.safe_load(open(sys.argv[1])) or {}).get("camera", {})
@@ -396,7 +438,8 @@ PY
   else
     echo "[run_all] ⚠️  Could not read $CAMERA_YAML for the mount TF; heightmap_node will wait on TF."
   fi
-  ros2 run go2_perception heightmap_node --ros-args \
+  ros2 run go2_perception "$HEIGHTMAP_EXE" --ros-args \
+    "${HEIGHTMAP_EXTRA[@]}" \
     -p input_mode:="$mode" \
     -p pointcloud_topic:=/go2/camera/depth/color/points \
     -p depth_topic:=/go2/camera/depth/image_rect_raw \
@@ -404,10 +447,10 @@ PY
     -p base_frame:=base -p size_x:=1.6 -p size_y:=1.0 -p resolution:=0.1 -p center_x:=0.6 \
     -p empty_fill:="$GO2_HEIGHT_EMPTY_FILL" -p gridmap_every_n:=3 \
     > "$PERCEPTION_LOG" 2>&1 &
-  register_pid "$!" "heightmap_node" "$PERCEPTION_LOG" 0
+  register_pid "$!" "$HEIGHTMAP_EXE" "$PERCEPTION_LOG" 0
   PERCEPTION_STARTED=1
   sleep 2.0
-  warn_if_dead "heightmap_node" "$!" "$PERCEPTION_LOG" || true
+  warn_if_dead "$HEIGHTMAP_EXE" "$!" "$PERCEPTION_LOG" || true
 }
 
 # start_perception <usb 2|3> [heightmap true|false]: the perception launch. With
@@ -420,10 +463,11 @@ start_perception() {
   else
     launch_file="real_perception_usb2.launch.py"
   fi
-  echo "[run_all] Launching $launch_file (heightmap=$heightmap, empty_fill=$GO2_HEIGHT_EMPTY_FILL -- must match the policy's unobserved_value)"
+  echo "[run_all] Launching $launch_file (heightmap=$heightmap, mode=$GO2_HEIGHTMAP_MODE$([ "$GO2_HEIGHTMAP_MODE" = "stepfield" ] && echo "/$STEPFIELD_DESC"), empty_fill=$GO2_HEIGHT_EMPTY_FILL -- must match the policy's unobserved_value)"
   ros2 launch "$PERCEPTION_LAUNCH_DIR/$launch_file" \
     camera_config:="$CAMERA_YAML" rviz:=false empty_fill:="$GO2_HEIGHT_EMPTY_FILL" \
-    heightmap:="$heightmap" \
+    heightmap:="$heightmap" heightmap_mode:="$GO2_HEIGHTMAP_MODE" \
+    stepfield_preset:="$GO2_STEPFIELD_PRESET" block_heights:="$BLOCK_HEIGHTS_M" \
     > "$PERCEPTION_LOG" 2>&1 &
   local pid=$!
   register_pid "$pid" "perception (realsense USB $usb$([ "$heightmap" = "true" ] && echo ' + heightmap'))" "$PERCEPTION_LOG" 0
@@ -546,6 +590,9 @@ else
   elif realsense_driver_running; then
     if height_scan_flowing; then
       echo "[run_all] Perception already running (driver + /go2/height_scan) -- reusing it."
+      if ! timeout 10 ros2 node list 2>/dev/null | grep -q "/$HEIGHTMAP_EXE\$"; then
+        echo "[run_all] ⚠️  The running height map is not $HEIGHTMAP_EXE (GO2_HEIGHTMAP_MODE=$GO2_HEIGHTMAP_MODE). Stop that perception stack and rerun RL_start to switch."
+      fi
       CAMERA_YAML_USED="$([ -f "$WS_DIR/sessions/camera_live.yaml" ] && echo "$WS_DIR/sessions/camera_live.yaml" || echo "$CAMERA_YAML")"
       if [ "$GO2_CALIBRATE" != "0" ]; then
         # Cannot swap the TF under a running heightmap_node; check the mount instead and
@@ -625,6 +672,9 @@ session:
   git_sha_workspace: "$(git -C "$WS_DIR/.." rev-parse --short HEAD 2>/dev/null || echo unknown)"
   perception_usb: "${PERCEPTION_USB:-}"
   calibrate: "${GO2_CALIBRATE}"
+  heightmap_mode: "${GO2_HEIGHTMAP_MODE}"
+  stepfield_preset: "${GO2_STEPFIELD_PRESET}"
+  block_heights_cm: "${GO2_BLOCK_HEIGHTS_CM}"
   camera_yaml_used: "${CAMERA_YAML_USED:-$CAMERA_YAML}"
 layout:
   bag: bag/                 # rosbag2 of the topics below

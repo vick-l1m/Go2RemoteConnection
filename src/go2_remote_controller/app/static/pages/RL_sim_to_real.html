@@ -135,7 +135,7 @@ Author: Victor Lim
     function setHeightMapMode(mode) {
       const viewer = window.go2Viewer;
       hmMode = viewer ? viewer.setHeightMapMode(mode) : mode;
-      for (const m of ["cubes", "columns", "off"]) {
+      for (const m of ["cubes", "columns", "fit", "off"]) {
         const btn = document.getElementById(`hmMode_${m}`);
         if (btn) btn.classList.toggle("toggleOn", m === hmMode);
       }
@@ -588,6 +588,8 @@ Author: Victor Lim
                     title="The policy's 17x11 /go2/height_scan observation (blue low value, red high)">Policy cells</button>
             <button id="hmMode_columns" onclick="setHeightMapMode('columns')"
                     title="/go2/local_heightmap terrain columns (min_elevation to elevation)">Terrain</button>
+            <button id="hmMode_fit" onclick="setHeightMapMode('fit')"
+                    title="stepfield_map_node's plane fit (/go2/stepfield_fit): one plane per block height, cells coloured by the level they snapped to">Plane fit</button>
             <button id="hmMode_off" onclick="setHeightMapMode('off')">Off</button>
           </span>
         </h2>
