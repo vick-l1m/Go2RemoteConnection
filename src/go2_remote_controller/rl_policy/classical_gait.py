@@ -104,6 +104,8 @@ class GaitParams:
     cmd_accel: float = 3.0
     act_speed: float = 0.08
     act_tau: float = 0.15
+    cmd_deadband: float = 0.05
+    err_deadband: float = 0.25
     k_h: float = 0.0
     ground_swing: float = 0.0
     h_corr_max: float = 0.08
@@ -254,7 +256,8 @@ class ClassicalGait:
         p = self.p
         command = np.asarray(command, dtype=float)
 
-        # 1. Rate-limited velocity reference.
+        # 1. Deadbanded, rate-limited velocity reference.
+        command = np.where(np.abs(command) < p.cmd_deadband, 0.0, command)
         step_max = p.cmd_accel * dt
         self.v_ref = self.v_ref + np.clip(command - self.v_ref, -step_max, step_max)
         v_xy, wz = self.v_ref[:2], self.v_ref[2]
@@ -285,7 +288,8 @@ class ClassicalGait:
 
         # 3. Stepping activity.
         speed = np.linalg.norm(v_xy) + 0.25 * abs(wz)
-        drive = speed + float(p.k_vel > 0) * np.linalg.norm(err)
+        disturbed = max(np.linalg.norm(err) - p.err_deadband, 0.0)
+        drive = speed + float(p.k_vel > 0) * disturbed
         target = min(max(drive / p.act_speed, 0.0), 1.0)
         alpha = min(max(dt / p.act_tau, 0.0), 1.0)
         self.activity += alpha * (target - self.activity)

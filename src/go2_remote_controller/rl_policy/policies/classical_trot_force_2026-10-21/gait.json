@@ -8,8 +8,8 @@
     "tests: in sim (randomised robot, no pushes) forward/turn are solid, sideways and",
     "backward are the weak directions."
   ],
-  "source": "training/go2_training/classical/tuned/candidates/trot_force_v2.json",
-  "tuned": "2026-10-21T17:29:21",
+  "source": "training/go2_training/classical/tuned/candidates/trot_force_v3.json",
+  "tuned": "2026-10-21T18:02:35",
   "gait": "trot",
   "kp": 25.0,
   "kd": 0.5,
@@ -26,27 +26,28 @@
     ]
   ],
   "params": {
-    "freq": 2.851,
-    "freq_gain": 0.108,
-    "duty": 0.601,
-    "swing_height": 0.0898,
-    "height": 0.3074,
-    "foot_x": -0.0179,
-    "foot_y": 0.1326,
-    "k_att": 0.0744,
-    "ff_mass": 12.0234,
-    "f_kv": 4.292,
-    "f_kh": 41.2757,
-    "f_att_kp": 60.0522,
-    "f_att_kd": 3.2605,
-    "com_x": 0.0402,
-    "k_vel": 0.0499,
-    "k_wz": 0.163,
-    "ground_swing": 0.0938,
-    "k_h": 0.3805
+    "freq": 3.2499,
+    "freq_gain": 0.2571,
+    "duty": 0.654,
+    "swing_height": 0.1152,
+    "height": 0.2634,
+    "foot_x": -0.0002,
+    "foot_y": 0.1367,
+    "k_att": 0.0347,
+    "ff_mass": 10.5681,
+    "f_kv": 4.3808,
+    "f_kh": 38.7917,
+    "f_att_kp": 65.3539,
+    "f_att_kd": 3.9104,
+    "com_x": 0.0478,
+    "k_vel": 0.0582,
+    "k_wz": 0.1791,
+    "ground_swing": 0.2316,
+    "k_h": 0.0617
   },
   "sim_eval": {
-    "nominal_full_sweep": "0 falls / 32 envs / 40 s; steady err fwd 0.5 0.08 m/s, fwd 1.0 0.05, strafe 0.14, turn 0.09 rad/s, tilt ~1 deg",
-    "dr_no_push_full_sweep": "90 falls / 64 envs / 40 s: fwd 0-3, back 12, strafe L 18, strafe R 45, rest 12"
+    "nominal_full_sweep": "0 falls / 32 envs / 40 s; steady err fwd 0.5 0.14 m/s, fwd 1.0 0.10, back 0.27, strafe 0.21, turn 0.09 rad/s, tilt <= 2 deg",
+    "dr_no_push_full_sweep": "7 falls / 64 envs / 40 s (v2: 64): fwd 1.0 4, back 2, strafe 0, rest 1",
+    "dr_with_pushes_tuner": "mean-candidate fall rate 25-56% per 12 s under 1.5 m/s shoves every 3-8 s"
   }
 }
