@@ -433,6 +433,16 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_progressive_lane_omni_cap8_gait_2026-10-21/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_percept_student_2026-10-22",
+      "name": "Percept student v2 (2026-10-22_06-58-56)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_percept_student \u00b7 2026-10-22_06-58-56 (4000 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_percept_student_2026-10-22/policy.onnx"
     }
   ]
 }
