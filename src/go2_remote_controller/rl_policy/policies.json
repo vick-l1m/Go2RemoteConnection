@@ -423,6 +423,16 @@
       "runnable": true,
       "group": "Classical",
       "path": "policies/classical_trot_force_2026-10-21/gait.json"
+    },
+    {
+      "id": "unitree_go2_progressive_lane_omni_cap8_gait_2026-10-21",
+      "name": "Omni cap8 gait (lift cap + L/R symmetry)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_progressive_lane_omni_cap8_gait \u00b7 2026-10-21_18-11-54 (4000 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_progressive_lane_omni_cap8_gait_2026-10-21/policy.onnx"
     }
   ]
 }
