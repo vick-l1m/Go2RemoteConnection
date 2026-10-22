@@ -8,8 +8,8 @@
     "tests: in sim (randomised robot, no pushes) forward/turn are solid, sideways and",
     "backward are the weak directions."
   ],
-  "source": "training/go2_training/classical/tuned/candidates/trot_force_v3.json",
-  "tuned": "2026-10-21T18:02:35",
+  "source": "training/go2_training/classical/tuned/candidates/trot_recorded_box_v2.json",
+  "tuned": "2026-10-21T22:21:06",
   "gait": "trot",
   "kp": 25.0,
   "kd": 0.5,
@@ -26,28 +26,52 @@
     ]
   ],
   "params": {
-    "freq": 3.2499,
-    "freq_gain": 0.2571,
-    "duty": 0.654,
-    "swing_height": 0.1152,
-    "height": 0.2634,
-    "foot_x": -0.0002,
-    "foot_y": 0.1367,
-    "k_att": 0.0347,
-    "ff_mass": 10.5681,
-    "f_kv": 4.3808,
-    "f_kh": 38.7917,
-    "f_att_kp": 65.3539,
-    "f_att_kd": 3.9104,
-    "com_x": 0.0478,
-    "k_vel": 0.0582,
-    "k_wz": 0.1791,
-    "ground_swing": 0.2316,
-    "k_h": 0.0617
+    "freq": 2.2075,
+    "freq_gain": 0.8632,
+    "duty": 0.5878,
+    "swing_height": 0.0751,
+    "height": 0.3093,
+    "foot_x": -0.0238,
+    "foot_y": 0.1129,
+    "k_att": 0.0257,
+    "ff_mass": 11.06,
+    "f_kv": 2.7468,
+    "f_kh": 42.749,
+    "f_att_kp": 70.2929,
+    "f_att_kd": 4.0078,
+    "com_x": 0.046,
+    "k_vel": 0.0299,
+    "k_wz": 0.2265,
+    "ground_swing": 0.1111,
+    "k_h": 0.4941
   },
   "sim_eval": {
-    "nominal_full_sweep": "0 falls / 32 envs / 40 s; steady err fwd 0.5 0.14 m/s, fwd 1.0 0.10, back 0.27, strafe 0.21, turn 0.09 rad/s, tilt <= 2 deg",
-    "dr_no_push_full_sweep": "7 falls / 64 envs / 40 s (v2: 64): fwd 1.0 4, back 2, strafe 0, rest 1",
-    "dr_with_pushes_tuner": "mean-candidate fall rate 25-56% per 12 s under 1.5 m/s shoves every 3-8 s"
+    "robot_box_sweep_nominal": "0 falls / 64 envs / 44 s; steady err 0.12-0.17 m/s, tilt 1-2 deg, stands 0.33 m",
+    "robot_box_sweep_dr_no_push": "28 falls / 64 envs / 44 s: stand+forward 0, back 6, strafe 14, turn 7",
+    "tuned_for": "randomised robot, no shoves, this command box (x -0.3..0.8, y +-0.3, yaw +-1)"
+  },
+  "shape_vs_recording": {
+    "recorded_real_robot": {
+      "height": 0.311,
+      "foot_y": 0.081,
+      "freq": "1.27+0.97*v",
+      "swing_height": 0.064,
+      "duty": "~0.50"
+    },
+    "this_gait": {
+      "height": 0.3093,
+      "foot_y": 0.1129,
+      "freq": 2.2075,
+      "freq_gain": 0.8632,
+      "swing_height": 0.0751,
+      "duty": 0.5878
+    },
+    "previous_v3": {
+      "height": 0.263,
+      "foot_y": 0.137,
+      "freq": "3.25+0.26*v",
+      "swing_height": 0.115,
+      "duty": 0.654
+    }
   }
 }
