@@ -110,6 +110,24 @@ class GaitParams:
     ground_swing: float = 0.0
     h_corr_max: float = 0.08
     force_mode: float = 1.0
+    stance_mode: float = 0.0
+    mpc_dt: float = 0.03
+    mpc_mass: float = 15.0
+    mpc_ixx: float = 0.17
+    mpc_iyy: float = 0.48
+    mpc_izz: float = 0.52
+    q_rp: float = 25.0
+    q_yaw: float = 5.0
+    q_z: float = 50.0
+    q_pxy: float = 0.0
+    q_w: float = 1.0
+    q_wz: float = 1.0
+    q_vxy: float = 5.0
+    q_vz: float = 1.0
+    mpc_r: float = 1e-4
+    mpc_fmax: float = 150.0
+    mpc_integral: float = 1.0
+    mpc_torque_aware: float = 1.0
     f_kv: float = 3.0
     f_amax: float = 3.0
     f_kh: float = 60.0
@@ -147,10 +165,112 @@ def _rotate(v: np.ndarray, axis: np.ndarray, angle: float) -> np.ndarray:
     return v * c + np.cross(np.broadcast_to(axis, v.shape), v) * s + axis * (v @ axis)[:, None] * (1.0 - c)
 
 
+# --- convex MPC (training/go2_training/classical/mpc.py, one robot) -----------------
+def _rot_z(psi):
+    c, s = np.cos(psi), np.sin(psi)
+    out = np.zeros(np.shape(psi) + (3, 3))
+    out[..., 0, 0], out[..., 0, 1], out[..., 1, 0], out[..., 1, 1], out[..., 2, 2] = c, -s, s, c, 1.0
+    return out
+
+
+def _skew(r):
+    x, y, z = r[..., 0], r[..., 1], r[..., 2]
+    out = np.zeros(r.shape[:-1] + (3, 3))
+    out[..., 0, 1], out[..., 0, 2] = -z, y
+    out[..., 1, 0], out[..., 1, 2] = z, -x
+    out[..., 2, 0], out[..., 2, 1] = -y, x
+    return out
+
+
+def _cone(u, mu):
+    fx, fy, fz = u[..., 0], u[..., 1], u[..., 2]
+    return np.stack((fx - mu * fz, -fx - mu * fz, fy - mu * fz, -fy - mu * fz, fz), axis=-1)
+
+
+def _cone_t(w, mu):
+    return np.stack((w[..., 0] - w[..., 1], w[..., 2] - w[..., 3],
+                     -mu * (w[..., 0] + w[..., 1] + w[..., 2] + w[..., 3]) + w[..., 4]), axis=-1)
+
+
+class ConvexMPC:
+    """Single-robot twin of the torch ConvexMPC (same model, cost and ADMM iteration)."""
+
+    def __init__(self, horizon=10, iters=40):
+        self.N, self.iters = horizon, iters
+        self.reset()
+
+    def reset(self):
+        self.u = np.zeros((self.N, 4, 3))
+        self.z = np.zeros((self.N, 4, 5))
+        self.y = np.zeros((self.N, 4, 5))
+
+    def solve(self, x0, xref, r, contact, psi, dt, mass, inertia, q, r_force, mu, f_max, dist=None):
+        N = self.N
+        A = np.eye(13)
+        A[0:3, 6:9] = np.eye(3) * dt
+        A[3:6, 9:12] = np.eye(3) * dt
+        A[11, 12] = -dt
+        Rz = _rot_z(psi)
+        i_inv_w = Rz @ np.diag(1.0 / inertia)[None] @ np.swapaxes(Rz, -1, -2)
+        Bk = np.zeros((N, 13, 12))
+        for i in range(4):
+            Bk[:, 6:9, 3 * i:3 * i + 3] = (i_inv_w @ _skew(r[:, i])) * dt
+            Bk[:, 9:12, 3 * i:3 * i + 3] = np.eye(3) * (dt / mass)
+        powers = [np.eye(13)]
+        for _ in range(N):
+            powers.append(A @ powers[-1])
+        Sx = np.concatenate(powers[1:], axis=0)
+        Su = np.zeros((N * 13, N * 12))
+        for k in range(N):
+            for j in range(k + 1):
+                Su[k * 13:(k + 1) * 13, j * 12:(j + 1) * 12] = powers[k - j] @ Bk[j]
+        qbar = np.tile(q, N)
+        s = mass * 9.81 / 4.0
+        SuQ = Su.T * qbar[None, :]
+        H = (SuQ @ Su) * s * s + np.eye(N * 12) * (r_force * s * s)
+        err = Sx @ x0 - xref.reshape(-1)
+        if dist is not None:
+            acc = dist
+            sd = [acc]
+            for _ in range(N - 1):
+                acc = A @ acc + dist
+                sd.append(acc)
+            err = err + np.concatenate(sd)
+        g = (SuQ @ err) * s
+        n_c = np.maximum(contact.sum(-1, keepdims=True), 1.0)
+        u_ref = np.zeros((N, 4, 3))
+        u_ref[..., 2] = contact * (mass * 9.81 / s) / n_c
+        g = g - r_force * s * s * u_ref.reshape(-1)
+        rho = max(0.1 * np.diag(H).mean(), 1e-4)
+        sigma = 1e-6
+        ctc = np.tile(np.array([2.0, 2.0, 4.0 * mu * mu + 1.0]), N * 4)
+        K_inv = np.linalg.inv(H + np.diag(sigma + rho * ctc))
+        lo = np.full((N, 4, 5), -1e9)
+        lo[..., 4] = 0.0
+        hi = np.zeros((N, 4, 5))
+        hi[..., 4] = contact * (np.broadcast_to(f_max, (4,)) / s)[None, :]
+        u = np.concatenate((self.u[1:], self.u[-1:]))
+        z = np.concatenate((self.z[1:], self.z[-1:]))
+        y = np.concatenate((self.y[1:], self.y[-1:]))
+        alpha = 1.6
+        for _ in range(self.iters):
+            rhs = sigma * u.reshape(-1) - g + _cone_t(rho * z - y, mu).reshape(-1)
+            ut = (K_inv @ rhs).reshape(N, 4, 3)
+            zt = _cone(ut, mu)
+            u = alpha * ut + (1.0 - alpha) * u
+            zr = alpha * zt + (1.0 - alpha) * z
+            z_new = np.minimum(np.maximum(zr + y / rho, lo), hi)
+            y = y + rho * (zr - z_new)
+            z = z_new
+        self.u, self.z, self.y = u, z, y
+        return u[0] * s
+
+
 class ClassicalGait:
     """One robot's classical gait. ``step()`` every control tick."""
 
-    def __init__(self, params: GaitParams | dict | None = None, gait: str = "trot"):
+    def __init__(self, params: GaitParams | dict | None = None, gait: str = "trot",
+                 mpc_horizon: int = 10, mpc_iters: int = 40):
         if gait not in GAITS:
             raise ValueError(f"Unknown gait {gait!r}; choose from {sorted(GAITS)}")
         if isinstance(params, dict):
@@ -161,6 +281,7 @@ class ClassicalGait:
         self.p = params or GaitParams()
         self.gait = gait
         self.offsets = np.asarray(GAITS[gait], dtype=float)
+        self.mpc = ConvexMPC(mpc_horizon, mpc_iters)
         self.reset()
 
     @classmethod
@@ -187,6 +308,8 @@ class ClassicalGait:
         self.tau_ff = np.zeros((4, 3))
         self.att_int = np.zeros(2)
         self.h_int = 0.0
+        if hasattr(self, "mpc"):
+            self.mpc.reset()
         nominal = self.nominal_feet()
         self.p_td = nominal.copy()
         self.p_lo = nominal.copy()
@@ -238,6 +361,67 @@ class ClassicalGait:
         ft = ft * np.minimum(p.mu * fn / ft_norm, 1.0)[:, None]
         f = fn[:, None] * up[None, :] + ft
         tau = -(np.swapaxes(jacobian(joint_pos), -1, -2) @ f[..., None])[..., 0]
+        return np.clip(tau, -p.tau_max, p.tau_max)
+
+    def _mpc_forces(self, share, v_xy, wz, freq, foothold, projected_gravity, joint_pos, ang_vel_b) -> np.ndarray:
+        """Convex-MPC stance torques (4, 3); see the torch controller's ``_mpc_forces``."""
+        p = self.p
+        N, dt = self.mpc.N, p.mpc_dt
+        gb = np.asarray(projected_gravity, dtype=float)
+        gb = gb / np.linalg.norm(gb)
+        roll = math.atan2(-gb[1], -gb[2])
+        pitch = math.asin(min(max(gb[0], -1.0), 1.0))
+        cr, sr, cp, sp = math.cos(roll), math.sin(roll), math.cos(pitch), math.sin(pitch)
+        Rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
+        Ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
+        R = Ry @ Rx
+        com_b = np.array([p.com_x, 0.0, 0.0])
+        r_now = (forward_kinematics(joint_pos) + HIP - com_b) @ R.T
+        x0 = np.zeros(13)
+        x0[0], x0[1] = roll, pitch
+        x0[5] = -self.ground
+        x0[6:9] = R @ np.asarray(ang_vel_b, dtype=float)
+        x0[9:11] = (R @ np.array([self.v_est[0], self.v_est[1], 0.0]))[:2]
+        x0[11] = self.h_dot
+        x0[12] = 9.81
+        k = np.arange(N, dtype=float)
+        psi = wz * dt * (k + 1.0)
+        psi_start = wz * dt * k
+        v3 = np.array([v_xy[0], v_xy[1], 0.0])
+        v_ref = _rot_z(psi_start) @ v3
+        d = np.cumsum(v_ref * dt, axis=0)
+        d_start = d - v_ref * dt
+        xref = np.zeros((N, 13))
+        xref[:, 2] = psi
+        xref[:, 3:5] = d[:, :2]
+        xref[:, 5] = p.height
+        xref[:, 8] = wz
+        xref[:, 9:12] = _rot_z(psi) @ v3
+        xref[:, 12] = 9.81
+        lp = np.remainder(self.phase + freq * dt * k[:, None] + self.offsets[None, :], 1.0)
+        contact = (lp < p.duty).astype(float)
+        if self.activity < 0.5:
+            contact = np.ones_like(contact)
+        planted_now = (share > 1e-3).astype(float)
+        stay = np.cumprod(contact, axis=0) * planted_now[None, :]
+        r_fixed = r_now[None] - d_start[:, None, :]
+        fh = np.concatenate((foothold, np.full((4, 1), -p.height)), axis=-1) + HIP - com_b
+        r_plan = np.einsum("kij,fj->kfi", _rot_z(psi_start), fh)
+        r = np.where(stay[..., None] > 0.5, r_fixed, r_plan)
+        J = jacobian(joint_pos)
+        jz = np.maximum(np.abs(J[:, 2, :]).max(-1), 1e-3)
+        f_cap = np.minimum(p.mpc_fmax, p.tau_max / jz) if p.mpc_torque_aware > 0.5 else np.full(4, p.mpc_fmax)
+        q = np.array([p.q_rp, p.q_rp, p.q_yaw, p.q_pxy, p.q_pxy, p.q_z, p.q_w, p.q_w, p.q_wz,
+                      p.q_vxy, p.q_vxy, p.q_vz, 0.0])
+        inertia = np.array([p.mpc_ixx, p.mpc_iyy, p.mpc_izz])
+        dist = np.zeros(13)
+        dist[6:8] = -self.att_int / inertia[:2] * dt
+        dist[11] = -self.h_int * dt
+        dist = dist * p.mpc_integral
+        f_w = self.mpc.solve(x0, xref, r, contact, psi, dt, p.mpc_mass, inertia, q, p.mpc_r, p.mu, f_cap, dist=dist)
+        f_w = f_w * contact[0][:, None]
+        f_b = f_w @ R
+        tau = -(np.swapaxes(J, -1, -2) @ f_b[..., None])[..., 0]
         return np.clip(tau, -p.tau_max, p.tau_max)
 
     # --------------------------------------------------------------------- step
@@ -370,7 +554,11 @@ class ClassicalGait:
         forced = p.force_mode > 0.5
         have = projected_gravity is not None and joint_pos is not None and joint_vel is not None and ang_vel_b is not None
         if have and forced:
+            # Always run the reactive stance: it advances the attitude/height integrators,
+            # which the MPC uses as its disturbance estimate (as the torch controller does).
             self.tau_ff = self._stance_forces(share, v_xy, wz, projected_gravity, joint_pos, ang_vel_b, dt)
+            if p.stance_mode > 0.5:
+                self.tau_ff = self._mpc_forces(share, v_xy, wz, freq, foothold, projected_gravity, joint_pos, ang_vel_b)
         else:
             self.tau_ff = np.zeros((4, 3))
             forced = False

@@ -100,6 +100,13 @@ import time
 
 import collections
 
+# Single-threaded BLAS, set BEFORE numpy is imported. The classical gait's MPC solves a
+# 120x120 QP every 20 ms tick; on a busy CPU a multi-threaded BLAS thrashes on matrices
+# that small (measured 21-60 ms per tick vs 2.1 ms single-threaded, desktop). onnxruntime
+# keeps its own thread pool, so the RL policies are unaffected.
+for _blas_var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_blas_var, "1")
+
 import numpy as np
 import onnxruntime as ort
 
