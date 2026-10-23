@@ -463,6 +463,18 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_progressive_lane_omni_cap8_straddle_2026-10-22/policy.onnx"
+    },
+    {
+      "id": "classical_trot_mpc_2026-10-23",
+      "name": "Classical trot (convex-MPC stance) 2026-10-23",
+      "model": "Hand-designed Raibert trot + convex-MPC stance forces, CEM-tuned in Isaac (no network)",
+      "type": "blind",
+      "kind": "classical",
+      "obs_dim": 0,
+      "uses_heightmap": false,
+      "runnable": true,
+      "group": "Classical",
+      "path": "policies/classical_trot_mpc_2026-10-23/gait.json"
     }
   ]
 }
