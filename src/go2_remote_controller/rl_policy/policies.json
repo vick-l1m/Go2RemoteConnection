@@ -443,6 +443,26 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_percept_student_2026-10-22/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_percept_finetune_2026-10-22",
+      "name": "Percept finetune v2 (2026-10-22_17-35-20)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_percept_finetune \u00b7 2026-10-22_17-35-20 (1000 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_percept_finetune_2026-10-22/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_progressive_lane_omni_cap8_straddle_2026-10-22",
+      "name": "Omni cap8 straddle (sparse 15, footstep following)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_progressive_lane_omni_cap8_straddle \u00b7 2026-10-22_21-08-13 (2000 iterations)",
+      "type": "camera",
+      "obs_dim": 232,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_progressive_lane_omni_cap8_straddle_2026-10-22/policy.onnx"
     }
   ]
 }
