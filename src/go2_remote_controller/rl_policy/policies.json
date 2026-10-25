@@ -475,6 +475,26 @@
       "runnable": true,
       "group": "Classical",
       "path": "policies/classical_trot_mpc_2026-10-23/gait.json"
+    },
+    {
+      "id": "unitree_go2_progressive_lane_omni_cap8_map_2026-10-24",
+      "name": "Omni cap8 map",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_progressive_lane_omni_cap8_map \u00b7 2026-10-24_17-48-36 (4000 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_progressive_lane_omni_cap8_map_2026-10-24/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_percept_student_map_2026-10-25",
+      "name": "Percept student map",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_percept_student_map \u00b7 2026-10-25_01-00-08 (4000 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_percept_student_map_2026-10-25/policy.onnx"
     }
   ]
 }
