@@ -495,6 +495,56 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_percept_student_map_2026-10-25/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_grid_pallet_2026-10-26",
+      "name": "Grid pallet (odom map)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_grid_pallet \u00b7 2026-10-26_00-02-41 (3000 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_grid_pallet_2026-10-26/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_krail_percept_2026-10-26",
+      "name": "K-Rails percept (odom map)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_krail_percept \u00b7 2026-10-26_03-35-51 (3000 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_krail_percept_2026-10-26/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_climb30_student_map_2026-10-27",
+      "name": "climb30-student-map (2026-10-27_04-42-53)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_climb30_student_map \u00b7 2026-10-27_04-42-53 (4000 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_climb30_student_map_2026-10-27/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_climb30_student_map4s_2026-10-27",
+      "name": "climb30-student-map4s (2026-10-27_13-11-05)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_climb30_student_map4s \u00b7 2026-10-27_13-11-05 (2000 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_climb30_student_map4s_2026-10-27/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_climb30_finetune_2026-10-27",
+      "name": "climb30-finetune (2026-10-27_17-09-22)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_climb30_finetune \u00b7 2026-10-27_17-09-22 (1500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_climb30_finetune_2026-10-27/policy.onnx"
     }
   ]
 }
