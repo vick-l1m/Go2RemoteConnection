@@ -1,34 +1,35 @@
 {
   "_comment": [
-    "Classical trot with CONVEX-MPC stance (stance_mode 1) -- loaded by go2_rl_policy_node as a",
-    "registry entry of kind 'classical'. params override classical_gait.GaitParams; the MPC is",
-    "classical_gait.ConvexMPC (numpy twin of training/go2_training/classical/mpc.py, parity-tested).",
-    "kp/kd are the PD gains it was tuned under; params.ff_kp must equal kp. Needs single-threaded",
-    "BLAS (set by the node before importing numpy) for a ~2 ms tick. command_ranges is the robot",
-    "test box the gait was tuned and evaluated in. First test: --dry-run, then hoisted, then ground."
+    "Classical trot with CONVEX-MPC stance (stance_mode 1), SLOW variant (2026-10-28): half the",
+    "previous cadence (1.20 Hz + 0.43/(m/s), was 2.40 + 0.85), 12 cm swing (was 7.7), forward reach 22 cm,",
+    "duty 0.76. Loaded by go2_rl_policy_node as a registry entry of kind 'classical'; params override",
+    "classical_gait.GaitParams; MPC is classical_gait.ConvexMPC (parity-tested twin of the sim controller).",
+    "kp/kd are the gains it was tuned under; params.ff_kp must equal kp. Tuned and evaluated for FORWARD",
+    "walking up to 0.3 m/s only, so command_ranges allow forward 0..0.3 and nothing else (turning failed",
+    "even on the nominal robot at this cadence). First test: --dry-run, then hoisted, then ground."
   ],
-  "source": "training/go2_training/classical/tuned/candidates/trot_mpc_box_v2.json",
-  "tuned": "2026-10-23T12:06:20",
+  "source": "training/go2_training/classical/tuned/candidates/trot_mpc_slow_v2.json",
+  "tuned": "2026-10-28T22:31:27",
   "gait": "trot",
   "kp": 25.0,
   "kd": 0.5,
   "command_ranges": [
     [
-      -0.3,
-      -0.3,
-      -1.0
+      0.0,
+      0.0,
+      0.0
     ],
     [
-      0.8,
       0.3,
-      1.0
+      0.0,
+      0.0
     ]
   ],
   "params": {
-    "freq": 2.4014,
-    "freq_gain": 0.8508,
-    "duty": 0.6434,
-    "swing_height": 0.0767,
+    "freq": 1.2007,
+    "freq_gain": 0.4254,
+    "duty": 0.7556,
+    "swing_height": 0.12,
     "height": 0.3093,
     "foot_x": 0.0048,
     "foot_y": 0.1129,
@@ -38,30 +39,36 @@
     "f_kh": 42.749,
     "f_att_kp": 70.2929,
     "f_att_kd": 4.0078,
-    "com_x": 0.0064,
-    "k_vel": 0.0449,
-    "k_wz": 0.1066,
+    "com_x": 0.0037,
+    "k_vel": 0.1025,
+    "k_wz": 0.1417,
     "ground_swing": 0.1111,
     "k_h": 0.4941,
     "stance_mode": 1.0,
-    "mpc_r": 0.0039,
-    "mpc_fmax": 135.8346,
-    "q_rp": 19.5577,
-    "q_z": 104.1909,
-    "q_w": 1.8656,
-    "q_wz": 3.6072,
-    "q_vxy": 10.8915,
-    "q_vz": 3.0968,
-    "mpc_dt": 0.0555,
-    "f_att_ki": 87.8218,
-    "f_att_imax": 11.5032,
-    "f_kh_i": 47.2938,
-    "mpc_mass": 14.9676
+    "mpc_r": 0.0021,
+    "mpc_fmax": 121.2996,
+    "q_rp": 26.574,
+    "q_z": 27.8954,
+    "q_w": 3.0799,
+    "q_wz": 5.4228,
+    "q_vxy": 15.9703,
+    "q_vz": 3.2564,
+    "mpc_dt": 0.0731,
+    "f_att_ki": 12.0558,
+    "f_att_imax": 14.696,
+    "f_kh_i": 34.3217,
+    "mpc_mass": 16.6835,
+    "max_dx": 0.22
   },
   "sim_eval": {
-    "robot_box_sweep_nominal": "0 falls / 64 envs / 44 s; error 0.005-0.14 m/s, tilt <= 1.4 deg",
-    "robot_box_sweep_dr_no_push": "17 falls / 64 envs / 44 s (reactive classical_trot_force: 28): stand/forward/diagonal 0, back 2, strafe 11, turn 4",
-    "flat_forward_dr": "0/64 falls at 0.3/0.5/0.8 m/s; actual speed 0.30/0.53/0.83",
-    "planner": "Run Tree branch Classical controllers, classical_mpc_trot/2026-10-23_12-06-20"
+    "forward_0.3_nominal": "0/64 falls (30 s), 0.33 m/s, tilt 0.6 deg",
+    "forward_0.3_randomised": "5 falls / 64 robots / 30 s, 0.31 m/s, tilt 1.1 deg",
+    "forward_0.15_randomised": "1 fall / 64 / 30 s, 0.13 m/s",
+    "standing_randomised": "0/64",
+    "randomised": "mass -1..+3 kg, CoM +0..5 cm, friction 0.2-1.6, gains +-20%, latency 0-20 ms, rough tiles; no pushes"
+  },
+  "previous": {
+    "source": "training/go2_training/classical/tuned/candidates/trot_mpc_box_v2.json",
+    "note": "the 2.4 Hz / 7.7 cm gait exported 2026-10-23 with commands x -0.3..0.8, y +-0.3, yaw +-1"
   }
 }
