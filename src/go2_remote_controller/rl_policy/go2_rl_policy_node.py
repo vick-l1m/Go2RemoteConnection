@@ -359,6 +359,9 @@ class Go2RLPolicyController:
         # Cells the policy could see in training (contract trained_mask); everything
         # else is blanked to the unobserved token before it reaches the policy.
         self._scan_mask = None
+        # (memory_s, ok, why) from the bridge: whether stepfield_map_node's rolling map
+        # runs with the memory the loaded policy trained on. None = no answer yet.
+        self._scan_memory = None
         self.action_scale = ACTION_SCALE
         self.kp, self.kd = KP, KD
         self.include_base_lin_vel = True
@@ -505,7 +508,7 @@ class Go2RLPolicyController:
         self.ctrl_thread = RecurrentThread(interval=CONTROL_DT, target=self._control_step,
                                            name="rl_control")
         self.ctrl_thread.Start()
-        self._send({"t": "policy_out", "id": self.active_policy_id})   # tell the web which policy is loaded
+        self._announce_policy()   # tell the web (and the map, via the bridge) which policy is loaded
         self.get_logger().info("go2_rl_policy_node ready (mode=sport, idle).")
 
     def get_logger(self):
@@ -553,6 +556,10 @@ class Go2RLPolicyController:
                 self._set_posture(bool(msg.get("stand", True)))
             elif t == "estop":
                 self._set_estop(bool(msg.get("on", False)))
+            elif t == "scan_memory":
+                with self._lock:
+                    self._scan_memory = (float(msg.get("memory_s") or 0.0),
+                                         bool(msg.get("ok")), str(msg.get("why") or ""))
             elif t == "ping":
                 pass   # liveness only; last_bridge_t already updated above
 
@@ -766,9 +773,11 @@ class Go2RLPolicyController:
             # a stacked scan gets one frame at the wrong width and is refused.
             self.obs_history = {n: k for n, k in contract.obs_history.items() if k > 1}
             self._scan_unobserved_expected = contract.height_scan_unobserved
-            self._scan_mask = (None if contract.height_scan_mask is None
-                               else np.asarray(contract.height_scan_mask, dtype=bool))
+            # Camera mask, plus the cells the rolling map fills for a memory policy.
+            self._scan_mask = (None if contract.height_scan_input_mask is None
+                               else np.asarray(contract.height_scan_input_mask, dtype=bool))
             self._scan_logged = False      # re-log and re-check for the new policy
+            self._scan_memory = None       # the bridge re-confirms the map for this one
             self.obs_scales = dict(contract.obs_scales)
             self.obs_clips = dict(contract.obs_clips)
             ranges = contract.command_ranges
@@ -907,7 +916,14 @@ class Go2RLPolicyController:
                     f"policy switch to '{pid}' ignored: only allowed while idle (phase={phase})")
             elif pid != self.active_policy_id:
                 self._load_policy_entry(entry)
-        self._send({"t": "policy_out", "id": self.active_policy_id})
+        self._announce_policy()
+
+    def _announce_policy(self):
+        """Echo the active policy to the bridge, with the rolling-map memory its height
+        scan was trained on (0 = none); the bridge sets the map to it and answers."""
+        memory = self.contract.scan_memory_s if self.contract is not None else None
+        self._send({"t": "policy_out", "id": self.active_policy_id,
+                    "scan_memory_s": memory or 0.0})
 
     def _set_estop(self, on):
         """Emergency stop from the web STOP button. STOP always wins: the motors go
@@ -1031,6 +1047,17 @@ class Go2RLPolicyController:
                     "and check /tmp/go2_rl_bridge.log for 'forwarding height scans'")
             elif age > HEIGHT_SCAN_TIMEOUT:
                 refusal = f"its height scan is stale ({age:.2f} s old; limit {HEIGHT_SCAN_TIMEOUT} s)"
+            elif self.contract.scan_memory_s is not None:
+                # Trained on the rolling map: without it the cells under and behind the
+                # feet stay unknown, an input it never saw (climb30 spun in place on the
+                # bare camera strip, 2026-10-28).
+                want = self.contract.scan_memory_s
+                with self._lock:
+                    got = self._scan_memory
+                if got is None or not got[1] or abs(got[0] - want) > 1e-6:
+                    why = got[2] if got is not None else "no answer from the RL bridge yet"
+                    refusal = (f"it was trained on a height scan with {want:g} s of rolling-map "
+                               f"memory and the map is not confirmed ({why})")
         if refusal is not None:
             self.get_logger().error(
                 f"refusing to engage '{self.active_policy_id}': {refusal}; staying in sport mode")

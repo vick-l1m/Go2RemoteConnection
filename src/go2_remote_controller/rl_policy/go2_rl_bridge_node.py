@@ -31,6 +31,15 @@ controller -> ROS (received over UDP, republished):
     {"t":"policy_out","id"}    -> PUB /web_rl_active_policy std_msgs/String      (loaded policy)
     {"t":"mode_out","mode"}    -> PUB /web_control_mode     std_msgs/String      (shutdown un-gate)
     {"t":"enabled","val"}      -> PUB /web_teleop_enabled   std_msgs/Bool        (shutdown un-gate)
+
+Rolling-map memory. ``policy_out`` also carries ``scan_memory_s``: the seconds of map
+memory the loaded policy's height scan was trained with (deploy.yaml
+``height_scan.params.memory``), or 0 for none. This node sets ``map_memory_s`` on
+stepfield_map_node to it once a second (it changes per policy, after perception is
+already up; 0 makes the map publish the current frame only, which is what a policy
+trained without memory saw) and, for a memory policy, answers the controller with
+``{"t":"scan_memory","memory_s","ok","why"}``; the controller refuses to engage a
+memory policy until ``ok``.
 """
 
 import argparse
@@ -42,6 +51,8 @@ import threading
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import SetParameters
 from std_msgs.msg import Bool, String
 
 import height_scan_wire
@@ -70,9 +81,13 @@ CRITICAL_REPEAT = 3
 #: Default topic carrying the perception height scan (go2_perception/heightmap_node).
 DEF_HEIGHT_SCAN_TOPIC = "/go2/height_scan"
 
+#: The node owning the rolling map whose memory follows the loaded policy.
+DEF_MAP_NODE = "/stepfield_map_node"
+
 
 class Go2RLBridge(Node):
-    def __init__(self, udp_host, ctrl_port, bridge_port, height_scan_topic=DEF_HEIGHT_SCAN_TOPIC):
+    def __init__(self, udp_host, ctrl_port, bridge_port, height_scan_topic=DEF_HEIGHT_SCAN_TOPIC,
+                 map_node=DEF_MAP_NODE):
         super().__init__("go2_rl_bridge_node")
 
         self._ctrl_addr = (udp_host, ctrl_port)
@@ -110,6 +125,14 @@ class Go2RLBridge(Node):
         self._pub_active_policy = self.create_publisher(String, "/web_rl_active_policy", 1)
         self._pub_mode_out = self.create_publisher(String, "/web_control_mode", 1)
         self._pub_enabled_out = self.create_publisher(Bool, "/web_teleop_enabled", 1)
+
+        # Rolling-map memory for the loaded policy (None = it needs none); see the header.
+        self._map_node = map_node
+        self._map_client = self.create_client(SetParameters, f"{map_node}/set_parameters")
+        self._want_memory = None
+        self._map_busy = False
+        self._map_state = None             # last (want, ok, why) reported, to log changes only
+        self.create_timer(1.0, self._sync_map_memory)
 
         # 10 Hz keepalive so the controller's bridge-link deadman stays satisfied
         # even when the joystick is idle (no /web_teleop traffic).
@@ -212,10 +235,51 @@ class Go2RLBridge(Node):
                 self._pub_hb.publish(Bool(data=True))
             elif t == "policy_out":
                 self._pub_active_policy.publish(String(data=str(msg.get("id") or "")))
+                self._want_memory = float(msg.get("scan_memory_s") or 0.0)
             elif t == "mode_out":
                 self._pub_mode_out.publish(String(data=str(msg.get("mode", "sport"))))
             elif t == "enabled":
                 self._pub_enabled_out.publish(Bool(data=bool(msg.get("val", True))))
+
+    # ---- rolling-map memory ------------------------------------------- #
+    def _sync_map_memory(self):
+        """Set map_memory_s to the loaded policy's value (re-asserted each second, so a
+        restarted map node is caught too) and tell the controller whether it took."""
+        want = self._want_memory
+        if want is None or self._map_busy:
+            return
+        if not self._map_client.service_is_ready():
+            if want > 0.0:      # a memory-free policy does not need the map at all
+                self._report_memory(want, False,
+                                    f"{self._map_node} is not running (start perception with "
+                                    "GO2_HEIGHTMAP_MODE=stepfield GO2_MAP=1)")
+            return
+        req = SetParameters.Request()
+        req.parameters = [Parameter(name="map_memory_s", value=ParameterValue(
+            type=ParameterType.PARAMETER_DOUBLE, double_value=want))]
+        self._map_busy = True
+        self._map_client.call_async(req).add_done_callback(
+            lambda fut: self._on_map_memory_set(fut, want))
+
+    def _on_map_memory_set(self, fut, want):
+        self._map_busy = False
+        try:
+            result = fut.result().results[0]
+        except Exception as e:  # noqa: BLE001
+            self._report_memory(want, False, f"set_parameters failed: {e}")
+            return
+        self._report_memory(want, bool(result.successful), result.reason)
+
+    def _report_memory(self, want, ok, why):
+        if want <= 0.0:
+            return              # frame-only: best effort, the controller does not gate on it
+        self._send({"t": "scan_memory", "memory_s": want, "ok": ok, "why": why})
+        if (want, ok, why) != self._map_state:
+            self._map_state = (want, ok, why)
+            if ok:
+                self.get_logger().info(f"rolling map memory set to {want} s for the loaded policy")
+            else:
+                self.get_logger().warn(f"policy needs {want} s of map memory, not set: {why}")
 
     def destroy_node(self):
         self._stop = True
@@ -237,10 +301,13 @@ def main():
                     default=os.environ.get("GO2_RL_HEIGHT_SCAN_TOPIC", DEF_HEIGHT_SCAN_TOPIC),
                     help="go2_msgs/HeightScan topic to forward to the controller "
                          "(empty string disables forwarding)")
+    ap.add_argument("--map-node", default=os.environ.get("GO2_RL_MAP_NODE", DEF_MAP_NODE),
+                    help="node whose map_memory_s follows the loaded policy")
     args = ap.parse_args()
 
     rclpy.init()
-    node = Go2RLBridge(args.udp_host, args.ctrl_port, args.bridge_port, args.height_scan_topic)
+    node = Go2RLBridge(args.udp_host, args.ctrl_port, args.bridge_port, args.height_scan_topic,
+                       args.map_node)
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, SystemExit):

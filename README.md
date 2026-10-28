@@ -313,6 +313,13 @@ is hidden when no camera is present, so the page is unchanged for blind policies
     `GO2_CALIBRATE_MASK_DEG` (2.0) from the repo yaml prints the values to commit on the
     PC, since the training FOV mask is built from the repo file. Report: `/tmp/go2_calibrate.log`,
     copied into recorded sessions as `calibration.txt`.
+  - `GO2_MAP=1` (default, stepfield mode) adds the rolling map: `leg_odom_node` on
+    `/lowstate` (force contacts, the settings validated on robot bags) places each frame,
+    so the scan carries the cells under and behind the feet from memory. The memory
+    follows the selected policy -- the RL bridge sets `map_memory_s` to its trained
+    `height_scan.params.memory.memory_s`, or 0 (current frame only, i.e. the map-less
+    scan) for a policy trained without one -- and the controller refuses to engage a
+    memory policy until the bridge confirms it. Log: `/tmp/go2_leg_odom.log`.
   - Log: `/tmp/go2_perception.log`. Needs `~/ros2_ws` (the Jetson's realsense2_camera
     source build, sourced automatically) and the outer workspace's `go2_perception`.
 - **Backend** (`app/ros_bridge.py`, `app/api/perception_routes.py`):

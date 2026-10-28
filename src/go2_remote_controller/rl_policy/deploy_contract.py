@@ -75,6 +75,33 @@ def fill_unseen_for_full_scan(scan, sentinel, fill=NOMINAL_FLAT_SCAN_VALUE):
     return _np.where(unseen, _np.float32(fill), scan).astype(_np.float32)
 
 
+#: Cells along x in the 1.6 m x 1.0 m, 0.1 m scan grid (RayCaster order: x fastest).
+#: Both nodes check the live grid against the trained width before any scan is used.
+HEIGHT_SCAN_NUM_X = 17
+
+
+def memory_fill_mask(trained_mask, num_x=HEIGHT_SCAN_NUM_X):
+    """The cells a rolling-map policy saw VALUES in: its camera mask plus memory.
+
+    Training's ``ScanMemory`` fills, in every grid row the camera strip covers, the
+    cells nearer the robot than the strip's near edge (``behind = x < x_near(y)``) --
+    the ground the strip swept over while walking. Rows the strip never covers stay
+    unknown. Deploy blanks every cell outside the mask it is given, so a memory policy
+    must be given this one or the node erases exactly what the map remembers.
+    """
+    mask = [bool(v) for v in trained_mask]
+    if num_x <= 0 or len(mask) % num_x:
+        raise DeployContractError(
+            f"trained_mask has {len(mask)} cells, not a whole number of {num_x}-cell rows")
+    out = list(mask)
+    for start in range(0, len(mask), num_x):
+        row = mask[start:start + num_x]
+        if any(row):
+            for i in range(row.index(True)):
+                out[start + i] = True
+    return out
+
+
 class DeployContractError(RuntimeError):
     """Raised when the contract is missing, unreadable, or internally inconsistent."""
 
@@ -293,6 +320,30 @@ class DeployContract:
                 "must be in (0, pi/2] -- past pi/2 the cone would include backwards."
             )
         return angle
+
+    @property
+    def scan_memory_s(self) -> float | None:
+        """Seconds of rolling-map memory the height scan was trained with, or None.
+
+        Training recorded it as ``observations.height_scan.params.memory`` (the
+        ``ScanMemory`` twin of ``stepfield_map_node map_enabled``); the perception stack
+        must run that map with ``map_memory_s`` equal to this, or the cells under and
+        behind the feet the policy learnt to read stay unknown.
+        """
+        hs = (self._d.get("observations") or {}).get("height_scan") or {}
+        memory = (hs.get("params") or {}).get("memory")
+        if not memory:
+            return None
+        # 2.0 is ScanMemory's default (DEFAULT_SCAN_MEMORY) when the key is absent.
+        return float(memory.get("memory_s", 2.0))
+
+    @property
+    def height_scan_input_mask(self) -> list[bool] | None:
+        """The mask deploy blanks against: :attr:`height_scan_mask`, widened by
+        :func:`memory_fill_mask` for a policy trained on rolling-map memory."""
+        if self.height_scan_mask is None or self.scan_memory_s is None:
+            return self.height_scan_mask
+        return memory_fill_mask(self.height_scan_mask)
 
     @property
     def world_anchored(self) -> bool:

@@ -39,6 +39,9 @@ Perception (RealSense D435i -> /go2/height_scan)
   GO2_STOP_VIP_REALSENSE=0|1   1 = docker stop vip-realsense if it holds the camera.
   GO2_CALIBRATE=0|1|strict     Calibrate camera mount at start (robot still, flat floor).
   GO2_CALIBRATE_MASK_DEG=2.0   Warn if mount differs from camera.yaml by more than this.
+  GO2_MAP=1|0                  Rolling map (stepfield mode): leg odometry + map memory, so
+                               map-trained policies see the cells under their feet. The
+                               memory follows the selected policy. Default: 1.
 
 Recording (writes sessions/<UTC>_<name>/{flight,bag})
   GO2_RECORD=0|1               Record a flight log + rosbag. Default: 0.
@@ -59,7 +62,7 @@ EOF
 KNOWN_VARS="ROS_DOMAIN_ID RMW_IMPLEMENTATION UNITREE_IFACE GO2_WS_DIR
   GO2_AUTH_ENABLED GO2_TOKEN_FILE GO2_RL_POLICY GO2_RL_DRY_RUN
   GO2_PERCEPTION GO2_HEIGHTMAP_MODE GO2_STEPFIELD_PRESET GO2_BLOCK_HEIGHTS_CM
-  GO2_HEIGHT_EMPTY_FILL GO2_STOP_VIP_REALSENSE GO2_CALIBRATE GO2_CALIBRATE_MASK_DEG
+  GO2_HEIGHT_EMPTY_FILL GO2_STOP_VIP_REALSENSE GO2_CALIBRATE GO2_CALIBRATE_MASK_DEG GO2_MAP
   GO2_RECORD GO2_RECORD_NAME GO2_RECORD_TERRAIN GO2_RECORD_NOTES GO2_RECORD_DEPTH
   GO2_RECORD_TOPICS"
 for arg in "$@"; do
@@ -445,6 +448,37 @@ if [ "$HEIGHTMAP_EXE" = "stepfield_map_node" ] && [ -n "$BLOCK_HEIGHTS_M" ]; the
 else
   STEPFIELD_DESC="$GO2_STEPFIELD_PRESET"
 fi
+# Rolling map (stepfield only): leg_odom_node + stepfield_map_node map_enabled, so the scan
+# can carry the cells under and behind the feet from memory -- the input the map-trained
+# policies learnt on (deploy.yaml height_scan.params.memory). Its memory follows the
+# selected policy: the RL bridge sets map_memory_s on every switch, and 0 (a policy
+# trained without memory) makes the map publish the current frame only, i.e. exactly the
+# map-less scan. So it is on by default; the controller refuses to engage a map-trained
+# policy without it. Robot odometry settings = the ones validated on robot bags
+# (docs/measurements/odom_map_sim.md: force contacts, speed-adaptive touchdown gate).
+GO2_MAP="${GO2_MAP:-1}"
+LEG_ODOM_LOG="/tmp/go2_leg_odom.log"
+MAP_ENABLED=false
+if [ "$GO2_MAP" != "0" ]; then
+  if [ "$HEIGHTMAP_EXE" = "stepfield_map_node" ]; then
+    MAP_ENABLED=true
+    HEIGHTMAP_EXTRA+=(-p map_enabled:=true -p map_memory_s:=2.0 -p odom_source:=leg)
+  else
+    echo "[run_all] ⚠️  GO2_MAP needs GO2_HEIGHTMAP_MODE=stepfield; rolling map off (map-trained policies will refuse to engage)."
+  fi
+fi
+
+# leg_odom_node: joint encoders + foot force -> /go2/leg_odom_raw, which places the map's
+# frames. Its own process (in the map node it stalled frame processing, 2026-10-22).
+start_leg_odom() {
+  [ "$MAP_ENABLED" = "true" ] || return 0
+  ros2 run go2_perception leg_odom_node --ros-args \
+    -p odom_input:=lowstate -p odom_topic:=/lowstate \
+    -p contact_source:=force -p contact_force_min:=20.0 -p base_frame:=base \
+    > "$LEG_ODOM_LOG" 2>&1 &
+  register_pid "$!" "leg_odom_node" "$LEG_ODOM_LOG" 0
+  echo "[run_all] Rolling map ON: leg_odom_node (log $LEG_ODOM_LOG); memory follows the selected policy"
+}
 # Mount calibration before the scan is built (2026-10-15: the bracket had moved 10.6 deg
 # since its last calibration and a whole day of stepfield runs fed the policy a tilted
 # floor). Off by default; with GO2_CALIBRATE=1 RL_start brings up the RealSense DRIVER ONLY,
@@ -560,10 +594,12 @@ PY
     -p base_frame:=base -p size_x:=1.6 -p size_y:=1.0 -p resolution:=0.1 -p center_x:=0.6 \
     -p empty_fill:="$GO2_HEIGHT_EMPTY_FILL" -p gridmap_every_n:=3 \
     > "$PERCEPTION_LOG" 2>&1 &
-  register_pid "$!" "$HEIGHTMAP_EXE" "$PERCEPTION_LOG" 0
+  local hm_pid=$!
+  register_pid "$hm_pid" "$HEIGHTMAP_EXE" "$PERCEPTION_LOG" 0
   PERCEPTION_STARTED=1
   sleep 2.0
-  warn_if_dead "$HEIGHTMAP_EXE" "$!" "$PERCEPTION_LOG" || true
+  warn_if_dead "$HEIGHTMAP_EXE" "$hm_pid" "$PERCEPTION_LOG" || true
+  start_leg_odom
 }
 
 # start_perception <usb 2|3> [heightmap true|false]: the perception launch. With
@@ -581,6 +617,7 @@ start_perception() {
     camera_config:="$CAMERA_YAML" rviz:=false empty_fill:="$GO2_HEIGHT_EMPTY_FILL" \
     heightmap:="$heightmap" heightmap_mode:="$GO2_HEIGHTMAP_MODE" \
     stepfield_preset:="$GO2_STEPFIELD_PRESET" block_heights:="$BLOCK_HEIGHTS_M" \
+    map_enabled:="$([ "$heightmap" = "true" ] && echo "$MAP_ENABLED" || echo false)" \
     > "$PERCEPTION_LOG" 2>&1 &
   local pid=$!
   register_pid "$pid" "perception (realsense USB $usb$([ "$heightmap" = "true" ] && echo ' + heightmap'))" "$PERCEPTION_LOG" 0
@@ -765,6 +802,9 @@ if [ "${GO2_RECORD:-0}" = "1" ]; then
   BAG_TOPICS="/lowstate /lowcmd /sportmodestate /go2/height_scan /go2/local_heightmap /go2/mount_monitor \
 /tf /tf_static /go2/camera/depth/camera_info /web_teleop /web_control_mode /web_estop \
 /web_rl_policy /web_rl_active_policy /web_teleop_enabled /rosout ${GO2_RECORD_TOPICS:-}"
+  if [ "$MAP_ENABLED" = "true" ]; then
+    BAG_TOPICS="$BAG_TOPICS /go2/leg_odom_raw /go2/leg_odom"
+  fi
   if [ "${GO2_RECORD_DEPTH:-0}" = "1" ]; then
     BAG_TOPICS="$BAG_TOPICS /go2/camera/depth/image_rect_raw /go2/camera/depth/color/points"
   fi
