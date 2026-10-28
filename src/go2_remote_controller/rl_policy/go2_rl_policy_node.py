@@ -257,7 +257,9 @@ class _StdLogger:
 
 
 from deploy_contract import DeployContract, DeployContractError, fill_unseen_for_full_scan  # noqa: E402
-from forward_bias import stick_to_cone_command, stick_to_velocity_command  # noqa: E402
+from forward_bias import (  # noqa: E402
+    CommandAnchor, stick_to_cone_command, stick_to_velocity_command, yaw_from_quat,
+)
 from flight_recorder import FlightRecorder  # noqa: E402
 from classical_gait import ClassicalGait, inverse_kinematics, joint_names_leg_order  # noqa: E402
 
@@ -374,6 +376,8 @@ class Go2RLPolicyController:
         # ranges replace these; CMD_CLIP is only the no-contract fallback.
         self.cmd_lo = np.full(3, -CMD_CLIP, np.float32)
         self.cmd_hi = np.full(3, CMD_CLIP, np.float32)
+        # World anchoring for policies trained with it (see _anchor); reset on every engage.
+        self.cmd_anchor = CommandAnchor()
         # Replaced by the active policy's contract in _load_policy_file(); None means the
         # policy carries no gait_phase term and the clock is never read.
         self.gait_phase_period = None
@@ -1058,6 +1062,7 @@ class Go2RLPolicyController:
             self.ramp_t = 0.0
             self._sat_steps = 0          # and fresh guards, so a previous run's
             self._tilt_since = None      # saturation/tilt history cannot trip this one
+            self.cmd_anchor.reset()      # "forward" = wherever the nose points now
             self.phase = ENGAGE              # control loop now ramps -> RL_RUN
 
     def _disengage(self):
@@ -1138,6 +1143,7 @@ class Go2RLPolicyController:
             self.ramp_t = 0.0
             self._sat_steps = 0          # and fresh guards, so a previous run's
             self._tilt_since = None      # saturation/tilt history cannot trip this one
+            self.cmd_anchor.reset()      # "forward" = wherever the nose points now
             self.phase = ENGAGE          # control loop ramps -> RL_RUN
 
     def _recover_flip(self):
@@ -1651,6 +1657,9 @@ class Go2RLPolicyController:
 
         Default policies: :meth:`_clip_cmd` alone, unchanged.
 
+        Every style then passes through :meth:`_anchor`, a no-op unless the contract says
+        ``world_anchored`` -- see there.
+
         Forward-biased policies (``style: forward_biased`` in deploy.yaml): the move
         stick is a *direction request*, not a velocity. Its angle is read as a heading
         error, which becomes a yaw command and gates the forward speed, and the lateral
@@ -1676,7 +1685,7 @@ class Go2RLPolicyController:
         """
         contract = self.contract
         if contract is None or contract.command_style is None:
-            return self._clip_cmd(cmd)
+            return self._anchor(self._clip_cmd(cmd))
 
         if contract.is_forward_cone:
             vx, vy, wz = stick_to_cone_command(
@@ -1687,7 +1696,11 @@ class Go2RLPolicyController:
                 lateral_max=abs(float(self.cmd_hi[1])),
                 yaw_max=float(self.cmd_hi[2]),
             )
-            return self._clip_cmd(np.array([vx, vy, wz], np.float32))
+            # NOT _clip_cmd: the box's lin_vel_x is the cone's speed RANGE, not a vx span.
+            # A fixed-speed cone exports [0.3, 0.3], and clamping vx into it turned a
+            # centred stick into 0.3 m/s forward, so the robot could never stand still
+            # (2026-10-28). The projection already bounds speed, lateral and yaw.
+            return self._anchor(np.array([vx, vy, wz], np.float32))
 
         # cmd_lo/cmd_hi come from the same contract's ranges (see _load_policy_file), so
         # this envelope is the trained one; the mapping clips to it internally and
@@ -1702,7 +1715,21 @@ class Go2RLPolicyController:
             yaw_max=float(self.cmd_hi[2]),
             stiffness=contract.heading_stiffness,
         )
-        return self._clip_cmd(np.array([vx, vy, wz], np.float32))
+        return self._anchor(self._clip_cmd(np.array([vx, vy, wz], np.float32)))
+
+    def _anchor(self, cmd):
+        """Pin the shaped command to a world heading, for a ``world_anchored`` policy.
+
+        Such a policy saw its command swing against any uncommanded yaw in training and
+        uses that as heading feedback; without it the robot drifts round in circles. Yaw
+        is the IMU quaternion's heading -- only its change while a stick is held matters,
+        so the firmware's slow yaw drift is irrelevant. See forward_bias.CommandAnchor.
+        """
+        if self.contract is None or not self.contract.world_anchored:
+            return cmd
+        yaw = yaw_from_quat(*self.low_state.imu_state.quaternion)
+        vx, vy, wz = self.cmd_anchor.apply(float(cmd[0]), float(cmd[1]), float(cmd[2]), yaw, CONTROL_DT)
+        return np.array([vx, vy, wz], np.float32)
 
     def _build_obs(self):
         ls = self.low_state

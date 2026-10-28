@@ -295,6 +295,19 @@ class DeployContract:
         return angle
 
     @property
+    def world_anchored(self) -> bool:
+        """True when training pinned the linear command to a world heading.
+
+        Such a policy observed its command swing against any uncommanded yaw
+        (``TerrainScaledVelocityCommand`` with ``world_anchored=True``) and uses that swing
+        as heading feedback; a node must reproduce it (``forward_bias.CommandAnchor``) or
+        the policy's turning bias goes uncorrected. Absent means False: contracts exported
+        before the flag existed were backfilled from their run's env.yaml.
+        """
+        base = (self._d.get("commands") or {}).get("base_velocity") or {}
+        return bool(base.get("world_anchored", False))
+
+    @property
     def heading_stiffness(self) -> float:
         """Heading error -> yaw rate gain, as trained. Defaults to Isaac Lab's 1.0.
 

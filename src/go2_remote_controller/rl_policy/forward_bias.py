@@ -35,10 +35,12 @@ from __future__ import annotations
 import math
 
 __all__ = [
+    "CommandAnchor",
     "forward_gate",
     "stick_to_cone_command",
     "stick_to_velocity_command",
     "wrap_to_pi",
+    "yaw_from_quat",
 ]
 
 
@@ -243,3 +245,64 @@ def stick_to_cone_command(
         vx *= scale
         vy *= scale
     return vx, vy, wz
+
+
+def yaw_from_quat(w: float, x: float, y: float, z: float) -> float:
+    """Heading (yaw about world z), radians, from a ``(w, x, y, z)`` quaternion."""
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+class CommandAnchor:
+    """The deployment half of ``world_anchored=True`` (``TerrainScaledVelocityCommand``).
+
+    In training, an anchored command is sampled in the body frame and then pinned to the
+    WORLD heading the body had at that moment; the anchor turns only with the commanded
+    yaw rate, and every step the pinned ``(vx, vy)`` is re-expressed in the current body
+    frame (``go2_training.utils.forward_cone.rotate_to_body``). A robot that yaws without
+    being told to SEES the command swing the other way -- drift left 20 deg and "forward"
+    reads as forward-right. That swing is the policy's only heading feedback, so it learns
+    to lean on it.
+
+    A node that forwards the raw body-frame stick removes the feedback: the command never
+    swings, and the policy's small turning bias goes uncorrected. The climb30 finetune spun
+    left at ~1 rad/s on the robot (session 20261028-035126) with the stick centred on yaw,
+    and went straight only while a rightward stick happened to stand in for the swing.
+
+    The stick plays the part of the resample. A change of the linear command by more than
+    ``retarget_tol`` m/s re-pins it at the current heading -- "forward" means where the nose
+    points when the stick moves -- and a held stick keeps its anchor, so drift shows up as
+    the same swing the policy was trained on. The yaw stick never re-pins: as in training,
+    it advances the anchor heading instead, so commanded turns are not read as drift.
+    """
+
+    def __init__(self, retarget_tol: float = 0.08):
+        self.retarget_tol = retarget_tol
+        self.reset()
+
+    def reset(self) -> None:
+        """Forget the anchor; the next :meth:`apply` re-pins at the current heading."""
+        self._cmd: tuple[float, float] | None = None
+        self._heading = 0.0
+
+    def apply(
+        self, vx: float, vy: float, wz: float, yaw: float, dt: float
+    ) -> tuple[float, float, float]:
+        """Anchor the body-frame ``(vx, vy, wz)`` and return it in the current body frame.
+
+        Args:
+            vx, vy, wz: the command as shaped for the policy (cone projection, clip, ...).
+            yaw: the base's current heading, radians.
+            dt: control period, seconds -- the anchor turns by ``wz * dt`` each call.
+
+        Same order as training: re-pin on a new command, then advance the anchor by the
+        commanded yaw, then rotate. The rotated ``(vx, vy)`` can leave the trained box or
+        cone; training's observation did too, so it is not clipped again.
+        """
+        if self._cmd is None or math.hypot(vx - self._cmd[0], vy - self._cmd[1]) > self.retarget_tol:
+            self._cmd = (vx, vy)
+            self._heading = yaw
+        self._heading = wrap_to_pi(self._heading + wz * dt)
+        err = wrap_to_pi(self._heading - yaw)
+        c, s = math.cos(err), math.sin(err)
+        ax, ay = self._cmd
+        return c * ax - s * ay, s * ax + c * ay, wz
