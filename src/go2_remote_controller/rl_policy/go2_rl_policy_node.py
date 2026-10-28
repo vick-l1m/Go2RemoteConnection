@@ -160,6 +160,11 @@ Q_DEFAULT_BY_NAME = {
 # CONTROL_DT is still used for the control loop's nominal period before any policy is
 # loaded (stand-up ramp, damping); the active contract overrides it once loaded.
 CONTROL_DT = 0.02      # 50 Hz policy rate (sim dt 0.005 * decimation 4)
+# Heading hold for world-anchored policies while the yaw stick is centred: wz = gain *
+# heading error, clipped -- the law every Isaac eval of these policies ran with
+# (eval_fixed_rung.py HEADING_GAIN / YAW_RATE_MAX). See forward_bias.CommandAnchor.
+HEADING_HOLD_GAIN = 1.0
+HEADING_HOLD_MAX = 1.0
 # Hard cap on any feedforward joint torque sent in LowCmd.tau (Nm). Only the classical
 # gait's force-controlled stance uses tau; the Go2 sim actuator limits are 20.2/23.4 Nm.
 TAU_FF_MAX = 20.0
@@ -1748,12 +1753,18 @@ class Go2RLPolicyController:
         """Pin the shaped command to a world heading, for a ``world_anchored`` policy.
 
         Such a policy saw its command swing against any uncommanded yaw in training and
-        uses that as heading feedback; without it the robot drifts round in circles. Yaw
+        uses that as heading feedback; without it the robot drifts round in circles. With
+        the yaw stick centred the anchor also returns a heading-hold wz (HEADING_HOLD_*),
+        and for a cone policy the swing stays inside the cone. Yaw
         is the IMU quaternion's heading -- only its change while a stick is held matters,
         so the firmware's slow yaw drift is irrelevant. See forward_bias.CommandAnchor.
         """
         if self.contract is None or not self.contract.world_anchored:
             return cmd
+        a = self.cmd_anchor
+        a.hold_gain = HEADING_HOLD_GAIN
+        a.hold_max = min(HEADING_HOLD_MAX, float(self.cmd_hi[2]))
+        a.max_swing = self.contract.cone_half_angle if self.contract.is_forward_cone else None
         yaw = yaw_from_quat(*self.low_state.imu_state.quaternion)
         vx, vy, wz = self.cmd_anchor.apply(float(cmd[0]), float(cmd[1]), float(cmd[2]), yaw, CONTROL_DT)
         return np.array([vx, vy, wz], np.float32)

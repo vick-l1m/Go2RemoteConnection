@@ -273,10 +273,29 @@ class CommandAnchor:
     points when the stick moves -- and a held stick keeps its anchor, so drift shows up as
     the same swing the policy was trained on. The yaw stick never re-pins: as in training,
     it advances the anchor heading instead, so commanded turns are not read as drift.
+
+    HEADING HOLD (``hold_gain`` > 0, off by default). The swing alone was not enough on the
+    robot: the climb30 finetune still turned ~90 deg left within 1.5 s of a push and kept
+    spinning at zero command (2026-10-28), while in Isaac it only wanders (~0.03 rad/s with
+    no correction). Every Isaac eval of it ran with a heading hold, ``wz = 1.0 * (target -
+    heading)`` clipped to +-1 rad/s (eval_fixed_rung.py), so that is the law used here:
+    while the yaw stick is centred the returned ``wz`` steers back to the anchor heading.
+    The hold's own correction does not advance the anchor -- only the operator's yaw does --
+    so the hold and the swing pull toward the same heading. Releasing the yaw stick re-pins
+    at the current heading, so the robot holds where the operator stopped turning it.
+    ``max_swing`` caps the swing (a cone policy never trained on a command outside its
+    cone; uncapped, a 90 deg drift became a pure sideways command and froze it).
     """
 
-    def __init__(self, retarget_tol: float = 0.08):
+    def __init__(self, retarget_tol: float = 0.08, hold_gain: float = 0.0,
+                 hold_max: float = 1.0, max_swing: float | None = None,
+                 yaw_deadband: float = 0.05):
         self.retarget_tol = retarget_tol
+        self.hold_gain = hold_gain
+        self.hold_max = hold_max
+        self.max_swing = max_swing
+        self.yaw_deadband = yaw_deadband
+        self._was_turning = False
         self.reset()
 
     def reset(self) -> None:
@@ -296,13 +315,21 @@ class CommandAnchor:
 
         Same order as training: re-pin on a new command, then advance the anchor by the
         commanded yaw, then rotate. The rotated ``(vx, vy)`` can leave the trained box or
-        cone; training's observation did too, so it is not clipped again.
+        cone (training's observation did too) unless ``max_swing`` caps it. With
+        ``hold_gain`` > 0 and the yaw stick centred, ``wz`` is the heading hold instead.
         """
+        turning = abs(wz) > self.yaw_deadband
+        if self._was_turning and not turning:
+            self.reset()                  # yaw stick released: hold the heading it left
+        self._was_turning = turning
         if self._cmd is None or math.hypot(vx - self._cmd[0], vy - self._cmd[1]) > self.retarget_tol:
             self._cmd = (vx, vy)
             self._heading = yaw
         self._heading = wrap_to_pi(self._heading + wz * dt)
         err = wrap_to_pi(self._heading - yaw)
-        c, s = math.cos(err), math.sin(err)
+        swing = err if self.max_swing is None else max(-self.max_swing, min(self.max_swing, err))
+        c, s = math.cos(swing), math.sin(swing)
         ax, ay = self._cmd
+        if self.hold_gain > 0.0 and not turning:
+            wz = max(-self.hold_max, min(self.hold_max, self.hold_gain * err))
         return c * ax - s * ay, s * ax + c * ay, wz
