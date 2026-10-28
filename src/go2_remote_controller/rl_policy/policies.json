@@ -545,6 +545,26 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_climb30_finetune_2026-10-27/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_climb30_finetune_head_2026-10-28",
+      "name": "climb30-finetune-head (2026-10-28_01-53-22)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_climb30_finetune_head \u00b7 2026-10-28_01-53-22 (1000 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_climb30_finetune_head_2026-10-28/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_krail_percept_2026-10-28",
+      "name": "K-Rails percept v2 (solid slabs)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_krail_percept \u00b7 2026-10-28_04-50-38 (3000 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_krail_percept_2026-10-28/policy.onnx"
     }
   ]
 }
