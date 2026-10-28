@@ -54,10 +54,27 @@ EOF
 }
 
 # Settings may be given as VAR=value arguments (same as prefixing them to the command).
+# Names are checked against the documented settings: an unknown name (e.g. a case typo
+# like Go2_RECORD) would otherwise be exported and silently ignored.
+KNOWN_VARS="ROS_DOMAIN_ID RMW_IMPLEMENTATION UNITREE_IFACE GO2_WS_DIR
+  GO2_AUTH_ENABLED GO2_TOKEN_FILE GO2_RL_POLICY GO2_RL_DRY_RUN
+  GO2_PERCEPTION GO2_HEIGHTMAP_MODE GO2_STEPFIELD_PRESET GO2_BLOCK_HEIGHTS_CM
+  GO2_HEIGHT_EMPTY_FILL GO2_STOP_VIP_REALSENSE GO2_CALIBRATE GO2_CALIBRATE_MASK_DEG
+  GO2_RECORD GO2_RECORD_NAME GO2_RECORD_TERRAIN GO2_RECORD_NOTES GO2_RECORD_DEPTH
+  GO2_RECORD_TOPICS"
 for arg in "$@"; do
   case "$arg" in
     -h|--help) usage; exit 0 ;;
-    [A-Za-z_]*=*) export "$arg" ;;
+    [A-Za-z_]*=*)
+      name="${arg%%=*}"
+      if ! printf '%s\n' $KNOWN_VARS | grep -qx -- "$name"; then
+        echo "[run_all] ❌ Unrecognised setting: $name" >&2
+        hint="$(printf '%s\n' $KNOWN_VARS | grep -ix -- "$name" || true)"
+        [ -n "$hint" ] && echo "[run_all]    Did you mean $hint? (names are case-sensitive)" >&2
+        echo "[run_all] Run with --help to list the variables." >&2
+        exit 2
+      fi
+      export "$arg" ;;
     *) echo "[run_all] Unknown argument: $arg (expected VAR=value or --help)" >&2
        echo "[run_all] Run with --help to list the variables." >&2
        exit 2 ;;
@@ -331,6 +348,42 @@ export CYCLONEDDS_URI="<CycloneDDS><Domain><General><Interfaces><NetworkInterfac
 echo "[run_all] Using UNITREE_IFACE=$UNITREE_IFACE"
 echo "[run_all] Using VENV_PYTHON=$VENV_PYTHON"
 
+# CycloneDDS is pinned to $UNITREE_IFACE: if it has no IPv4 address every ROS node dies
+# with "<iface>: does not match an available interface". Warn and wait for it instead.
+iface_has_ipv4() { ip -4 -o addr show dev "$1" 2>/dev/null | grep -q inet; }
+nm_dhcp_profile() {
+  # Prints the NetworkManager profile on the iface if it is set to DHCP. The Go2's
+  # 192.168.123.x network has no DHCP server, so such a profile fails every 45 s and
+  # drops the address (for 2 min after repeated failures), mid-run as well.
+  command -v nmcli >/dev/null 2>&1 || return 0
+  local con
+  con="$(nmcli -g GENERAL.CONNECTION device show "$1" 2>/dev/null || true)"
+  [ -n "$con" ] || con="$(nmcli -g NAME,DEVICE con show 2>/dev/null | awk -F: -v d="$1" '$2==d{print $1; exit}')"
+  [ -n "$con" ] || return 0
+  if [ "$(nmcli -g ipv4.method con show "$con" 2>/dev/null)" = "auto" ]; then echo "$con"; fi
+}
+dhcp_con="$(nm_dhcp_profile "$UNITREE_IFACE" || true)"
+if [ -n "$dhcp_con" ]; then
+  echo "[run_all] ⚠️  NetworkManager profile '$dhcp_con' on $UNITREE_IFACE uses DHCP (ipv4.method auto)."
+  echo "[run_all]    The robot network has no DHCP server, so the link is torn down every 45 s and can"
+  echo "[run_all]    lose its address for ~2 min, cutting off the sport service and every ROS node mid-run."
+  echo "[run_all]    Fix once with:"
+  echo "[run_all]        sudo nmcli con mod '$dhcp_con' ipv4.method manual ipv4.addresses 192.168.123.18/24"
+  echo "[run_all]        sudo nmcli con up '$dhcp_con'"
+fi
+if ! iface_has_ipv4 "$UNITREE_IFACE"; then
+  echo "[run_all] ⚠️  $UNITREE_IFACE has no IPv4 address, so DDS cannot reach the robot (nodes would fail with"
+  echo "[run_all]    '$UNITREE_IFACE: does not match an available interface'). Check the Ethernet cable / robot power."
+  echo "[run_all]    Waiting up to 150 s for it to come back (Ctrl+C to give up)..."
+  deadline=$((SECONDS + 150))
+  while ! iface_has_ipv4 "$UNITREE_IFACE" && [ "$SECONDS" -lt "$deadline" ]; do sleep 2; done
+  if iface_has_ipv4 "$UNITREE_IFACE"; then
+    echo "[run_all] $UNITREE_IFACE is back: $(ip -4 -o addr show dev "$UNITREE_IFACE" | awk '{print $4}')"
+  else
+    echo "[run_all] ⚠️  $UNITREE_IFACE still has no address -- continuing, but expect ROS nodes to fail."
+  fi
+fi
+
 # ----------------------------
 # 0) Perception: RealSense D435i + height map, auto-started when a camera is on USB
 # ----------------------------
@@ -534,7 +587,9 @@ start_perception() {
   PERCEPTION_STARTED=1
   sleep 3.0
   warn_if_dead "perception ($launch_file)" "$pid" "$PERCEPTION_LOG" || true
-  [ "$heightmap" = "true" ] && CAMERA_YAML_USED="$CAMERA_YAML"
+  # Must be an if: a bare `[ ... ] && x` as the last line returns 1 when heightmap=false,
+  # and set -e then kills the whole script.
+  if [ "$heightmap" = "true" ]; then CAMERA_YAML_USED="$CAMERA_YAML"; fi
 }
 
 # wait_for_depth [seconds]: the driver takes a few seconds to open the camera.
