@@ -933,6 +933,10 @@ if [ "$SPORT_READY" -eq 1 ]; then
     ok_or_die "go2_rl_bridge_node" "$RL_BRIDGE_PID" "/tmp/go2_rl_bridge.log"
 
     echo "[run_all] Starting go2_rl_policy_node (idle until 'RL' selected in the UI) ${RL_EXTRA_ARGS}..."
+    # GO2_CAMERA_PROFILE: which perception pipeline is actually running (usb2/usb3).
+    # The node compares it against a policy's deploy.yaml camera_profile (omni30
+    # students are trained per pipeline) and warns on a mismatch at load time.
+    GO2_CAMERA_PROFILE="$([ -n "$PERCEPTION_USB" ] && echo "usb$PERCEPTION_USB")" \
     "$VENV_PYTHON" "$RL_NODE" --net "$UNITREE_IFACE" --no-prompt $RL_EXTRA_ARGS \
       > /tmp/go2_rl_policy.log 2>&1 &
     RL_PID=$!

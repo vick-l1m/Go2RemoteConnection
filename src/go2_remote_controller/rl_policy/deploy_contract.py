@@ -281,7 +281,7 @@ class DeployContract:
         if style is None:
             return None
         style = str(style)
-        if style not in ("forward_biased", "forward_cone"):
+        if style not in ("forward_biased", "forward_cone", "omni_mixed"):
             raise DeployContractError(
                 f"{self.source}: commands.base_velocity.style is {style!r}, which this node "
                 "does not know how to drive. Update the node, or run a policy it supports."
@@ -297,6 +297,23 @@ class DeployContract:
     def is_forward_cone(self) -> bool:
         """True when the stick must be projected into a forward cone, not clamped per axis."""
         return self.command_style == "forward_cone"
+
+    @property
+    def is_omni_mixed(self) -> bool:
+        """True when the trained envelope is a DISC of radius ``lin_vel_x[1]`` (omni30:
+        ``go2_training.mdp.MixedDirectionVelocityCommand``, every direction at a fixed
+        speed). The stick's magnitude must be capped at that radius -- not clamped per
+        axis, which would both admit the untrained box corner and, on a fixed-speed
+        export (``lin_vel_x == [0.3, 0.3]``), pin a centred stick to 0.3 m/s forward."""
+        return self.command_style == "omni_mixed"
+
+    @property
+    def camera_profile(self) -> str | None:
+        """Which deploy camera pipeline the student's scan DR was fitted to ("usb2" /
+        "usb3"), or None for policies exported before omni30. The start script warns
+        when the detected USB speed does not match."""
+        raw = self._d.get("camera_profile")
+        return None if raw is None else str(raw)
 
     @property
     def cone_half_angle(self) -> float:

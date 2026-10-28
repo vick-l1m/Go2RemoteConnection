@@ -38,6 +38,7 @@ __all__ = [
     "CommandAnchor",
     "forward_gate",
     "stick_to_cone_command",
+    "stick_to_omni_command",
     "stick_to_velocity_command",
     "wrap_to_pi",
     "yaw_from_quat",
@@ -244,6 +245,35 @@ def stick_to_cone_command(
         scale = lateral_max / abs(vy)
         vx *= scale
         vy *= scale
+    return vx, vy, wz
+
+
+def stick_to_omni_command(
+    vx: float,
+    vy: float,
+    wz: float,
+    speed_max: float,
+    yaw_max: float,
+) -> tuple[float, float, float]:
+    """Project the move stick onto the trained omni DISC (``style: omni_mixed``).
+
+    Such a policy (``go2_training.mdp.MixedDirectionVelocityCommand``) trained on every
+    direction at a FIXED speed, so the trained envelope is a disc of radius
+    ``speed_max`` -- which the exported box cannot express. A per-axis clamp fails the
+    same two ways the cone taught us: the box corner (full x AND full y, a 0.42 m/s
+    diagonal at speed_max 0.3) is a speed the policy never saw, and a fixed-speed export
+    makes ``lin_vel_x`` the range ``[0.3, 0.3]``, which a per-axis clamp turns into
+    "always drive forward" and the robot can never stand (the 2026-10-28 cone bug).
+    Here: keep the stick's DIRECTION, cap its magnitude at ``speed_max``; a centred
+    stick stays (0, 0) -- standing is in the trained distribution (``rel_standing_envs``).
+    Yaw is an independent box, clamped.
+    """
+    speed = math.hypot(vx, vy)
+    if speed_max > 0.0 and speed > speed_max:
+        scale = speed_max / speed
+        vx *= scale
+        vy *= scale
+    wz = max(-yaw_max, min(yaw_max, wz))
     return vx, vy, wz
 
 

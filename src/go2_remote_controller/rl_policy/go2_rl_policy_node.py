@@ -263,7 +263,8 @@ class _StdLogger:
 
 from deploy_contract import DeployContract, DeployContractError, fill_unseen_for_full_scan  # noqa: E402
 from forward_bias import (  # noqa: E402
-    CommandAnchor, stick_to_cone_command, stick_to_velocity_command, yaw_from_quat,
+    CommandAnchor, stick_to_cone_command, stick_to_omni_command, stick_to_velocity_command,
+    yaw_from_quat,
 )
 from flight_recorder import FlightRecorder  # noqa: E402
 from classical_gait import ClassicalGait, inverse_kinematics, joint_names_leg_order  # noqa: E402
@@ -707,6 +708,17 @@ class Go2RLPolicyController:
         path = pathlib.Path(path)
         contract = DeployContract.load(str(path.parent))
         self.policy_path = str(path)
+
+        # omni30 students are trained against ONE camera pipeline's scan timing
+        # (deploy.yaml camera_profile). RL_start exports GO2_CAMERA_PROFILE from the
+        # detected USB speed; a mismatch degrades the policy (wrong latency/refresh
+        # distribution) but is not unsafe, so warn rather than refuse.
+        running = os.environ.get("GO2_CAMERA_PROFILE") or None
+        if contract.camera_profile and running and contract.camera_profile != running:
+            self.get_logger().warn(
+                f"policy was trained for the {contract.camera_profile} camera pipeline "
+                f"but the running perception stack is {running}: scan timing is out of "
+                "distribution. Use the matching policy (or replug the camera).")
 
         sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
         onnx_dim = int(sess.get_inputs()[0].shape[1])
@@ -1718,6 +1730,17 @@ class Go2RLPolicyController:
         contract = self.contract
         if contract is None or contract.command_style is None:
             return self._anchor(self._clip_cmd(cmd))
+
+        if contract.is_omni_mixed:
+            # omni30 policies: every direction is trained at a FIXED speed, so the
+            # envelope is a disc. Cap the stick's magnitude, keep its direction.
+            # NOT _clip_cmd: a fixed-speed export has lin_vel_x == [0.3, 0.3], and the
+            # per-axis clamp would pin a centred stick to 0.3 m/s forward -- the same
+            # stand-still bug the cone had (2026-10-28).
+            vx, vy, wz = stick_to_omni_command(
+                float(cmd[0]), float(cmd[1]), float(cmd[2]),
+                speed_max=float(self.cmd_hi[0]), yaw_max=float(self.cmd_hi[2]))
+            return self._anchor(np.array([vx, vy, wz], np.float32))
 
         if contract.is_forward_cone:
             vx, vy, wz = stick_to_cone_command(
