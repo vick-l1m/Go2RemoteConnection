@@ -466,7 +466,7 @@
     },
     {
       "id": "classical_trot_mpc_2026-10-23",
-      "name": "Classical trot (convex-MPC stance) 2026-10-23",
+      "name": "Classical trot (convex-MPC stance, slow 1.2 Hz, fwd <= 0.3 m/s)",
       "model": "Hand-designed Raibert trot + convex-MPC stance forces, CEM-tuned in Isaac (no network)",
       "type": "blind",
       "kind": "classical",
