@@ -47,6 +47,7 @@ import json
 import os
 import socket
 import threading
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -83,6 +84,7 @@ DEF_HEIGHT_SCAN_TOPIC = "/go2/height_scan"
 
 #: The node owning the rolling map whose memory follows the loaded policy.
 DEF_MAP_NODE = "/stepfield_map_node"
+MAP_SET_TIMEOUT_S = 3.0
 
 
 class Go2RLBridge(Node):
@@ -131,6 +133,7 @@ class Go2RLBridge(Node):
         self._map_client = self.create_client(SetParameters, f"{map_node}/set_parameters")
         self._want_memory = None
         self._map_busy = False
+        self._map_sent_t = 0.0             # monotonic time of the in-flight set_parameters
         self._map_state = None             # last (want, ok, why) reported, to log changes only
         self.create_timer(1.0, self._sync_map_memory)
 
@@ -246,7 +249,18 @@ class Go2RLBridge(Node):
         """Set map_memory_s to the loaded policy's value (re-asserted each second, so a
         restarted map node is caught too) and tell the controller whether it took."""
         want = self._want_memory
-        if want is None or self._map_busy:
+        if want is None:
+            return
+        if self._map_busy:
+            # No timeout on call_async: a map node whose executor never serves its parameter
+            # services left this busy forever, silently, and every map policy was refused
+            # with "no answer from the RL bridge yet" (2026-10-29). Report it and retry.
+            if time.monotonic() - self._map_sent_t < MAP_SET_TIMEOUT_S:
+                return
+            self._map_busy = False
+            self._report_memory(want, False,
+                                f"{self._map_node} did not answer set_parameters within "
+                                f"{MAP_SET_TIMEOUT_S:g} s (executor starved?)")
             return
         if not self._map_client.service_is_ready():
             if want > 0.0:      # a memory-free policy does not need the map at all
@@ -258,6 +272,7 @@ class Go2RLBridge(Node):
         req.parameters = [Parameter(name="map_memory_s", value=ParameterValue(
             type=ParameterType.PARAMETER_DOUBLE, double_value=want))]
         self._map_busy = True
+        self._map_sent_t = time.monotonic()
         self._map_client.call_async(req).add_done_callback(
             lambda fut: self._on_map_memory_set(fut, want))
 
