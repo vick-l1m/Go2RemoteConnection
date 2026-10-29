@@ -21,7 +21,10 @@ async def safety_stop(_=Depends(require_token)):
     soft-collapses to the ground. Latched until /safety/resume.
 
     - rl mode    : tell go2_rl_policy_node to ESTOP (damp the motors directly;
-                   also disarms the firmware auto-recovery so it stays down).
+                   also disarms the firmware auto-recovery so it stays down), then
+                   drop back to sport mode: the RL node hands the motors to the sport
+                   service while the robot stays down, so RESUME stands it up in sport
+                   mode rather than under the policy.
     - sport mode : tell web_bridge to disarm the firmware auto-recovery, then Damp,
                    so the robot stays down instead of auto-standing.
     """
@@ -32,6 +35,11 @@ async def safety_stop(_=Depends(require_token)):
 
     if state.control_mode == "rl":
         bridge.publish_estop(True)           # RL node -> damp (soft collapse)
+        # ESTOP first, so the node is already damping when the mode request lands; it
+        # then takes _disengage_from_estop (sport svc back, robot left down). Teleop
+        # stays disabled until RESUME.
+        bridge.publish_control_mode("sport")
+        state.control_mode = "sport"
     else:
         # Disarm the firmware auto-recovery FIRST so the Damp'd robot stays down and
         # the sport service does not auto-stand it; then damp. Re-armed on resume.
@@ -47,6 +55,8 @@ async def safety_resume(_=Depends(require_token)):
 
     - rl mode    : clear the ESTOP -> the RL node re-arms the firmware auto-recovery,
                    ramps back to the default pose and resumes the policy (joystick-ready).
+                   A fallback only: STOP itself drops to sport mode, and RL cannot be
+                   engaged while STOP is latched.
     - sport mode : re-arm the firmware auto-recovery, then SportClient.RecoveryStand()
                    to stand up, and re-enable teleop.
     """

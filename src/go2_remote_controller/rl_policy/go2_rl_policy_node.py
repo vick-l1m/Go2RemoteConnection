@@ -27,11 +27,14 @@ Web control (via the bridge, localhost UDP JSON datagrams):
     IN   mode     {"sport"|"rl"}  control-mode request (from /web_control_mode)
     IN   policy   {id: str}       hot-swap the active policy, idle only (from /web_rl_policy)
     IN   estop    {on: bool}      emergency stop / resume (from /web_estop)
+    IN   move     {meters: float} walk this far along the current heading, <0 = backwards,
+                                  0 = cancel (from /web_rl_move; see distance_move.py)
     IN   ping                     bridge liveness (10 Hz)
     OUT  heartbeat                5 Hz liveness (bridge -> /web_rl_heartbeat)
     OUT  policy_out {id: str}     the policy actually loaded now (-> /web_rl_active_policy)
     OUT  mode_out {"sport"}       on shutdown, un-gate web_bridge (-> /web_control_mode)
     OUT  enabled  {val: bool}     on shutdown, re-enable web_bridge (-> /web_teleop_enabled)
+    OUT  move_out {state, target, travelled, ...}  distance-move progress (-> /web_rl_move_status)
 
 Robot (unitree_sdk2py / DDS):
     SUB  rt/lowstate   LowState_   IMU (quat, gyro) + per-joint q, dq
@@ -268,6 +271,9 @@ from forward_bias import (  # noqa: E402
 )
 from flight_recorder import FlightRecorder  # noqa: E402
 from classical_gait import ClassicalGait, inverse_kinematics, joint_names_leg_order  # noqa: E402
+from distance_move import (  # noqa: E402
+    MAX_DISTANCE, MIN_SPEED, MOVE_SPEED, TELEOP_OVERRIDE, DistanceMove,
+)
 
 
 def projected_gravity(quat_wxyz):
@@ -436,6 +442,12 @@ class Go2RLPolicyController:
         self.low_state = None
         self.cmd = np.zeros(3, np.float32)
         self.last_cmd_t = 0.0
+        # "Move X metres" (distance_move.py). While it drives, its command replaces the
+        # joystick; _move_phase is the phase it started in (SPORT or RL_RUN) -- leaving
+        # that phase cancels it, so it never drives through an engage/STOP/recovery.
+        self.move = DistanceMove()
+        self._move_phase = None
+        self._move_state_prev = self.move.state
         # Posture target for sit/stand policies: 1.0 = stand, 0.0 = sit. Starts at
         # stand because _engage() ramps the robot to the policy's default pose, which
         # is a standing pose -- handing a freshly engaged policy a "sit" command would
@@ -562,6 +574,8 @@ class Go2RLPolicyController:
                 self._set_posture(bool(msg.get("stand", True)))
             elif t == "estop":
                 self._set_estop(bool(msg.get("on", False)))
+            elif t == "move":
+                self._start_move(msg.get("meters", 0.0))
             elif t == "scan_memory":
                 with self._lock:
                     self._scan_memory = (float(msg.get("memory_s") or 0.0),
@@ -659,6 +673,10 @@ class Go2RLPolicyController:
         with self._lock:
             self.cmd = np.array([vx, -vy, -wz], np.float32)
             self.last_cmd_t = self._now()
+            # Touching the joystick takes the robot back from a distance move. The idle
+            # page streams zeros at ~8 Hz, so only a deflected stick counts.
+            if self.move.driving and max(abs(vx), abs(vy), abs(wz)) > TELEOP_OVERRIDE:
+                self.move.cancel("joystick override", self._now())
 
     def _set_posture(self, stand: bool):
         """Latch the sit/stand target for a posture policy.
@@ -1139,7 +1157,12 @@ class Go2RLPolicyController:
             self._recover_pending = False    # cancel any pending RL stand-up
             self.phase = SPORT               # 50 Hz loop stops publishing lowcmd now
         if self.handover and not self.dry_run:
-            self._select_sport()             # restart sport svc -> sport teleop usable again
+            if self._select_sport():         # restart sport svc -> sport teleop usable again
+                # STOP is still latched and the sport svc now owns the motors: damp
+                # through it, as _estop_damp does, so it cannot stand the robot up
+                # before RESUME.
+                with self._sport_lock:
+                    self.sc.Damp()
 
     def _recover(self):
         """Stand back up after an ESTOP (RESUME button) -- the only path that stands
@@ -1341,6 +1364,7 @@ class Go2RLPolicyController:
                 with self._lock:
                     self.phase = ESTOP
                 phase = ESTOP
+        self._move_step(phase)
         try:
             if phase == SPORT:
                 return                       # sport svc owns the robot
@@ -1492,8 +1516,7 @@ class Go2RLPolicyController:
         gyro = np.asarray(ls.imu_state.gyroscope, np.float64)
         grav = np.asarray(projected_gravity(ls.imu_state.quaternion), np.float64)
         with self._lock:
-            timed_out = (self._now() - self.last_cmd_t) > CMD_TIMEOUT
-            cmd = np.zeros(3, np.float32) if timed_out else self._shape_cmd(self.cmd)
+            cmd = self._command_now()
         q_leg = self.classical.step(
             cmd.astype(np.float64), CONTROL_DT, projected_gravity=grav,
             joint_pos=q_isaac[self.leg_from_isaac].reshape(4, 3),
@@ -1799,8 +1822,7 @@ class Go2RLPolicyController:
         q_isaac = q_sdk[self.isaac_from_sdk]
         dq_isaac = dq_sdk[self.isaac_from_sdk]
         with self._lock:
-            timed_out = (self._now() - self.last_cmd_t) > CMD_TIMEOUT
-            cmd = np.zeros(3, np.float32) if timed_out else self._shape_cmd(self.cmd)
+            cmd = self._command_now()
             last_a = self.last_action.copy()
             posture = self.posture_cmd
         # Keyed by term name and emitted in the contract's own order, rather than

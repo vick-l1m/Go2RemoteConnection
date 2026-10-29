@@ -452,6 +452,7 @@ Author: Victor Lim
       );
 
       await refreshSafetyStatus();
+      await refreshControlMode();   // STOP drops RL back to sport mode
     }
 
     async function refreshSafetyStatus() {

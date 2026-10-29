@@ -168,11 +168,12 @@ joystick. Press **RL: OFF** to hand back to the Unitree sport gaits.
   (`kp=0, kd=3`) for a soft, controlled collapse rather than a hard cut.
 - **Web STOP** (`/safety/stop`) genuinely stops all movement: in RL mode the node
   enters the latched `ESTOP` phase and damps the motors (soft collapse to the
-  ground); in sport mode it issues `SportClient.Damp()`. Mode changes are blocked
-  while latched.
-- **Web RESUME** (`/safety/resume`) gets the robot back up: in RL mode the node
-  ramps from the collapsed pose back to the default pose and resumes the policy
-  (joystick-ready); in sport mode it issues `RecoveryStand()` and re-enables teleop.
+  ground), then the server drops back to **sport mode**: the node hands the motors
+  to the sport service and damps through it, so the robot stays down. In sport mode
+  it issues `SportClient.Damp()`. Engaging RL is blocked while latched.
+- **Web RESUME** (`/safety/resume`) gets the robot back up in **sport mode**:
+  `RecoveryStand()` and teleop re-enabled. To run the policy again, toggle RL on
+  after RESUME.
 - The **physical E-stop** remains the true hardware cut for any emergency.
 
 ### Crash / exit recovery (so the robot is never stranded)
