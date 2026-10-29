@@ -8,7 +8,7 @@ Version 2.0
 Author: Victor Lim
 
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 @dataclass
 class RuntimeState:
@@ -18,6 +18,10 @@ class RuntimeState:
     control_mode: str = "sport"   # "sport" (Unitree SportClient) | "rl" (low-level RL policy)
     rl_policy_id: str = ""        # id of the selected/loaded RL policy (see rl_policy/policies.json)
     rl_posture: str = "stand"     # "stand" | "sit" — posture target for a sit/stand RL policy
+    # Latest "Move X m" report from go2_rl_policy_node (/web_rl_move_status):
+    # {state, target, travelled, speed, why, stamp}. state: idle | driving | settling |
+    # done | cancelled | timeout | refused.
+    rl_move: dict = field(default_factory=lambda: {"state": "idle"})
 
 state = RuntimeState()
 

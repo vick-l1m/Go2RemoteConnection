@@ -292,6 +292,7 @@ class WebRosBridge(Node):
         self.pub_rl_policy = self.create_publisher(RosString, "/web_rl_policy", 1)
         self.pub_rl_posture = self.create_publisher(RosString, "/web_rl_posture", 1)
         self.pub_estop = self.create_publisher(Bool, "/web_estop", 1)
+        self.pub_rl_move = self.create_publisher(Float32, "/web_rl_move", 10)
 
         # ---------------- Map subscriptions ----------------
         map_qos = QoSProfile(
@@ -426,6 +427,11 @@ class WebRosBridge(Node):
         # server state so GET /rl/policy reflects reality (incl. a rejected switch).
         self.create_subscription(RosString, "/web_rl_active_policy", self._on_rl_active_policy, 1)
 
+        # ---------------- "Move X m" progress ----------------
+        # go2_rl_policy_node measures the distance (leg odometry) and reports here;
+        # GET /rl/move serves the latest report to the page.
+        self.create_subscription(RosString, "/web_rl_move_status", self._on_rl_move_status, 10)
+
         # AsyncIO loop provided by FastAPI
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -440,6 +446,15 @@ class WebRosBridge(Node):
         pid = msg.data.strip()
         if pid:
             state.rl_policy_id = pid
+
+    def _on_rl_move_status(self, msg: RosString):
+        try:
+            status = json.loads(msg.data)
+        except ValueError:
+            return
+        if isinstance(status, dict):
+            status["stamp"] = time.time()
+            state.rl_move = status
 
     def _rl_watchdog(self):
         now = self.get_clock().now().nanoseconds * 1e-9
@@ -534,6 +549,15 @@ class WebRosBridge(Node):
         msg = RosString()
         msg.data = str(posture)
         self.pub_rl_posture.publish(msg)
+
+    def publish_rl_move(self, meters: float):
+        """Distance goal for go2_rl_policy_node: > 0 forward, < 0 back, 0 = cancel."""
+        if not self._ok_to_publish():
+            return
+
+        msg = Float32()
+        msg.data = float(meters)
+        self.pub_rl_move.publish(msg)
 
     def publish_estop(self, engaged: bool):
         if not self._ok_to_publish():

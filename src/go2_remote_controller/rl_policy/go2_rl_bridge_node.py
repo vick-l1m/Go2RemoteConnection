@@ -15,6 +15,7 @@ ROS -> controller (forwarded as JSON UDP datagrams):
     SUB /web_rl_policy     std_msgs/String       -> {"t":"policy","id":str}
     SUB /web_rl_posture    std_msgs/String       -> {"t":"posture","stand":bool}
     SUB /web_estop         std_msgs/Bool         -> {"t":"estop","on":bool}
+    SUB /web_rl_move       std_msgs/Float32      -> {"t":"move","meters"}  (0 = cancel)
     (plus a 10 Hz {"t":"ping"} keepalive so the controller can deadman this link)
     SUB /go2/height_scan   go2_msgs/HeightScan   -> binary frame (see height_scan_wire)
 
@@ -31,6 +32,7 @@ controller -> ROS (received over UDP, republished):
     {"t":"policy_out","id"}    -> PUB /web_rl_active_policy std_msgs/String      (loaded policy)
     {"t":"mode_out","mode"}    -> PUB /web_control_mode     std_msgs/String      (shutdown un-gate)
     {"t":"enabled","val"}      -> PUB /web_teleop_enabled   std_msgs/Bool        (shutdown un-gate)
+    {"t":"move_out",...}       -> PUB /web_rl_move_status   std_msgs/String      (JSON progress)
 
 Rolling-map memory. ``policy_out`` also carries ``scan_memory_s``: the seconds of map
 memory the loaded policy's height scan was trained with (deploy.yaml
@@ -54,7 +56,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float32, String
 
 import height_scan_wire
 
@@ -106,6 +108,7 @@ class Go2RLBridge(Node):
         self.create_subscription(String, "/web_rl_policy", self._on_policy, 10)
         self.create_subscription(String, "/web_rl_posture", self._on_posture, 10)
         self.create_subscription(Bool, "/web_estop", self._on_estop, 10)
+        self.create_subscription(Float32, "/web_rl_move", self._on_move, 10)
 
         # Perception -> controller. Depth 1: a height scan is only ever useful fresh,
         # and queueing stale terrain behind a momentary stall is worse than dropping it
@@ -127,6 +130,7 @@ class Go2RLBridge(Node):
         self._pub_active_policy = self.create_publisher(String, "/web_rl_active_policy", 1)
         self._pub_mode_out = self.create_publisher(String, "/web_control_mode", 1)
         self._pub_enabled_out = self.create_publisher(Bool, "/web_teleop_enabled", 1)
+        self._pub_move_status = self.create_publisher(String, "/web_rl_move_status", 10)
 
         # Rolling-map memory for the loaded policy (None = it needs none); see the header.
         self._map_node = map_node
@@ -180,6 +184,14 @@ class Go2RLBridge(Node):
 
     def _on_estop(self, msg: Bool):
         self._send({"t": "estop", "on": bool(msg.data)}, repeat=CRITICAL_REPEAT)
+
+    def _on_move(self, msg: Float32):
+        # A start is NOT repeated: a duplicate would be refused as "already running" and
+        # that refusal would overwrite the running status on the page. A cancel (0) is
+        # idempotent, so it is.
+        meters = float(msg.data)
+        self._send({"t": "move", "meters": meters},
+                   repeat=CRITICAL_REPEAT if abs(meters) < 1e-3 else 1)
 
     def _on_height_scan(self, msg):
         """Forward one scan as a binary frame (see height_scan_wire).
@@ -243,6 +255,9 @@ class Go2RLBridge(Node):
                 self._pub_mode_out.publish(String(data=str(msg.get("mode", "sport"))))
             elif t == "enabled":
                 self._pub_enabled_out.publish(Bool(data=bool(msg.get("val", True))))
+            elif t == "move_out":
+                msg.pop("t", None)
+                self._pub_move_status.publish(String(data=json.dumps(msg)))
 
     # ---- rolling-map memory ------------------------------------------- #
     def _sync_map_memory(self):

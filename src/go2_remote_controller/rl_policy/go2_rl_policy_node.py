@@ -706,6 +706,138 @@ class Go2RLPolicyController:
         self._wake.set()
 
     # ------------------------------------------------------------------ #
+    # "Move X metres" (distance_move.py): walk a set distance, in either control mode
+    # ------------------------------------------------------------------ #
+    def _start_move(self, meters):
+        """Web asked for a distance move: ``meters`` > 0 forward, < 0 back, 0 = cancel.
+
+        Runs from SPORT (sent to the sport service as ``SportClient.Move``) or RL_RUN (fed
+        to the policy in place of the joystick). Refused anywhere in between -- engaging,
+        disengaging, STOP, flip recovery -- because nothing is listening to a command then.
+        """
+        try:
+            meters = float(meters)
+        except (TypeError, ValueError):
+            meters = float("nan")
+        now = self._now()
+        with self._lock:
+            phase = self.phase
+            if abs(meters) < 1e-3:
+                if self.move.cancel("cancelled from the web", now):
+                    self.get_logger().info("distance move cancelled from the web")
+                return
+            why = ""
+            if not np.isfinite(meters):
+                why = "invalid distance"
+            elif self.move.driving:
+                why = "a move is already running (cancel it first)"
+            elif self.low_state is None:
+                why = "no LowState yet"
+            elif not ((phase == SPORT and self.requested_mode == "sport")
+                      or (phase == RL_RUN and self.requested_mode == "rl")):
+                why = f"robot is busy ({phase}); wait until it is standing in sport or RL"
+            if not why:
+                meters = max(-MAX_DISTANCE, min(MAX_DISTANCE, meters))
+                speed, why = self._move_speed(meters, phase == RL_RUN)
+            if not why:
+                yaw = yaw_from_quat(*self.low_state.imu_state.quaternion)
+                self.move.start(meters, speed, yaw, now)
+                self._move_phase = phase
+        if why:
+            self.get_logger().warn(f"distance move {meters:+.2f} m refused: {why}")
+            self._send({"t": "move_out", "state": "refused", "target": meters,
+                        "travelled": 0.0, "speed": 0.0, "why": why})
+            return
+        self.get_logger().info(
+            f"distance move {meters:+.2f} m at {speed:.2f} m/s "
+            f"({'RL policy' if phase == RL_RUN else 'sport service'})")
+        self._send_move_status()
+
+    def _move_speed(self, meters, rl):
+        """(speed, "") for a distance move, or (0, why) when the driver cannot do it.
+
+        Under RL the speed must lie inside what the loaded policy trained on, in the
+        direction asked: a cone policy has no reverse, a posture policy no velocity input.
+        """
+        if not rl:
+            return MOVE_SPEED, ""
+        c = self.contract
+        if self.classical is None and "velocity_commands" not in self.obs_terms:
+            return 0.0, "the loaded policy takes no velocity command (posture policy)"
+        if meters > 0.0 or (c is not None and c.is_omni_mixed):
+            top = float(self.cmd_hi[0])          # omni: a disc, same speed every way
+        elif c is not None and c.is_forward_cone:
+            return 0.0, "the loaded policy is forward-only (cone); it cannot walk backwards"
+        else:
+            top = -float(self.cmd_lo[0])
+        speed = min(MOVE_SPEED, top)
+        if speed < MIN_SPEED:
+            return 0.0, (f"the loaded policy has no trained "
+                         f"{'forward' if meters > 0.0 else 'reverse'} speed")
+        return speed, ""
+
+    def _command_now(self):
+        """The velocity command this tick (caller holds ``self._lock``): a driving
+        distance move, else the joystick behind its deadman. Both go through the
+        policy's own shaping, so a move is fed the same envelope/anchor as the stick."""
+        if self.move.driving:
+            yaw = yaw_from_quat(*self.low_state.imu_state.quaternion)
+            # A world-anchored policy's CommandAnchor already holds the heading with the
+            # yaw input centred; a second hold on top would read as operator yaw to it.
+            anchored = self.contract is not None and self.contract.world_anchored
+            vx, wz = self.move.command(yaw, hold_heading=not anchored)
+            return self._shape_cmd(np.array([vx, 0.0, wz], np.float32))
+        if (self._now() - self.last_cmd_t) > CMD_TIMEOUT:
+            return np.zeros(3, np.float32)
+        return self._shape_cmd(self.cmd)
+
+    def _move_step(self, phase):
+        """Per-tick distance move: odometry, phase guard, sport drive, status out."""
+        move = self.move
+        now = self._now()
+        if move.measuring:
+            ls = self.low_state
+            q = [ls.motor_state[i].q for i in range(12)]
+            dq = [ls.motor_state[i].dq for i in range(12)]
+            with self._lock:
+                if move.driving and phase != self._move_phase:
+                    move.cancel(f"control changed ({self._move_phase} -> {phase})", now)
+                move.update(now, CONTROL_DT, q, dq, ls.imu_state.gyroscope,
+                            ls.imu_state.quaternion, ls.foot_force)
+        # Sport mode: this process drives the sport service directly, at web_bridge's
+        # own 20-25 Hz. web_bridge stays quiet meanwhile -- the idle page's zero teleop
+        # makes it send nothing -- and a deflected stick cancels the move (_set_teleop).
+        if self._move_phase == SPORT and phase == SPORT:
+            if move.driving and self._tick % 2 == 0:
+                vx, wz = move.command(yaw_from_quat(*self.low_state.imu_state.quaternion))
+                self._sport_call(lambda: self.sc.Move(vx, 0.0, wz))
+            elif (not move.driving and self._move_state_prev == "driving"
+                  and move.why != "joystick override"):   # the operator is driving now
+                self._sport_call(self.sc.StopMove)
+        if move.state != self._move_state_prev or (move.measuring and self._tick % 10 == 0):
+            if move.state != self._move_state_prev and not move.measuring:
+                self.get_logger().info(
+                    f"distance move {move.state}: {move.progress:+.2f} of {move.target:+.2f} m"
+                    + (f" ({move.why})" if move.why else ""))
+            self._move_state_prev = move.state
+            self._send_move_status()
+
+    def _sport_call(self, fn):
+        """One SportClient call from the control thread, skipped (not waited for) if
+        the transition worker holds the sport client -- the loop must never block."""
+        if not self._sport_lock.acquire(blocking=False):
+            return
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warn(f"distance move: sport command failed ({e})")
+        finally:
+            self._sport_lock.release()
+
+    def _send_move_status(self):
+        self._send({"t": "move_out", **self.move.status()})
+
+    # ------------------------------------------------------------------ #
     # Policy selection (hot-swap the onnx, idle only)
     # ------------------------------------------------------------------ #
     def _resolve_policy_path(self, entry):

@@ -50,6 +50,7 @@ Author: Victor Lim
       setTimeout(refreshControlMode, 250);
       setTimeout(loadPolicies, 300);
       setTimeout(refreshPosture, 350);
+      setInterval(pollMove, 400);
       initJoysticks();
       setTimeout(pollPerceptionStatus, 400);
       setInterval(pollPerceptionStatus, 2000);
@@ -375,6 +376,71 @@ Author: Victor Lim
       }
     }
 
+    // ---- Move X m (distance move) --------------------------------------
+    // POST /rl/move: go2_rl_policy_node walks that far along the current heading
+    // (negative = backwards) and stops, measuring with leg odometry -- so it works with
+    // RL on (fed to the policy as its command) and off (sport service). Touching the
+    // joystick cancels it.
+    const MOVE_LIVE = ["pending", "driving", "settling"];
+
+    async function submitMove() {
+      if (!Go2Shared.ensureLoggedIn()) return;
+      const meters = parseFloat(document.getElementById("moveMeters").value);
+      if (!Number.isFinite(meters) || Math.abs(meters) < 0.01 || Math.abs(meters) > 5) {
+        Go2Shared.setStatus("Invalid distance", false, "Enter a number between -5 and 5 m (not 0).");
+        return;
+      }
+      if (!Go2Shared.state.COMMS_ENABLED) {
+        Go2Shared.setStatus("STOP latched 🔒", false, "Press RESUME before sending a move.");
+        return;
+      }
+      const r = await Go2Shared.httpPost("/rl/move", { meters });
+      Go2Shared.setStatus(
+        r.ok ? `Move sent: ${meters > 0 ? "+" : ""}${meters.toFixed(2)} m` : `Move failed (HTTP ${r.status})`,
+        r.ok, r.text);
+      pollMove();
+    }
+
+    async function cancelMove() {
+      const r = await Go2Shared.httpPost("/rl/move/cancel", null, { bypassCommsGate: true });
+      Go2Shared.setStatus(r.ok ? "Move cancelled" : `Cancel failed (HTTP ${r.status})`, r.ok, r.text);
+      pollMove();
+    }
+
+    async function pollMove() {
+      const r = await Go2Shared.httpGet("/rl/move", { bypassCommsGate: true });
+      if (!r.ok) return;
+      let m;
+      try { m = JSON.parse(r.text); } catch (_) { return; }
+      const live = MOVE_LIVE.includes(m.state);
+      const fmt = (v) => `${v >= 0 ? "+" : ""}${Number(v || 0).toFixed(2)}`;
+      const label = {
+        idle: "No move yet.",
+        pending: "Sent, waiting for the controller…",
+        driving: "Moving",
+        settling: "Stopped, settling",
+        done: "Done",
+        cancelled: "Cancelled",
+        timeout: "Timed out",
+        refused: "Refused",
+      }[m.state] || m.state;
+      let text = label;
+      if (m.state !== "idle" && m.state !== "pending") {
+        text += ` — ${fmt(m.travelled)} of ${fmt(m.target)} m`;
+        if (m.state === "driving" && m.speed) text += ` @ ${Number(m.speed).toFixed(2)} m/s`;
+      }
+      if (m.why) text += ` (${m.why})`;
+      const el = document.getElementById("moveStatus");
+      if (el) {
+        el.textContent = text;
+        el.style.color = m.state === "refused" || m.state === "timeout" ? "#b71c1c" : "#555";
+      }
+      const go = document.getElementById("moveGoBtn");
+      const cancel = document.getElementById("moveCancelBtn");
+      if (go) go.disabled = live;
+      if (cancel) cancel.disabled = !live;
+    }
+
     async function toggleControlMode() {
       // Decide from the current mode: RL on -> turn sport service OFF,
       // RL off -> hand control back so the sport service starts again.
@@ -562,6 +628,23 @@ Author: Victor Lim
         <div class="small" style="color:#777; margin-top:4px;">
           These drive the <em>trained policy</em>. The Stand/Sit buttons in the top row
           call the Unitree sport service instead — do not use those while RL is on.
+        </div>
+      </div>
+
+      <div style="border:1px solid #ccc; border-radius:6px; padding:8px; margin-bottom:10px;">
+        <div style="font-weight:bold; margin-bottom:6px;">Move X m</div>
+        <div class="row" style="align-items:center; gap:8px; margin-bottom:4px;">
+          <input id="moveMeters" type="number" min="-5" max="5" step="0.1" placeholder="e.g. 1.5 or -0.5"
+                 style="width:140px;" onkeydown="if (event.key === 'Enter') submitMove()" />
+          <span>m</span>
+          <button id="moveGoBtn" onclick="submitMove()">Go</button>
+          <button id="moveCancelBtn" onclick="cancelMove()" disabled>Cancel</button>
+        </div>
+        <div id="moveStatus" class="small" style="color:#555;">No move yet.</div>
+        <div class="small" style="color:#777; margin-top:4px;">
+          Walks that far along the current heading and stops; negative = backwards (−5…5 m).
+          Works with RL on (the policy is driven) or off (sport service). Distance comes
+          from leg odometry. Touching a joystick cancels it.
         </div>
       </div>
 

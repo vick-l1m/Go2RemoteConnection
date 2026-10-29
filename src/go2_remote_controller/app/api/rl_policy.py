@@ -20,6 +20,7 @@ import pathlib
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.auth import require_token
 from app.core.state import state
+from app.models.movement import RlMoveReq
 from app.ros_bridge import get_bridge
 
 router = APIRouter()
@@ -185,3 +186,45 @@ async def set_posture(posture: str, _=Depends(require_token)):
     state.rl_posture = posture
     get_bridge().publish_rl_posture(posture)
     return {"ok": True, "posture": posture}
+
+
+# ---------------------------------------------------------------------------
+# "Move X m": walk a set distance along the current heading, then stop.
+#
+# Measured and driven by go2_rl_policy_node (rl_policy/distance_move.py), not by the
+# sport move_forward_meters_node: that one stops on /utlidar/robot_odom, which the Go2
+# stops publishing the moment an RL policy is engaged. The node runs the same leg
+# odometry in both modes and drives whichever controller owns the robot -- the policy
+# (as its velocity command) or the sport service (SportClient.Move).
+# ---------------------------------------------------------------------------
+
+@router.post("/rl/move")
+async def rl_move(req: RlMoveReq, _=Depends(require_token)):
+    if state.shutting_down:
+        raise HTTPException(status_code=503, detail="Server shutting down")
+    if state.stop_latched:
+        raise HTTPException(status_code=423, detail="STOP latched: RESUME before moving")
+    if not state.teleop_enabled:
+        raise HTTPException(status_code=423, detail="Teleop disabled (safety stop)")
+
+    meters = float(req.meters)
+    if abs(meters) < 0.01:
+        raise HTTPException(status_code=400, detail="distance must be at least 1 cm either way")
+
+    # Mark it pending so a poll racing the node's first report does not show the
+    # previous move's result as this one's.
+    state.rl_move = {"state": "pending", "target": meters, "travelled": 0.0, "why": ""}
+    get_bridge().publish_rl_move(meters)
+    return {"ok": True, "meters": meters, "control_mode": state.control_mode}
+
+
+@router.post("/rl/move/cancel")
+async def rl_move_cancel(_=Depends(require_token)):
+    # Allowed even while STOP-latched: cancelling can only ever make the robot do less.
+    get_bridge().publish_rl_move(0.0)
+    return {"ok": True}
+
+
+@router.get("/rl/move")
+async def rl_move_status(_=Depends(require_token)):
+    return state.rl_move
