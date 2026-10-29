@@ -585,6 +585,26 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_omni30_finetune_usb2_2026-10-29/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_student_usb3_2026-10-29",
+      "name": "omni30-student-usb3 (2026-10-29_12-12-03)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_student_usb3 \u00b7 2026-10-29_12-12-03 (2000 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_student_usb3_2026-10-29/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_finetune_usb3_2026-10-29",
+      "name": "omni30-finetune-usb3 (2026-10-29_14-04-39)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_finetune_usb3 \u00b7 2026-10-29_14-04-39 (1500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_finetune_usb3_2026-10-29/policy.onnx"
     }
   ]
 }
