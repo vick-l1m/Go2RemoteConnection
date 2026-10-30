@@ -620,11 +620,15 @@ start_perception() {
   else
     launch_file="real_perception_usb2.launch.py"
   fi
+  # ros2 launch rejects an empty 'name:=' argument, so block_heights goes in only when
+  # set; otherwise the launch file's own default ("" = use the preset) applies.
+  local block_args=()
+  if [ -n "$BLOCK_HEIGHTS_M" ]; then block_args=(block_heights:="$BLOCK_HEIGHTS_M"); fi
   echo "[run_all] Launching $launch_file (heightmap=$heightmap, mode=$GO2_HEIGHTMAP_MODE$([ "$GO2_HEIGHTMAP_MODE" = "stepfield" ] && echo "/$STEPFIELD_DESC"), empty_fill=$GO2_HEIGHT_EMPTY_FILL -- must match the policy's unobserved_value)"
   ros2 launch "$PERCEPTION_LAUNCH_DIR/$launch_file" \
     camera_config:="$CAMERA_YAML" rviz:=false empty_fill:="$GO2_HEIGHT_EMPTY_FILL" \
     heightmap:="$heightmap" heightmap_mode:="$GO2_HEIGHTMAP_MODE" \
-    stepfield_preset:="$GO2_STEPFIELD_PRESET" block_heights:="$BLOCK_HEIGHTS_M" \
+    stepfield_preset:="$GO2_STEPFIELD_PRESET" "${block_args[@]}" \
     map_enabled:="$([ "$heightmap" = "true" ] && echo "$MAP_ENABLED" || echo false)" \
     > "$PERCEPTION_LOG" 2>&1 &
   local pid=$!
