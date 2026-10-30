@@ -542,8 +542,15 @@ vip_realsense_running() {
 
 # Something already owns the camera under OUR topic names? (a previous RL_start or a
 # manual launch) -- only ONE process may open a RealSense.
+# Needs a live PUBLISHER, not just the topic name: `ros2 topic list` also lists a topic
+# that only has subscribers (a leftover heightmap node) or that the ros2 daemon still
+# remembers from a driver that has since died, and then perception was "reused" from a
+# camera nobody was running (2026-10-30). --no-daemon asks the live graph.
 realsense_driver_running() {
-  timeout 6 ros2 topic list 2>/dev/null | grep -q '^/go2/camera/depth/image_rect_raw$'
+  local pubs
+  pubs="$(timeout 8 ros2 topic info --no-daemon --spin-time 2 /go2/camera/depth/image_rect_raw 2>/dev/null \
+    | awk '/^Publisher count:/ {print $3}')"
+  [ "${pubs:-0}" -gt 0 ]
 }
 
 # A MESSAGE must arrive, not just the topic exist: heightmap_node advertises
