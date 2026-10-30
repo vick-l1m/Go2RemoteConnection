@@ -605,6 +605,16 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_omni30_finetune_usb3_2026-10-29/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_smooth_usb2_2026-10-30",
+      "name": "omni30-smooth-usb2 (2026-10-30_00-49-19)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_smooth_usb2 \u00b7 2026-10-30_00-49-19 (1500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_smooth_usb2_2026-10-30/policy.onnx"
     }
   ]
 }
