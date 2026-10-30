@@ -219,6 +219,8 @@ Author: Victor Lim
       if (wantStream && !rsWs) rsOpenStream();
       else if (!wantStream && rsWs) rsCloseStream();
 
+      renderPerceptionStack(st);
+
       // ---- height-map mode buttons + camera-policy gate ----
       const flowing = !!st.height_scan_flowing;
       const modes = document.getElementById("hmModes");
@@ -227,6 +229,72 @@ Author: Victor Lim
         perceptionReady = flowing;
         renderPolicyOptions();
       }
+    }
+
+    // ---- "Current perception stack": policy needs vs node reports ---------
+    // stack_required comes from the selected policy's deploy.yaml, stack_running from
+    // /go2/perception_mode (heightmap_node / stepfield_map_node). Snapped-vs-raw and the
+    // map memory follow the selected policy automatically (go2_rl_bridge_node sets them on
+    // stepfield_map_node); the camera link and the map itself need an RL_start restart.
+    function fmtLevels(lv) {
+      return lv && lv.length ? lv.map((v) => `${Math.round(v * 1000) / 10}`).join(" / ") + " cm" : "";
+    }
+    function renderPerceptionStack(st) {
+      const body = document.getElementById("rsStackRows");
+      const note = document.getElementById("rsStackNote");
+      if (!body) return;
+      const req = st.stack_required;
+      const run = st.stack_running;
+      const rows = [];
+      const notes = [];
+      const esc = (v) => String(v ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+      const cell = (text, ok) => `<td class="${ok === undefined ? "" : (ok ? "ok" : "bad")}">${esc(text)}${ok === undefined ? "" : (ok ? " ✓" : " ✗")}</td>`;
+      const add = (label, need, have, ok) => rows.push(`<tr><th>${esc(label)}</th>${cell(need)}${cell(have, ok)}</tr>`);
+
+      if (!req) {
+        add("Policy", "–", "–");
+      } else if (!req.deploy_found) {
+        add("Policy", req.name || req.policy, "deploy.yaml not found");
+      } else if (!req.height_scan) {
+        add("Policy", req.name || req.policy, "");
+        add("Height scan", "none (blind policy)", run ? `${run.node}` : "–", true);
+      } else {
+        add("Policy", req.name || req.policy, "");
+        // camera pipeline (USB 2 depth-only vs USB 3 cloud): fixed by the cable + launch
+        const camRun = st.mode || "–";
+        const camOk = !req.camera_profile || req.camera_profile === st.mode;
+        add("Camera", req.camera_profile || "any", camRun, req.camera_profile ? camOk : undefined);
+        if (req.camera_profile && !camOk && st.mode)
+          notes.push(`camera is ${st.mode}, policy expects ${req.camera_profile}: change the port/cable and restart RL_start`);
+        // node
+        add("Height-map node", req.memory_s > 0 ? "stepfield_map_node (map on)" : "either node",
+            run ? run.node : "not running", run ? (req.memory_s > 0 ? run.node === "stepfield_map_node" : true) : false);
+        // snapped or raw
+        const needHeights = req.snap ? `snapped to ${fmtLevels(req.levels)} (plane fit)` : "raw heights (no snapping)";
+        let haveHeights = "–", hOk;
+        if (run) {
+          haveHeights = run.snap ? `snapped to ${fmtLevels(run.levels)}${run.preset ? ` · ${run.preset}` : ""}` : "raw heights";
+          hOk = run.snap === req.snap;
+        }
+        add("Heights", needHeights, haveHeights, hOk);
+        if (req.snap && run && run.snap)
+          notes.push("snapped policies use the course's block heights you set (GO2_BLOCK_HEIGHTS_CM / preset); training used " + fmtLevels(req.levels));
+        // rolling map
+        const needMap = req.memory_s > 0 ? `on, ${req.memory_s} s memory` : "off (current frame only)";
+        let haveMap = "–", mOk;
+        if (run) {
+          haveMap = run.map ? `on, ${run.memory_s} s memory` : "off";
+          mOk = req.memory_s > 0 ? (run.map && Math.abs(run.memory_s - req.memory_s) < 1e-6)
+                                 : (!run.map || run.memory_s === 0);
+        }
+        add("Rolling map", needMap, haveMap, mOk);
+        if (req.memory_s > 0 && run && !run.map)
+          notes.push("this policy needs the rolling map: restart RL_start with GO2_HEIGHTMAP_MODE=stepfield GO2_MAP=1");
+        if (run && run.node === "stepfield_map_node")
+          notes.push("heights and memory switch automatically when you select a policy");
+      }
+      body.innerHTML = rows.join("");
+      if (note) note.textContent = notes.join(" · ");
     }
 
     // ---- RL policy dropdown -------------------------------------------
@@ -303,6 +371,7 @@ Author: Victor Lim
         `URL: ${r.url}\n${r.text}`
       );
       await refreshPolicy();      // re-read the truth: the node may reject/fall back
+      setTimeout(pollPerceptionStatus, 1500);   // the bridge re-sets the stack within ~1 s
     }
 
     async function refreshPolicy() {
@@ -691,7 +760,17 @@ Author: Victor Lim
           <button id="rsStreamColor" onclick="rsSelectStream('color')">Colour</button>
           <span id="rsHint" class="small" style="color:#555;"></span>
         </div>
-        <img id="rsImg" alt="RealSense stream" />
+        <div class="rsBody">
+          <img id="rsImg" alt="RealSense stream" />
+          <div id="rsStack" class="rsStack">
+            <h3>Current perception stack</h3>
+            <table>
+              <thead><tr><th></th><th>Policy needs</th><th>Running</th></tr></thead>
+              <tbody id="rsStackRows"></tbody>
+            </table>
+            <div id="rsStackNote" class="small" style="color:#555; margin-top:6px;"></div>
+          </div>
+        </div>
         <div id="rsScanInfo" class="small" style="color:#555; text-align:center; margin-top:6px;"></div>
       </div>
 

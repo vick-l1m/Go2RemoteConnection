@@ -31,7 +31,10 @@ RL policy
 
 Perception (RealSense D435i -> /go2/height_scan)
   GO2_PERCEPTION=auto|usb3|usb2|0   Camera launch: auto-detect, force, or off.
-  GO2_HEIGHTMAP_MODE=stepfield|voxel   Snap cells to step levels, or raw max-z map.
+  GO2_HEIGHTMAP_MODE=stepfield|voxel   stepfield (default): one node that snaps cells to
+                               step levels OR publishes raw max-z heights, switched per
+                               selected policy (deploy.yaml snap), with the rolling map.
+                               voxel: raw max-z map only, no rolling map.
   GO2_STEPFIELD_PRESET=lab_blocks|half_cubic|full_cubic|grid_pallet
                                Course step heights (10 / 15+30 / 30 / 3.8+7.6 cm).
   GO2_BLOCK_HEIGHTS_CM=10,15   Custom block-top heights in cm; overrides the preset.
@@ -408,6 +411,11 @@ fi
 #   GO2_HEIGHTMAP_MODE=stepfield  (default) stepfield_map_node: terrace plane fit, every
 #                                 cell snapped to floor + k * step of the preset. Same
 #                                 /go2/height_scan contract, so every policy runs on it.
+#                                 Policies trained on RAW heights (no deploy.yaml snap,
+#                                 e.g. omni30-smooth-usb2) get snap_enabled:=false from the
+#                                 RL bridge on selection: heightmap_node's max-z cells plus
+#                                 the rolling map of raw heights -- their exact training
+#                                 input. Switches at runtime; no restart, one node.
 #                       voxel     heightmap_node: max z per cell, continuous (old default).
 #   GO2_STEPFIELD_PRESET=lab_blocks  stepfield only, MUST match the course: lab_blocks
 #                                 (10 cm), half_cubic (15/30 cm), full_cubic (30 cm). A

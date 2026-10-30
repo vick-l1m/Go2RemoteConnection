@@ -280,3 +280,16 @@ canvas {
 }
 .hmModes { float: right; font-weight: normal; display: inline-flex; gap: 4px; align-items: center; }
 .hmModes button { padding: 2px 8px; font-size: 12px; }
+/* "Current perception stack" box beside the RealSense image: what the selected policy
+   needs (its deploy.yaml) next to what the height-map node reports it is producing. */
+.rsBody { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: center; }
+.rsBody #rsImg { margin: 8px 0 0; }
+.rsStack { flex: 1 1 260px; max-width: 420px; margin-top: 8px; padding: 8px 10px;
+           border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 13px; }
+.rsStack h3 { margin: 0 0 6px; font-size: 14px; }
+.rsStack table { width: 100%; border-collapse: collapse; }
+.rsStack th, .rsStack td { text-align: left; padding: 3px 4px; vertical-align: top;
+                           border-top: 1px solid var(--border); }
+.rsStack th { font-weight: 600; color: #555; white-space: nowrap; }
+.rsStack td.ok { color: #1e7b34; }
+.rsStack td.bad { color: #b3261e; font-weight: 600; }

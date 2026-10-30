@@ -579,7 +579,9 @@ class Go2RLPolicyController:
             elif t == "scan_memory":
                 with self._lock:
                     self._scan_memory = (float(msg.get("memory_s") or 0.0),
-                                         bool(msg.get("ok")), str(msg.get("why") or ""))
+                                         bool(msg.get("ok")), str(msg.get("why") or ""),
+                                         bool(msg.get("snap_ok", True)),
+                                         str(msg.get("snap_why") or ""))
             elif t == "ping":
                 pass   # liveness only; last_bridge_t already updated above
 
@@ -1088,9 +1090,12 @@ class Go2RLPolicyController:
     def _announce_policy(self):
         """Echo the active policy to the bridge, with the rolling-map memory its height
         scan was trained on (0 = none); the bridge sets the map to it and answers."""
-        memory = self.contract.scan_memory_s if self.contract is not None else None
+        c = self.contract
+        memory = c.scan_memory_s if c is not None else None
+        # Snapped levels or raw heights (None: blind policy, leave the node alone).
+        snap = (c.scan_snap_levels is not None) if (c is not None and c.uses_height_scan) else None
         self._send({"t": "policy_out", "id": self.active_policy_id,
-                    "scan_memory_s": memory or 0.0})
+                    "scan_memory_s": memory or 0.0, "scan_snap": snap})
 
     def _set_estop(self, on):
         """Emergency stop from the web STOP button. STOP always wins: the motors go
@@ -1225,6 +1230,10 @@ class Go2RLPolicyController:
                     why = got[2] if got is not None else "no answer from the RL bridge yet"
                     refusal = (f"it was trained on a height scan with {want:g} s of rolling-map "
                                f"memory and the map is not confirmed ({why})")
+                elif not got[3]:
+                    kind = "snapped" if self.contract.scan_snap_levels else "raw (unsnapped)"
+                    refusal = (f"it was trained on {kind} heights and the height map could not "
+                               f"be switched to them ({got[4]})")
         if refusal is not None:
             self.get_logger().error(
                 f"refusing to engage '{self.active_policy_id}': {refusal}; staying in sport mode")

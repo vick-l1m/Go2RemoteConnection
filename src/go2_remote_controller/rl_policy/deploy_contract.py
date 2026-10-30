@@ -355,6 +355,18 @@ class DeployContract:
         return float(memory.get("memory_s", 2.0))
 
     @property
+    def scan_snap_levels(self) -> list[float] | None:
+        """The discrete levels the height scan was snapped to in training, or None.
+
+        Recorded as ``observations.height_scan.params.snap.levels`` (``CameraHeightScanDR``
+        snap, the sim twin of ``stepfield_map_node``). None for a raw-height scan: the
+        perception stack must then publish unsnapped heights (``snap_enabled:=false``).
+        """
+        hs = (self._d.get("observations") or {}).get("height_scan") or {}
+        levels = ((hs.get("params") or {}).get("snap") or {}).get("levels")
+        return [float(v) for v in levels] if levels else None
+
+    @property
     def height_scan_input_mask(self) -> list[bool] | None:
         """The mask deploy blanks against: :attr:`height_scan_mask`, widened by
         :func:`memory_fill_mask` for a policy trained on rolling-map memory."""

@@ -40,8 +40,13 @@ memory the loaded policy's height scan was trained with (deploy.yaml
 stepfield_map_node to it once a second (it changes per policy, after perception is
 already up; 0 makes the map publish the current frame only, which is what a policy
 trained without memory saw) and, for a memory policy, answers the controller with
-``{"t":"scan_memory","memory_s","ok","why"}``; the controller refuses to engage a
-memory policy until ``ok``.
+``{"t":"scan_memory","memory_s","ok","why","snap","snap_ok","snap_why"}``; the controller
+refuses to engage a memory policy until ``ok`` (and ``snap_ok``).
+
+Snapped or raw (2026-10-30). ``policy_out`` also carries ``scan_snap``: True when the
+policy's scan was snapped to levels in training (deploy.yaml ``snap``), False for a raw
+scan, absent for a blind policy. It is set as ``snap_enabled`` on the same node in the
+same request, so one stepfield_map_node serves snapped and raw policies alike.
 """
 
 import argparse
@@ -136,6 +141,7 @@ class Go2RLBridge(Node):
         self._map_node = map_node
         self._map_client = self.create_client(SetParameters, f"{map_node}/set_parameters")
         self._want_memory = None
+        self._want_snap = None             # True snapped / False raw / None leave alone
         self._map_busy = False
         self._map_sent_t = 0.0             # monotonic time of the in-flight set_parameters
         self._map_state = None             # last (want, ok, why) reported, to log changes only
@@ -251,6 +257,8 @@ class Go2RLBridge(Node):
             elif t == "policy_out":
                 self._pub_active_policy.publish(String(data=str(msg.get("id") or "")))
                 self._want_memory = float(msg.get("scan_memory_s") or 0.0)
+                snap = msg.get("scan_snap")
+                self._want_snap = None if snap is None else bool(snap)
             elif t == "mode_out":
                 self._pub_mode_out.publish(String(data=str(msg.get("mode", "sport"))))
             elif t == "enabled":
@@ -283,33 +291,55 @@ class Go2RLBridge(Node):
                                     f"{self._map_node} is not running (start perception with "
                                     "GO2_HEIGHTMAP_MODE=stepfield GO2_MAP=1)")
             return
+        snap = self._want_snap
         req = SetParameters.Request()
         req.parameters = [Parameter(name="map_memory_s", value=ParameterValue(
             type=ParameterType.PARAMETER_DOUBLE, double_value=want))]
+        if snap is not None:
+            req.parameters.append(Parameter(name="snap_enabled", value=ParameterValue(
+                type=ParameterType.PARAMETER_BOOL, bool_value=snap)))
         self._map_busy = True
         self._map_sent_t = time.monotonic()
         self._map_client.call_async(req).add_done_callback(
-            lambda fut: self._on_map_memory_set(fut, want))
+            lambda fut: self._on_map_memory_set(fut, want, snap))
 
-    def _on_map_memory_set(self, fut, want):
+    def _on_map_memory_set(self, fut, want, snap=None):
         self._map_busy = False
         try:
-            result = fut.result().results[0]
+            results = fut.result().results
         except Exception as e:  # noqa: BLE001
-            self._report_memory(want, False, f"set_parameters failed: {e}")
+            self._report_memory(want, False, f"set_parameters failed: {e}", snap, False,
+                                f"set_parameters failed: {e}")
             return
-        self._report_memory(want, bool(result.successful), result.reason)
+        snap_ok, snap_why = True, ""
+        if snap is not None:
+            if len(results) > 1:
+                snap_ok, snap_why = bool(results[1].successful), results[1].reason
+            else:
+                snap_ok, snap_why = False, "no answer for snap_enabled"
+        self._report_memory(want, bool(results[0].successful), results[0].reason,
+                            snap, snap_ok, snap_why)
 
-    def _report_memory(self, want, ok, why):
+    def _report_memory(self, want, ok, why, snap=None, snap_ok=True, snap_why=""):
         if want <= 0.0:
             return              # frame-only: best effort, the controller does not gate on it
-        self._send({"t": "scan_memory", "memory_s": want, "ok": ok, "why": why})
-        if (want, ok, why) != self._map_state:
-            self._map_state = (want, ok, why)
+        self._send({"t": "scan_memory", "memory_s": want, "ok": ok, "why": why,
+                    "snap": snap, "snap_ok": snap_ok, "snap_why": snap_why})
+        state = (want, ok, why, snap, snap_ok, snap_why)
+        if state != self._map_state:
+            self._map_state = state
             if ok:
                 self.get_logger().info(f"rolling map memory set to {want} s for the loaded policy")
             else:
                 self.get_logger().warn(f"policy needs {want} s of map memory, not set: {why}")
+            if snap is not None:
+                if snap_ok:
+                    self.get_logger().info(
+                        f"height map set to {'snapped levels' if snap else 'raw heights'} "
+                        "for the loaded policy")
+                else:
+                    self.get_logger().warn(
+                        f"policy needs {'snapped' if snap else 'raw'} heights, not set: {snap_why}")
 
     def destroy_node(self):
         self._stop = True

@@ -204,6 +204,7 @@ RS_COLOR_TOPIC = "/go2/camera/color/image_raw"
 HEIGHT_SCAN_TOPIC = "/go2/height_scan"
 GRID_MAP_TOPIC = "/go2/local_heightmap"
 STEPFIELD_FIT_TOPIC = "/go2/stepfield_fit"   # stepfield_map_node only (go2_perception)
+PERCEPTION_MODE_TOPIC = "/go2/perception_mode"   # JSON: which scan the height-map node makes
 PREVIEW_MIN_PERIOD_S = 0.1        # JPEG encode cap per stream (10 Hz)
 HEIGHT_MAP_BROADCAST_HZ = 15.0
 
@@ -219,6 +220,8 @@ class PerceptionStore:
     last_height_scan: Optional[Dict[str, Any]] = None
     last_grid_map: Optional[Dict[str, Any]] = None
     last_stepfield_fit: Optional[Dict[str, Any]] = None
+    last_perception_mode: Optional[Dict[str, Any]] = None
+    perception_mode_t: float = 0.0
     last_jpg: Dict[str, Optional[Tuple[bytes, Dict[str, Any]]]] = field(
         default_factory=lambda: {"depth": None, "color": None})
     rates: Dict[str, RateMeter] = field(default_factory=lambda: {
@@ -272,6 +275,11 @@ def get_perception_status() -> Dict[str, Any]:
             "cv2": HAVE_CV2,
         },
         "bridge_started": _bridge is not None,
+        # What the height-map node is producing right now (heightmap_node / stepfield_map_node
+        # publish it latched, once a second). None if no such node has been seen for 3 s.
+        "stack_running": (dict(st.last_perception_mode)
+                          if st.last_perception_mode and time.monotonic() - st.perception_mode_t < 3.0
+                          else None),
     }
 
 
@@ -408,6 +416,10 @@ class WebRosBridge(Node):
                 "grid_map_msgs not importable: /go2/local_heightmap columns view disabled")
         self.sub_stepfield_fit = self.create_subscription(
             Float32MultiArray, STEPFIELD_FIT_TOPIC, self._on_stepfield_fit, sensor_qos)
+        self.sub_perception_mode = self.create_subscription(
+            RosString, PERCEPTION_MODE_TOPIC, self._on_perception_mode,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
         if not HAVE_CV2:
             self.get_logger().warn("cv2 not importable: RealSense image preview disabled")
         self.create_timer(1.0 / HEIGHT_MAP_BROADCAST_HZ, self._broadcast_height_map)
@@ -903,6 +915,16 @@ class WebRosBridge(Node):
             return
         store.last_grid_map = out
         self._hm_pending["grid_map"] = True
+
+    def _on_perception_mode(self, msg):
+        try:
+            mode = json.loads(msg.data)
+        except ValueError:
+            return
+        if isinstance(mode, dict):
+            store = get_perception_store()
+            store.last_perception_mode = mode
+            store.perception_mode_t = time.monotonic()
 
     def _on_stepfield_fit(self, msg):
         """stepfield_map_node's fit summary; layout in its module docstring. The level
