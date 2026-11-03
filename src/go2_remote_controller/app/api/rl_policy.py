@@ -61,6 +61,9 @@ def _load_registry():
             "runnable": bool(entry.get("runnable", True)),
             "available": path.exists(),      # onnx present on disk?
             "group": entry.get("group", ""),
+            # RL page short list: 'deploy' entries show by default, the rest under 'All'.
+            "shelf": entry.get("shelf", "archive"),
+            "short": entry.get("short", ""),
         })
     default_id = data.get("default") or (policies[0]["id"] if policies else "")
     return default_id, policies

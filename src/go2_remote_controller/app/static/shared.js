@@ -540,7 +540,12 @@ window.Go2Shared = {
     };
   },
 
-  createJoystick(canvasId, onMove) {
+  // opts (optional, for pages that style the stick base in CSS):
+  //   radiusFrac  knob travel as a fraction of the canvas' short side (default 0.32)
+  //   knobFrac    knob radius as a fraction of the short side (default: 0.32 x travel)
+  //   ring        false = don't draw the base ring (the canvas background is the base)
+  //   knobColor   () => CSS colour, read on every draw so theme changes apply
+  createJoystick(canvasId, onMove, opts = {}) {
     const canvas = document.getElementById(canvasId);
     if (!canvas) {
       this.setStatus(`Missing joystick canvas: ${canvasId}`, false);
@@ -566,7 +571,7 @@ window.Go2Shared = {
 
       cx = rect.width / 2;
       cy = rect.height / 2;
-      radius = Math.min(rect.width, rect.height) * 0.32;
+      radius = Math.min(rect.width, rect.height) * (opts.radiusFrac || 0.32);
 
       if (!active) {
         knobX = cx;
@@ -580,19 +585,32 @@ window.Go2Shared = {
       const rect = canvas.getBoundingClientRect();
       ctx.clearRect(0, 0, rect.width, rect.height);
 
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.strokeStyle = "#bbb";
-      ctx.lineWidth = 2;
-      ctx.stroke();
+      if (opts.ring !== false) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = "#bbb";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
 
       ctx.beginPath();
-      ctx.arc(knobX, knobY, radius * 0.32, 0, Math.PI * 2);
-      ctx.fillStyle = "#d9e8ff";
-      ctx.strokeStyle = "#7aa7ff";
-      ctx.lineWidth = 2;
-      ctx.fill();
-      ctx.stroke();
+      const knobR = opts.knobFrac ? Math.min(rect.width, rect.height) * opts.knobFrac : radius * 0.32;
+      ctx.arc(knobX, knobY, knobR, 0, Math.PI * 2);
+      if (opts.knobColor) {
+        ctx.save();
+        ctx.fillStyle = opts.knobColor();
+        ctx.shadowColor = "rgba(0,0,0,0.25)";
+        ctx.shadowBlur = 6;
+        ctx.shadowOffsetY = 2;
+        ctx.fill();
+        ctx.restore();
+      } else {
+        ctx.fillStyle = "#d9e8ff";
+        ctx.strokeStyle = "#7aa7ff";
+        ctx.lineWidth = 2;
+        ctx.fill();
+        ctx.stroke();
+      }
     }
 
     function updateFromEvent(clientX, clientY) {
@@ -648,6 +666,15 @@ window.Go2Shared = {
       canvas,
       resize,
       reset,
+      redraw: draw,
+      // Show an outside input (e.g. keyboard) on the knob; display only, no onMove.
+      // A finger on the stick wins.
+      setKnob(x, y) {
+        if (active) return;
+        knobX = cx + x * radius;
+        knobY = cy + y * radius;
+        draw();
+      },
       destroy() {
         window.removeEventListener("resize", resize);
       },

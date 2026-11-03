@@ -30,6 +30,9 @@
     "  path           onnx path, relative to rl_policy/ (or absolute)",
     "  group          dropdown section header shown in the in-window panel and HTML",
     "                 <optgroup>. Keep same-group entries consecutive.",
+    "  shelf          optional, 'deploy' puts it on the RL page's short list (the page",
+    "                 shows only those until the operator picks 'All'). Absent = archive.",
+    "  short          optional compact label for the RL page's list (falls back to name).",
     "The backend also reports a computed 'available' flag (whether the file exists).",
     "",
     "EVERY policy now needs a deploy.yaml BESIDE ITS .onnx. Training writes it from the",
@@ -117,7 +120,9 @@
       "uses_heightmap": false,
       "runnable": true,
       "group": "Flat terrain",
-      "path": "policies/unitree_go2_flat_dr_omni_2026-09-15/policy.onnx"
+      "path": "policies/unitree_go2_flat_dr_omni_2026-09-15/policy.onnx",
+      "shelf": "deploy",
+      "short": "Flat DR omni"
     },
     {
       "id": "flat_amp",
@@ -250,7 +255,9 @@
       "uses_heightmap": false,
       "runnable": true,
       "group": "Tasks",
-      "path": "policies/unitree_go2_sit_stand_2026-09-17/policy.onnx"
+      "path": "policies/unitree_go2_sit_stand_2026-09-17/policy.onnx",
+      "shelf": "deploy",
+      "short": "Sit / stand"
     },
     {
       "id": "unitree_go2_progressive_lane_2026-09-24",
@@ -474,7 +481,9 @@
       "uses_heightmap": false,
       "runnable": true,
       "group": "Classical",
-      "path": "policies/classical_trot_mpc_2026-10-23/gait.json"
+      "path": "policies/classical_trot_mpc_2026-10-23/gait.json",
+      "shelf": "deploy",
+      "short": "Classical trot MPC"
     },
     {
       "id": "unitree_go2_progressive_lane_omni_cap8_map_2026-10-24",
@@ -504,7 +513,10 @@
       "obs_dim": null,
       "uses_heightmap": true,
       "runnable": true,
-      "path": "policies/unitree_go2_grid_pallet_2026-10-26/policy.onnx"
+      "path": "policies/unitree_go2_grid_pallet_2026-10-26/policy.onnx",
+      "group": "Obstacles",
+      "shelf": "deploy",
+      "short": "Grid pallet"
     },
     {
       "id": "unitree_go2_krail_percept_2026-10-26",
@@ -554,7 +566,10 @@
       "obs_dim": null,
       "uses_heightmap": true,
       "runnable": true,
-      "path": "policies/unitree_go2_climb30_finetune_head_2026-10-28/policy.onnx"
+      "path": "policies/unitree_go2_climb30_finetune_head_2026-10-28/policy.onnx",
+      "group": "Stepfield",
+      "shelf": "deploy",
+      "short": "climb30-finetune-head"
     },
     {
       "id": "unitree_go2_krail_percept_2026-10-28",
@@ -564,7 +579,10 @@
       "obs_dim": null,
       "uses_heightmap": true,
       "runnable": true,
-      "path": "policies/unitree_go2_krail_percept_2026-10-28/policy.onnx"
+      "path": "policies/unitree_go2_krail_percept_2026-10-28/policy.onnx",
+      "group": "Obstacles",
+      "shelf": "deploy",
+      "short": "K-Rails percept v2"
     },
     {
       "id": "unitree_go2_omni30_student_usb2_2026-10-29",
@@ -584,7 +602,10 @@
       "obs_dim": null,
       "uses_heightmap": true,
       "runnable": true,
-      "path": "policies/unitree_go2_omni30_finetune_usb2_2026-10-29/policy.onnx"
+      "path": "policies/unitree_go2_omni30_finetune_usb2_2026-10-29/policy.onnx",
+      "group": "Stepfield",
+      "shelf": "deploy",
+      "short": "omni30-finetune"
     },
     {
       "id": "unitree_go2_omni30_student_usb3_2026-10-29",
@@ -604,7 +625,10 @@
       "obs_dim": null,
       "uses_heightmap": true,
       "runnable": true,
-      "path": "policies/unitree_go2_omni30_finetune_usb3_2026-10-29/policy.onnx"
+      "path": "policies/unitree_go2_omni30_finetune_usb3_2026-10-29/policy.onnx",
+      "group": "Stepfield",
+      "shelf": "deploy",
+      "short": "omni30-finetune"
     },
     {
       "id": "unitree_go2_omni30_smooth_usb2_2026-10-30",
@@ -614,7 +638,10 @@
       "obs_dim": null,
       "uses_heightmap": true,
       "runnable": true,
-      "path": "policies/unitree_go2_omni30_smooth_usb2_2026-10-30/policy.onnx"
+      "path": "policies/unitree_go2_omni30_smooth_usb2_2026-10-30/policy.onnx",
+      "group": "Stepfield",
+      "shelf": "deploy",
+      "short": "omni30-smooth"
     }
   ]
 }

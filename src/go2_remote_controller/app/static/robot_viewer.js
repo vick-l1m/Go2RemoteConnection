@@ -93,7 +93,7 @@ function showError(container, message, err) {
  * mountGo2Viewer(containerId, opts)
  *   opts.heightMap      (default true)   subscribe to /ws/height_map and draw it
  *   opts.heightMapMode  (default "cubes") initial mode: "cubes" | "columns" | "off"
- * Returns { destroy, setHeightMapMode, getHeightMapMode, getHeightMapState } or null.
+ * Returns { destroy, setTheme, getBasePose, setHeightMapMode, getHeightMapMode, getHeightMapState } or null.
  */
 export function mountGo2Viewer(containerId, opts = {}) {
   const container = document.getElementById(containerId);
@@ -182,13 +182,17 @@ function mount(container, opts) {
     );
   };
 
-  // ---------------- Height map (base-frame, child of the robot) ----------------
-  // Parented to `robot` once the URDF loads so the tiles follow the live base
-  // pose; until then they sit on a placeholder group at the robotRoot origin.
+  // ---------------- Height map (levelled base frame) ----------------
+  // heightmap_node publishes the scan gravity-levelled: base-centred and
+  // yaw-aligned, with body roll/pitch removed. So the tiles hang off `levelFrame`,
+  // which follows the base height and heading only -- the floor stays flat while
+  // the robot model rolls and pitches over it.
+  const levelFrame = new THREE.Group();
+  robotRoot.add(levelFrame);
   const terrainGroup = new THREE.Group();
   terrainGroup.name = "heightMap";
   terrainGroup.visible = false;
-  robotRoot.add(terrainGroup);
+  levelFrame.add(terrainGroup);
 
   const hm = {
     mode: HEIGHT_MAP_MODES.includes(opts.heightMapMode) ? opts.heightMapMode : "cubes",
@@ -441,7 +445,6 @@ function mount(container, opts) {
     (result) => {
       robot = result;
       robotRoot.add(robot);
-      robot.add(terrainGroup);        // reparent: now follows the live base pose
       applyPose({ joints: DEFAULT_JOINT_ANGLES, base: DEFAULT_BASE });
     },
     undefined,
@@ -469,7 +472,9 @@ function mount(container, opts) {
   resizeObserver.observe(container);
 
   // ---------------- WebSocket feeds ----------------
+  let lastBase = null;   // last /ws/robot_pose base sample, for getBasePose()
   function applyPose(msg) {
+    if (msg.base) lastBase = msg.base;
     if (!robot) return;
     if (msg.joints) {
       for (const [name, angle] of Object.entries(msg.joints)) {
@@ -481,12 +486,15 @@ function mount(container, opts) {
       // Keep the robot centred: /sportmodestate.position is odometry in the robot's
       // world frame, so after a few metres of walking the model simply left the
       // 320 px canvas. Height (z) and orientation are what the viewer is for; the
-      // horizontal travel is dropped. The height-map tiles are children of the robot,
-      // so they stay correctly placed relative to the body either way.
+      // horizontal travel is dropped. The height map takes the height and yaw only
+      // (see levelFrame), so tilting the body never tilts the floor.
       const z = msg.base.position[2];
       const [qx, qy, qz, qw] = msg.base.quaternion;
       robot.position.set(0, 0, z);
       robot.quaternion.set(qx, qy, qz, qw);
+      const yaw = Math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz));
+      levelFrame.position.set(0, 0, z);
+      levelFrame.quaternion.setFromAxisAngle(UP, yaw);
     }
   }
 
@@ -547,6 +555,13 @@ function mount(container, opts) {
     : null;
 
   return {
+    // Page theming: background colour + a tint multiplied into the floor grid.
+    setTheme({ background, gridTint } = {}) {
+      if (background) scene.background.set(background);
+      if (gridTint) grid.material.color.set(gridTint);
+    },
+    // { position:[x,y,z], quaternion:[x,y,z,w] } or null before the first sample.
+    getBasePose() { return lastBase; },
     setHeightMapMode(mode) {
       if (!HEIGHT_MAP_MODES.includes(mode)) return hm.mode;
       hm.mode = mode;

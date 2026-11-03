@@ -1,20 +1,32 @@
 <!--
 RL_sim_to_real.html
 
-Standalone joystick teleop interface for the RL sim-to-real workflow.
-Identical to the standard joystick page but:
-- carries the low-level RL POLICY controls (RL: ON/OFF + active banner)
-- is standalone: no navigation to the other web pages (showNav: false)
-- launched by RL_start_remote_connection.sh
+Standalone robot console for the RL sim-to-real workflow, launched by
+RL_start_remote_connection.sh (showNav: false: no links to the other pages).
 
-Includes:
-- shared login/auth overlay
-- stand/sit actions
-- RL control-mode toggle + active banner
-- dual joystick teleoperation
-- status output for commands and safety state
+Layout (the "Go2 RL Console" design): a fixed top bar, then three columns that
+fill the window -- control | robot + drive dock | perception + event log.
 
-Version 1.0
+Two views, picked from the SPORT | RL switch in the top bar. The switch only
+changes the interface; it never changes who drives the motors:
+- SPORT: the Unitree sport-service commands from go2_movement_controller.html
+  (Movement / Actions / Posing, exclusive). Flips sit behind two confirms and are
+  disabled while a RealSense is attached (or before /perception/status has answered).
+- RL: the policy list (short list from policies.json `shelf: deploy`, or the archive)
+  and START RL, which runs a pre-flight check + hold-to-start, then POST /control_mode/rl.
+  While RL runs the policy is locked, the button becomes STOP RL (immediate handback)
+  and the SPORT view is locked; /actions/* also refuses sport commands server side.
+
+Shared by both views: E-STOP (top middle; Space opens it on a keyboard), the
+Stand/Sit box (sport service, or the policy's posture once a posture policy runs),
+Move X m, joysticks (WASD = left stick, Q/E = turn on a keyboard), speed limits,
+robot model + height map, RealSense panel, stack check and the event log.
+
+Layout is resizable on desktop: drag the gaps between columns or cards (growing one
+shrinks its neighbour). Save layout keeps the sizes in this browser's localStorage;
+Reset layout (⋯ menu) goes back to the default. Theme toggle is the top-right button.
+
+Version 2.2
 Author: Victor Lim
 -->
 
@@ -23,16 +35,389 @@ Author: Victor Lim
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>RL_sim_to_real</title>
+  <title>Go2 RL Console</title>
 
   <link rel="stylesheet" href="/app/static/shared.css" />
+  <style>
+    /* Page tokens: the Go2RLThesis Tracker palette (light) + the night-console dark set.
+       Scoped to this page; shared.css keeps serving the other pages unchanged. */
+    :root {
+      --bg:#f0f2f7; --card:#fff; --card2:#f8fafc; --border:#e2e8f0; --border2:#cbd5e1;
+      --text:#1e293b; --dim:#64748b; --muted:#94a3b8;
+      --blue:#3b82f6; --blue-bg:#eff6ff; --green:#10b981; --green-bg:#ecfdf5;
+      --amber:#d97706; --amber-bg:#fffbeb; --red:#ef4444; --red-bg:#fef2f2;
+      --chip:#f1f5f9; --view:#f8fafc; --grid:rgba(100,116,139,.18); --knob:#1e293b;
+      --logo-bg:#1e293b; --logo-fg:#fff;
+      --sans:-apple-system,'Segoe UI',Roboto,sans-serif;
+      --mono:ui-monospace,'Cascadia Mono',Consolas,'SFMono-Regular',Menlo,monospace;
+    }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+      --bg:#0b1120; --card:#111a2c; --card2:#0f1727; --border:#1e2a40; --border2:#2b3a55;
+      --text:#e2e8f0; --dim:#94a3b8; --muted:#64748b;
+      --blue:#60a5fa; --blue-bg:#13233f; --green:#34d399; --green-bg:#0c2a23;
+      --amber:#fbbf24; --amber-bg:#2a210b; --red:#f87171; --red-bg:#3a1517;
+      --chip:#1a2439; --view:#0a101d; --grid:rgba(148,163,184,.12); --knob:#e2e8f0;
+      --logo-bg:#e2e8f0; --logo-fg:#0b1120; color-scheme:dark;
+    } }
+    :root[data-theme="dark"] {
+      --bg:#0b1120; --card:#111a2c; --card2:#0f1727; --border:#1e2a40; --border2:#2b3a55;
+      --text:#e2e8f0; --dim:#94a3b8; --muted:#64748b;
+      --blue:#60a5fa; --blue-bg:#13233f; --green:#34d399; --green-bg:#0c2a23;
+      --amber:#fbbf24; --amber-bg:#2a210b; --red:#f87171; --red-bg:#3a1517;
+      --chip:#1a2439; --view:#0a101d; --grid:rgba(148,163,184,.12); --knob:#e2e8f0;
+      --logo-bg:#e2e8f0; --logo-fg:#0b1120; color-scheme:dark;
+    }
+
+    [hidden] { display:none !important; }
+    * { box-sizing:border-box; }
+    html, body.console { height:100%; }
+    body.console { margin:0; padding:0; background:var(--bg); color:var(--text);
+                   font-family:var(--sans); font-size:12px; line-height:1.4; }
+    .console button { min-width:0; margin:0; padding:6px 8px; font:600 11px/1.3 var(--sans);
+                      border-radius:6px; border:1px solid var(--border2); background:var(--card2);
+                      color:var(--text); cursor:pointer; white-space:nowrap; }
+    .console button:hover:not(:disabled) { border-color:var(--blue); }
+    .console button:disabled { opacity:.4; cursor:not-allowed; }
+    .console button:focus-visible { outline:2px solid var(--blue); outline-offset:1px; }
+    .console input { min-width:0; margin:0; padding:6px 9px; font:12px var(--mono); border-radius:7px;
+                     border:1px solid var(--border2); background:var(--card2); color:var(--text); }
+    .mono { font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:inherit; white-space:normal; }
+    .ml { font-size:9px; text-transform:uppercase; letter-spacing:.7px; color:var(--muted); font-weight:700; }
+    .note { font-size:10.5px; color:var(--dim); }
+    .dot { width:7px; height:7px; border-radius:50%; background:var(--green); display:inline-block; flex-shrink:0; }
+    .dot.a { background:var(--amber); } .dot.r { background:var(--red); } .dot.x { background:var(--muted); }
+
+    /* ---- top bar: brand + view switch | E-STOP (centred) | live readouts + menu ---- */
+    #appRoot { height:100%; display:flex; flex-direction:column; }
+    .topbar { position:relative; z-index:50; flex-shrink:0; height:54px; display:grid;
+              grid-template-columns:1fr auto 1fr; align-items:center; gap:14px; padding:0 16px;
+              background:var(--card); border-bottom:1px solid var(--border); }
+    .topbar.armed::after { content:""; position:absolute; left:0; right:0; bottom:-1px; height:2px;
+                           background:linear-gradient(90deg, var(--red), var(--amber)); }
+    .tb-left { display:flex; align-items:center; gap:14px; min-width:0; }
+    .brand { display:flex; align-items:center; gap:9px; min-width:0; }
+    .logo { width:30px; height:30px; border-radius:6px; background:var(--logo-bg); color:var(--logo-fg); flex-shrink:0;
+            display:flex; align-items:center; justify-content:center; font-weight:900; font-size:12px; letter-spacing:-1px; }
+    .tb-title { font-weight:800; font-size:14px; letter-spacing:-.3px; white-space:nowrap; }
+    .tb-title span { color:var(--blue); }
+    .tb-host { font-family:var(--mono); font-size:10.5px; color:var(--muted); white-space:nowrap;
+               overflow:hidden; text-overflow:ellipsis; max-width:220px; }
+    .seg { display:flex; background:var(--chip); border-radius:8px; padding:3px; gap:2px; }
+    .console .seg button { border:0; background:transparent; padding:5px 14px; border-radius:6px;
+                           font-size:11px; letter-spacing:.6px; font-weight:700; color:var(--dim); }
+    .console .seg button.on { background:var(--card); color:var(--text); box-shadow:0 1px 2px rgba(0,0,0,.12); }
+    .console .seg button.rl { background:var(--red); color:#fff; }
+    .console .seg button.lock { opacity:.4; }
+    .console #safetyToggleBtn { height:38px; padding:0 24px; border-radius:8px; display:flex; align-items:center; gap:9px;
+             font-weight:800; letter-spacing:.8px; font-size:14px; background:var(--red); border:0; color:#fff;
+             box-shadow:0 0 0 3px var(--red-bg); }
+    .console #safetyToggleBtn kbd { font:600 9.5px var(--mono); background:rgba(255,255,255,.22); padding:1px 5px;
+             border-radius:3px; letter-spacing:0; }
+    .console #safetyToggleBtn.latched { background:var(--amber); color:#1e293b; box-shadow:0 0 0 3px var(--amber-bg); }
+    .console #safetyToggleBtn.latched kbd { display:none; }
+    .tb-right { display:flex; align-items:center; gap:16px; justify-content:flex-end; min-width:0; }
+    .st { display:flex; flex-direction:column; align-items:flex-start; gap:1px; }
+    .st .v { font-family:var(--mono); font-size:12px; font-weight:600; display:flex; align-items:center; gap:5px; white-space:nowrap; }
+    .menu { position:relative; }
+    .menu > summary { list-style:none; cursor:pointer; color:var(--muted); font-size:16px; letter-spacing:1px;
+                      padding:2px 6px; border-radius:6px; }
+    .menu > summary:hover { color:var(--text); background:var(--chip); }
+    .menu > summary::-webkit-details-marker { display:none; }
+    .menuBody { position:absolute; right:0; top:calc(100% + 8px); width:270px; padding:12px; z-index:60;
+                background:var(--card); border:1px solid var(--border2); border-radius:10px;
+                box-shadow:0 10px 30px rgba(15,23,42,.18); display:flex; flex-direction:column; gap:8px; }
+    .menuBody input { width:100%; }
+    .menuBody .two { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+
+    /* ---- three columns: control | robot + dock | perception ---- */
+    /* Column widths are --colL / --colR; a saved layout sets them inline. The 12px tracks are the drag gutters. */
+    .body3 { --colL:300px; --colR:300px; flex:1; min-height:0; display:grid;
+             grid-template-columns:var(--colL) 12px minmax(0,1fr) 12px var(--colR); gap:12px 0; padding:12px; }
+    .col { display:flex; flex-direction:column; gap:12px; min-height:0; min-width:0; overflow-y:auto; }
+    .col.mid { overflow:hidden; }
+    .card { --edge:var(--blue); max-width:none; margin:0; background:var(--card); border:1px solid var(--border); border-radius:10px;
+            padding:12px 12px 12px 15px; box-shadow:inset 3px 0 0 var(--edge);
+            display:flex; flex-direction:column; gap:9px; min-width:0; flex-shrink:0; }
+    .card.grow { flex:1 0 auto; }
+    /* Edge colour by card type: blue = commands, green = perception, amber = log, red = live RL run. */
+    .robotCard, #realsensePanel, #stackCard { --edge:var(--green); }
+    .logCard { --edge:var(--amber); }
+    #runCard { --edge:var(--red); }
+
+    /* ---- resizable layout: drag the gutters between columns / cards ---- */
+    .gut-v { cursor:col-resize; position:relative; touch-action:none; }
+    .gut-h { flex:0 0 12px; margin:-12px 0; cursor:row-resize; position:relative; touch-action:none; }
+    .gut-v::after, .gut-h::after { content:""; position:absolute; border-radius:2px; background:var(--blue); opacity:0;
+                                   transition:opacity .15s; }
+    .gut-v::after { left:5px; width:2px; top:30%; bottom:30%; }
+    .gut-h::after { top:5px; height:2px; left:30%; right:30%; }
+    .gut-v:hover::after, .gut-h:hover::after, .gut-v.drag::after, .gut-h.drag::after { opacity:.7; }
+    .card.sized { overflow:auto; }
+    body.resizing { user-select:none; }
+    body.resizing.v { cursor:col-resize; } body.resizing.h { cursor:row-resize; }
+    .console .tbBtn { padding:5px 9px; font-size:10.5px; }
+    .console .tbBtn.dirty { background:var(--blue); border-color:var(--blue); color:#fff; }
+    .console #themeBtn { width:30px; height:30px; padding:0; border-radius:7px; font-size:14px; line-height:1; }
+    .ch { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .ch h4 { margin:0; font-size:12px; font-weight:700; }
+    .route { font-size:9px; color:var(--muted); font-weight:700; }
+    .grp { font-size:9px; text-transform:uppercase; letter-spacing:.7px; color:var(--muted); font-weight:700; margin:4px 0 -2px 2px; }
+    .grp.red { color:var(--red); }
+    .foot { font-size:10.5px; color:var(--dim); display:flex; justify-content:space-between; gap:8px;
+            border-top:1px dashed var(--blue); padding-top:8px; margin-top:auto; }
+    .foot b { color:var(--text); font-weight:600; }
+
+    /* sport card */
+    .seg3 { display:grid; grid-template-columns:repeat(3,1fr); background:var(--chip); border-radius:8px; padding:3px; gap:2px; }
+    .console .seg3 button { border:0; background:transparent; padding:6px 0; border-radius:6px; font-size:11px; font-weight:700; color:var(--dim); }
+    .console .seg3 button.on { background:var(--card); color:var(--text); box-shadow:0 1px 2px rgba(0,0,0,.12); }
+    .cmdgrid { display:flex; flex-wrap:wrap; gap:5px; }
+    .console .cmdgrid button { flex:1 1 auto; }
+    .console .cmdgrid button.toggleOn { border-color:var(--blue); background:var(--blue-bg); color:var(--blue); }
+    .console .cmdgrid.flips button { border-color:var(--red); color:var(--red); background:var(--red-bg); }
+    .camWarn { font-size:10.5px; color:var(--amber); background:var(--amber-bg); border-radius:6px; padding:6px 8px; }
+
+    /* policy card */
+    .search { display:flex; align-items:center; gap:7px; border:1px solid var(--border2); border-radius:7px;
+              padding:0 9px; background:var(--card2); color:var(--muted); }
+    .console .search input { flex:1; border:0; background:transparent; padding:6px 0; font:11.5px var(--sans); outline:none; }
+    .search kbd { font:9.5px var(--mono); border:1px solid var(--border2); border-radius:3px; padding:0 4px; }
+    .fchips { display:flex; gap:5px; flex-wrap:wrap; }
+    .console .fchips button { font-size:10.5px; padding:4px 10px; border-radius:99px; background:transparent; color:var(--dim); }
+    .console .fchips button.on { background:var(--text); color:var(--card); border-color:var(--text); }
+    .plist { display:flex; flex-direction:column; gap:2px; min-height:60px; max-height:52vh; overflow-y:auto; }
+    /* RL view: the list takes the column's spare height and scrolls on its own. */
+    #policyCard.grow { flex:1 1 0; min-height:240px; }
+    #policyCard.grow .plist { flex:1 1 0; max-height:none; }
+    .prow { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:7px; border:1px solid transparent; cursor:pointer; }
+    .prow:hover { background:var(--card2); }
+    .prow.sel, .prow.sel:hover { background:var(--blue-bg); border-color:var(--blue); }
+    .prow.off { opacity:.45; cursor:not-allowed; }
+    .plist.locked .prow { cursor:default; }
+    .prow .radio { width:14px; height:14px; border-radius:50%; border:1.5px solid var(--border2); flex-shrink:0; }
+    .prow.sel .radio { border:4px solid var(--blue); }
+    .plist.locked .radio { display:none; }
+    .prow .meta { display:flex; flex-direction:column; min-width:0; flex:1; gap:2px; }
+    .prow .nm { font-weight:600; font-size:11.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .plist.locked .nm { font-size:13px; }
+    .prow .why { font-size:10px; color:var(--amber); }
+    .prow .dt { font-family:var(--mono); font-size:10px; color:var(--muted); flex-shrink:0; }
+    .prow .star { color:var(--amber); font-size:11px; }
+    .console .prow .starBtn { border:0; background:none; padding:0 2px; font-size:12px; color:var(--muted); visibility:hidden; }
+    .console .prow:hover .starBtn, .console .prow .starBtn.on { visibility:visible; }
+    .console .prow .starBtn.on { color:var(--amber); }
+    .plist.locked .starBtn { display:none; }
+    .chips { display:flex; gap:3px; flex-wrap:wrap; }
+    .c { font-size:9px; font-weight:700; letter-spacing:.3px; text-transform:uppercase; padding:1px 5px; border-radius:4px;
+         background:var(--chip); color:var(--dim); line-height:1.5; }
+    .c.cam { background:var(--blue-bg); color:var(--blue); }
+    .c.u2 { background:var(--amber-bg); color:var(--amber); }
+    .c.u3 { background:var(--green-bg); color:var(--green); }
+    .console .linkbtn { border:0; background:none; padding:0; color:var(--blue); font-size:10.5px; font-weight:600; }
+    .console .bigbtn { height:40px; flex-shrink:0; border-radius:8px; display:flex; align-items:center; justify-content:center;
+                       gap:8px; font-weight:800; letter-spacing:.5px; font-size:13px; }
+    .console .bigbtn span { font-weight:600; opacity:.85; letter-spacing:0; overflow:hidden; text-overflow:ellipsis; }
+    .console .bigbtn.go { background:var(--blue); border-color:var(--blue); color:#fff; }
+    .console .bigbtn.stop { background:var(--red-bg); border-color:var(--red); color:var(--red); }
+    .console .bigbtn.stop span { font-family:var(--mono); opacity:1; }
+
+    /* posture / move / run */
+    .btns2 { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+    .console .btns2 button { padding:7px 0; font-size:11.5px; border-radius:7px; }
+    .console .activeMode { border-color:var(--blue); background:var(--blue-bg); color:var(--blue); }
+    .moveRow { display:flex; gap:6px; align-items:center; }
+    .moveRow input { flex:1; width:0; }
+    .console .moveRow button { padding:6px 14px; font-size:11.5px; border-radius:7px; }
+    .console button.pri { background:var(--blue); border-color:var(--blue); color:#fff; }
+    .bar { height:4px; border-radius:99px; background:var(--border); overflow:hidden; }
+    .bar i { display:block; height:100%; width:0; background:linear-gradient(90deg,#3b82f6,#10b981); border-radius:99px; transition:width .3s; }
+    .rates { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--border); border:1px solid var(--border);
+             border-radius:8px; overflow:hidden; }
+    .rate { background:var(--card); padding:6px 9px; display:flex; justify-content:space-between; align-items:baseline; gap:6px; }
+    .rate .mono { font-size:13px; font-weight:600; }
+    .rate .mono.x { color:var(--muted); }
+
+    /* robot viewer */
+    .robotCard { padding:10px; flex:1 1 0; min-height:0; }
+    .tabs { display:flex; gap:2px; background:var(--chip); border-radius:6px; padding:2px; }
+    .console .tabs button { border:0; background:transparent; font-size:10px; font-weight:600; padding:3px 9px;
+                            border-radius:5px; color:var(--dim); }
+    .console .tabs button.toggleOn { background:var(--card); color:var(--text); box-shadow:0 1px 2px rgba(0,0,0,.1); }
+    .view { position:relative; flex:1; min-height:220px; background:var(--view); border-radius:8px; overflow:hidden;
+            border:1px solid var(--border); }
+    .console #go2ViewerRoot { position:absolute; inset:0; width:auto; height:auto; border:0; border-radius:0; background:var(--view); }
+    .hud { position:absolute; left:10px; top:10px; display:flex; flex-direction:column; gap:3px; font-family:var(--mono);
+           font-size:10.5px; color:var(--dim); pointer-events:none; white-space:pre; }
+    .hud b { color:var(--text); font-weight:600; }
+    .legend { position:absolute; right:10px; bottom:10px; display:flex; align-items:center; gap:6px; font-family:var(--mono);
+              font-size:9.5px; color:var(--dim); pointer-events:none; }
+    .legend i { width:70px; height:6px; border-radius:3px; background:linear-gradient(90deg, rgb(38,89,191), rgb(230,77,51)); }
+    .lockTag { position:absolute; right:10px; top:10px; font-size:10px; font-weight:700; letter-spacing:.5px; text-transform:uppercase;
+              color:var(--red); background:var(--red-bg); border-radius:5px; padding:3px 8px; pointer-events:none; }
+
+    /* drive dock: stick | speed limits | stick */
+    .dockCard { padding:12px 16px 12px 19px; justify-content:center; }
+    .dock { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:14px; align-items:center; }
+    .joyL { display:flex; flex-direction:column; align-items:center; gap:6px; }
+    /* The stick base (ring, inner disc, crosshair) is CSS; the canvas draws only the knob. The
+       WASD / QE caps sit on the base itself at half opacity, lighting up blue while held. */
+    .stick { --js:148px; position:relative; width:var(--js); height:var(--js); flex-shrink:0; }
+    .joy { width:100%; height:100%; border-radius:50%; border:1.5px solid var(--border2); display:block; touch-action:none;
+           background:
+             linear-gradient(var(--grid), var(--grid)) center / 1.5px 76% no-repeat,
+             linear-gradient(var(--grid), var(--grid)) center / 76% 1.5px no-repeat,
+             radial-gradient(circle, var(--card2) 0 77%, var(--chip) 78%); }
+    .stick .key { position:absolute; left:50%; top:50%; width:calc(var(--js) * .16); height:calc(var(--js) * .16);
+                   margin:calc(var(--js) * -.08) 0 0 calc(var(--js) * -.08); pointer-events:none; opacity:.5;
+                   border:1.5px solid var(--border2); border-bottom-width:3px; border-radius:5px;
+                   font:700 calc(var(--js) * .085) var(--mono); display:flex; align-items:center; justify-content:center;
+                   color:var(--dim); background:var(--card); transition:opacity .08s, background .08s; }
+    .stick .key.n { transform:translateY(calc(var(--js) * -.29)); }
+    .stick .key.s { transform:translateY(calc(var(--js) * .29)); }
+    .stick .key.w { transform:translateX(calc(var(--js) * -.32)); }
+    .stick .key.e { transform:translateX(calc(var(--js) * .32)); }
+    .stick .key.on { opacity:1; background:var(--blue); border-color:var(--blue); color:#fff; }
+    .dockMid { display:flex; flex-direction:column; gap:9px; min-width:0; }
+    .kbPill { font:600 9.5px var(--mono); padding:2px 7px; border-radius:99px; background:var(--chip); color:var(--dim); white-space:nowrap; }
+    .kbPill.on { background:var(--blue-bg); color:var(--blue); }
+    @media (pointer:coarse) { .stick .key, .kbPill { display:none; } }
+    .console .speedBoxes { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+    .console .speedBox { border:1px solid var(--border); border-radius:8px; padding:7px 4px; display:flex; flex-direction:column;
+                         gap:2px; align-items:center; background:transparent; min-width:0; }
+    .console .speedLabel { font-size:9px; text-transform:uppercase; letter-spacing:.7px; color:var(--muted); font-weight:700; margin:0; }
+    .console .speedStepper { display:flex; align-items:center; gap:4px; }
+    .console .speedArrow { border:0; background:none; padding:2px 4px; font-size:8px; color:var(--muted); }
+    .console .speedArrow:hover { color:var(--blue); }
+    .console .speedValue { font:600 15px var(--mono); min-width:0; }
+    .console .speedUnit { font-size:9.5px; color:var(--muted); }
+    .cmd { display:flex; justify-content:space-around; font-family:var(--mono); font-size:11px; color:var(--dim);
+           border-top:1px dashed var(--blue); padding-top:7px; gap:6px; }
+    .cmd b { color:var(--text); font-weight:600; }
+
+    /* RealSense / stack check / event log */
+    .pill { display:inline-flex; align-items:center; gap:6px; font:600 10.5px var(--mono); padding:3px 9px; border-radius:99px;
+            background:var(--green-bg); color:var(--green); border:0; white-space:nowrap; }
+    .pill.warn { background:var(--amber-bg); color:var(--amber); }
+    .pill.bad { background:var(--red-bg); color:var(--red); }
+    .pill.off { background:var(--chip); color:var(--dim); }
+    .depth { border-radius:7px; overflow:hidden; position:relative; aspect-ratio:16/9; background:#111; }
+    .console .depth #rsImg { width:100%; height:100%; object-fit:cover; display:block; margin:0; border:0; border-radius:0; max-width:none; }
+    .depth #rsImg:not([src]) { visibility:hidden; }
+    .depth .lbl { position:absolute; left:6px; top:5px; font:9.5px var(--mono); color:#fff; background:rgba(0,0,0,.45);
+                  padding:1px 5px; border-radius:3px; }
+    .depth .empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center;
+                    padding:10px; font-size:10.5px; color:#94a3b8; }
+    .stack { width:100%; border-collapse:collapse; font-size:10.5px; }
+    .stack th { text-align:left; font-weight:600; color:var(--dim); padding:4px 0; font-size:10.5px; vertical-align:top; white-space:nowrap; }
+    .stack thead th { font-size:9px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); font-weight:700;
+                      border-bottom:1px solid var(--border); }
+    .stack td { padding:4px 0 4px 6px; font-family:var(--mono); font-size:10px; vertical-align:top; }
+    .stack td.ok { color:var(--green); }
+    .stack td.bad { color:var(--red); font-weight:600; }
+    .stack tbody tr + tr th, .stack tbody tr + tr td { border-top:1px solid var(--border); }
+    .logCard { flex:1 0 160px; min-height:160px; }
+    .log { list-style:none; margin:0; padding:0; flex:1; min-height:0; overflow-y:auto; font-family:var(--mono); font-size:10px;
+           line-height:1.65; color:var(--dim); display:flex; flex-direction:column; }
+    .log li { cursor:default; }
+    .log li .m { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block; }
+    .log li.x .m { white-space:normal; }
+    .log li[data-detail] { cursor:pointer; }
+    .log em { font-style:normal; color:var(--muted); margin-right:7px; }
+    .log .g { color:var(--green); } .log .r { color:var(--red); } .log .w { color:var(--amber); }
+    .log pre { margin:2px 0 4px; padding:5px 7px; background:var(--card2); border:1px solid var(--border); border-radius:5px;
+               white-space:pre-wrap; word-break:break-all; color:var(--dim); font-size:9.5px; }
+
+    /* dialogs: below the top bar, so E-STOP stays clickable while one is open */
+    .dlgOverlay { position:fixed; left:0; right:0; bottom:0; top:0; z-index:40; display:flex;
+                  align-items:center; justify-content:center; padding:16px; background:rgba(15,23,42,.38); }
+    .dlg { width:min(420px,100%); background:var(--card); color:var(--text); border:1px solid var(--border);
+           border-radius:12px; padding:16px; box-shadow:0 10px 30px rgba(0,0,0,.2); display:flex;
+           flex-direction:column; gap:12px; }
+    .dlgTitle { margin:0; font-size:15px; font-weight:700; }
+    .dlgBody { font-size:11.5px; color:var(--dim); display:flex; flex-direction:column; gap:12px; }
+    .dlgBody b { color:var(--text); }
+    .dlgActions { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+    .dlgActions.stack { grid-template-columns:1fr; }
+    .dlgActions.stack > :first-child { order:2; border:0; background:none; color:var(--dim); font-weight:600; }
+    .console .dlgActions button { padding:7px 0; font-size:11.5px; border-radius:7px; }
+    .console .dlgActions .pri { background:var(--blue); border-color:var(--blue); color:#fff; }
+    .console .dlgActions .danger { background:var(--red); border-color:var(--red); color:#fff; }
+    .console .dlgActions .hold { --p:0; height:42px; border-radius:9px; font-weight:800; letter-spacing:.6px; font-size:12.5px;
+             color:var(--red); border-color:var(--red); touch-action:none; user-select:none;
+             background:linear-gradient(90deg, var(--red) calc(var(--p) * 100%), var(--red-bg) 0); }
+    .console .dlgActions .hold.filling { color:#fff; }
+    .eng-pol { display:flex; justify-content:space-between; align-items:center; gap:8px; background:var(--card2);
+               border:1px solid var(--border); border-radius:8px; padding:9px 11px; }
+    .eng-pol .meta { display:flex; flex-direction:column; gap:3px; min-width:0; }
+    .eng-pol .nm { font-weight:700; color:var(--text); font-size:12px; }
+    .chk { display:flex; flex-direction:column; gap:7px; }
+    .chk > div { display:flex; gap:9px; align-items:flex-start; font-size:12px; color:var(--text); }
+    .chk i { width:15px; height:15px; border-radius:4px; flex-shrink:0; margin-top:1px; display:flex; align-items:center;
+             justify-content:center; font-style:normal; font-size:10px; font-weight:800; color:#fff; }
+    .chk i.ok { background:var(--green); } .chk i.bad { background:var(--red); } .chk i.warn { background:var(--amber); }
+    .chk small { display:block; color:var(--muted); font-size:10.5px; }
+    .dlgFoot { text-align:center; font-size:10.5px; color:var(--dim); margin-top:-4px; }
+
+    /* shared.js's STOP confirm + login card, re-skinned to the page tokens */
+    #stopConfirmOverlay { background:rgba(15,23,42,.45) !important; }
+    #stopConfirmOverlay [role="dialog"] { background:var(--card) !important; border:1px solid var(--red) !important;
+                                          border-radius:12px !important; font-family:var(--sans) !important; }
+    #stopConfirmOverlay [role="dialog"] > div:nth-child(2) { color:var(--dim) !important; font-size:12.5px !important; }
+    #stopConfirmTitle { color:var(--red) !important; font-size:15px !important; }
+    #stopConfirmCancel { background:var(--card2) !important; color:var(--text) !important; border-color:var(--border2) !important; border-radius:7px !important; }
+    #stopConfirmProceed { background:var(--red) !important; color:#fff !important; border-color:var(--red) !important; border-radius:7px !important; }
+    .console .loginOverlay { background:rgba(11,17,32,.55); }
+    .console .loginCard { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; }
+    .console .loginCard input:not([type=checkbox]) { font:14px var(--sans); padding:9px 10px; }
+    .console #unlockBtn { background:var(--blue); border-color:var(--blue); color:#fff; padding:8px; font-size:12px; }
+
+    /* ---- narrower desktops ---- */
+    @media (max-width:1180px) {
+      .body3 { --colL:270px; --colR:270px; }
+      .stick { --js:124px; }
+      .st.opt { display:none; }
+    }
+    /* ---- tablet / phone: one column, cards re-ordered for walking along ---- */
+    @media (max-width:900px) {
+      #appRoot { height:auto; min-height:100%; }
+      .topbar { height:auto; grid-template-columns:auto 1fr auto; padding:8px 12px; gap:8px; row-gap:8px; }
+      .tb-left { display:contents; }
+      .brand { grid-column:1; }
+      .tb-title, .tb-host { display:none; }
+      .tb-mid { grid-column:2; justify-self:center; }
+      .tb-right { grid-column:3; gap:10px; }
+      .tb-right .st:not(#stLinkBox) { display:none; }
+      .tb-right .st .ml { display:none; }
+      #viewSeg { grid-column:1 / -1; grid-row:2; display:grid; grid-template-columns:1fr 1fr; }
+      .console #safetyToggleBtn { height:36px; padding:0 18px; font-size:13px; }
+      .console #safetyToggleBtn kbd { display:none; }
+      .body3 { display:flex; flex-direction:column; padding:10px; gap:10px; }
+      .col { display:contents; }
+      .gut-v, .gut-h, #layoutSaveBtn { display:none; }
+      #sportCard, #policyCard { order:1; } #rlStartBtn { order:2; } .robotCard { order:3; }
+      #postureCard { order:4; } .dockCard { order:5; } #moveCard { order:6; } #runCard { order:7; }
+      #realsensePanel { order:8; } #stackCard { order:9; } .logCard { order:10; }
+      .robotCard { flex:none; } .view { flex:none; height:260px; }
+      .card.grow { flex:none; }
+      #policyCard.grow { flex:none; }
+      #policyCard.grow .plist, .plist { flex:none; max-height:50vh; }
+      .dockCard { padding:12px; }
+      .dock { grid-template-columns:1fr 1fr; grid-template-areas:"mid mid" "l r"; row-gap:12px; }
+      .dockMid { grid-area:mid; } .dock > .joyL:first-child { grid-area:l; } .dock > .joyL:last-child { grid-area:r; }
+      .stick { --js:140px; }
+    }
+    @media (max-width:400px) { .stick { --js:128px; } .console .speedBox { padding:6px 2px; } }
+  </style>
   <script src="/app/static/shared.js"></script>
 
   <script>
+    const $ = (id) => document.getElementById(id);
     let latest = { lx: 0, ly: 0, rx: 0, ry: 0 };
     let teleopTimer = null;
     let safetyLatched = false;
-    let controlMode = "sport";
+    let controlMode = "sport";   // who drives the motors (server truth)
+    let view = "sport";          // which panel set is shown (interface only)
+    let rlSince = 0;             // ms timestamp RL was seen to engage, for the run timer
     let policies = [];         // registry entries from /rl/policies
     let currentPolicy = "";    // id of the selected/loaded policy
     let rlPosture = "stand";   // latched sit/stand target for a posture policy
@@ -42,29 +427,499 @@ Author: Victor Lim
     // "Move (X/Y)" would be actively misleading. Registry field, not a live reading: the
     // node warns if policies.json's `control` disagrees with the policy's deploy.yaml.
     let forwardBiased = false;
+    let policyFilter = "shelf";  // shelf | archive | starred | camera | blind | match | all
+    // This page session's run stats (Run card): RL starts seen, peak commanded |vx|.
+    let runStats = { handovers: 0, maxVx: 0 };
+
+    // Per-viewer conveniences only (theme, view, starred policies): never robot state.
+    function lsGet(k, d) { try { return localStorage.getItem(k) ?? d; } catch (_) { return d; } }
+    function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (_) {} }
+    let starred = new Set(JSON.parse(lsGet("go2_rl_starred", "[]")));
+    const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+    // ---- event log: every setStatus also lands in the log (newest last) ----
+    const _setStatus = Go2Shared.setStatus.bind(Go2Shared);
+    Go2Shared.setStatus = (message, ok = true, detail = "") => {
+      _setStatus(message, ok, detail);
+      logEvent(message, ok ? "g" : "r", detail);
+    };
+    function logEvent(message, tone = "", detail = "") {
+      const list = $("eventLog");
+      if (!list || !message) return;
+      const t = new Date().toTimeString().slice(0, 8);
+      const stick = list.scrollHeight - list.scrollTop - list.clientHeight < 8;
+      const last = list.lastElementChild;
+      if (last && last.dataset.msg === message) {      // collapse repeats (teleop spam)
+        last.dataset.n = String(Number(last.dataset.n || 1) + 1);
+        last.querySelector("em").textContent = t;
+        last.querySelector(".t").textContent = `${message} ×${last.dataset.n}`;
+      } else {
+        const li = document.createElement("li");
+        li.dataset.msg = message;
+        li.innerHTML = '<span class="m"><em></em><span class="t"></span></span>';
+        li.querySelector("em").textContent = t;
+        const tx = li.querySelector(".t");
+        tx.textContent = message;
+        if (tone) tx.className = `t ${tone}`;
+        if (detail) {
+          // The raw HTTP detail opens under the line on click.
+          li.dataset.detail = detail;
+          li.title = "Click for details";
+          li.addEventListener("click", () => {
+            const open = li.querySelector("pre");
+            li.classList.toggle("x", !open);
+            if (open) { open.remove(); return; }
+            const pre = document.createElement("pre");
+            pre.textContent = li.dataset.detail;
+            li.appendChild(pre);
+          });
+        }
+        list.appendChild(li);
+        while (list.children.length > 80) list.firstElementChild.remove();
+      }
+      if (stick) list.scrollTop = list.scrollHeight;
+    }
 
     window.addEventListener("DOMContentLoaded", async () => {
+      applyTheme(lsGet("go2_rl_theme", "auto"));
+      view = lsGet("go2_rl_view", "sport") === "rl" ? "rl" : "sport";
       // Standalone page: no nav bar to the other UIs.
       await Go2Shared.init({ defaultApi: "", showAuthButtons: true, showNav: false });
+      $("tbLink").textContent = hostLabel();
+      logEvent(`console ready · ${hostLabel()}`);
+      applyView();
+      applyFlipGate();
+      applySportFoot();
       setTimeout(refreshSafetyStatus, 200);
       setTimeout(refreshControlMode, 250);
       setTimeout(loadPolicies, 300);
       setTimeout(refreshPosture, 350);
       setInterval(pollMove, 400);
+      // STOP (from any page) drops RL back to sport: keep the lock state honest.
+      setInterval(() => { refreshControlMode(true); refreshSafetyStatus(true); }, 2000);
+      setInterval(tickRlTimer, 1000);
       initJoysticks();
+      initKeyboard();
+      setInterval(tickHud, 150);
+      initLayout();
       setTimeout(pollPerceptionStatus, 400);
       setInterval(pollPerceptionStatus, 2000);
+      window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", applyThemeToCanvases);
     });
+
+    function hostLabel() {
+      const base = Go2Shared.state.API_BASE || window.location.origin;
+      try { return new URL(base).host; } catch (_) { return base; }
+    }
+
+    // ---- theme: auto (OS) -> light -> dark ----
+    function applyTheme(t) {
+      if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      else delete document.documentElement.dataset.theme;
+      const btn = $("themeBtn");
+      if (btn) {
+        btn.textContent = { light: "☀", dark: "☾" }[t] || "◐";
+        btn.title = `Theme: ${t} (click for ${t === "auto" ? "light" : t === "light" ? "dark" : "auto"})`;
+      }
+      lsSet("go2_rl_theme", t);
+      applyThemeToCanvases();
+    }
+    function cycleTheme() {
+      const t = lsGet("go2_rl_theme", "auto");
+      applyTheme(t === "auto" ? "light" : t === "light" ? "dark" : "auto");
+    }
+
+    // ---- resizable layout: drag the gutters, Save layout keeps it (this browser only) ----
+    // Dragging a gutter trades size between the two neighbours, so growing one pushes the
+    // next. A card that fills its column's spare height (flex-grow, e.g. the robot view)
+    // is never given a size: it absorbs the change. Phones (one column) ignore the layout.
+    const LAYOUT_KEY = "go2_rl_layout";
+    const DESKTOP = window.matchMedia("(min-width:901px)");
+    const MIN_COL = 220, MIN_MID = 380, MIN_CARD = 70;
+    let layout = { cols: {}, cards: {} };
+    let layoutSaved = JSON.stringify(layout);
+
+    function initLayout() {
+      try {
+        const s = JSON.parse(lsGet(LAYOUT_KEY, "{}"));
+        layout = { cols: s.cols || {}, cards: s.cards || {} };
+      } catch (_) {}
+      layoutSaved = JSON.stringify(layout);
+      document.querySelectorAll(".gut-v").forEach(bindColGutter);
+      // Cards come and go with the view (sport vs RL, Run card): re-place the gutters.
+      const mo = new MutationObserver((muts) => {
+        if (muts.some((m) => m.target.parentElement?.classList.contains("col"))) syncCardGutters();
+      });
+      document.querySelectorAll(".body3 > .col").forEach((col) =>
+        mo.observe(col, { attributes: true, subtree: true, attributeFilter: ["hidden"] }));
+      syncCardGutters();
+      applyLayout();
+      DESKTOP.addEventListener?.("change", applyLayout);
+    }
+
+    function applyLayout() {
+      const on = DESKTOP.matches;
+      const body = document.querySelector(".body3");
+      for (const side of ["L", "R"]) {
+        const w = layout.cols[side];
+        if (on && w) body.style.setProperty(`--col${side}`, `${w}px`);
+        else body.style.removeProperty(`--col${side}`);
+      }
+      document.querySelectorAll(".body3 > .col > .card[id]").forEach((c) => {
+        const h = on ? layout.cards[c.id] : 0;
+        c.style.flex = h ? `0 0 ${h}px` : "";
+        c.classList.toggle("sized", !!h);
+      });
+      renderLayoutBtn();
+    }
+
+    function renderLayoutBtn() {
+      const btn = $("layoutSaveBtn");
+      if (!btn) return;
+      const dirty = JSON.stringify(layout) !== layoutSaved;
+      btn.classList.toggle("dirty", dirty);
+      btn.disabled = !dirty;
+      btn.textContent = dirty ? "Save layout" : "Layout saved";
+    }
+
+    function saveLayout() {
+      layoutSaved = JSON.stringify(layout);
+      lsSet(LAYOUT_KEY, layoutSaved);
+      renderLayoutBtn();
+      logEvent("layout saved (this browser)", "g");
+    }
+
+    function resetLayout() {
+      layout = { cols: {}, cards: {} };
+      layoutSaved = JSON.stringify(layout);
+      lsSet(LAYOUT_KEY, layoutSaved);
+      applyLayout();
+      document.querySelector(".menu")?.removeAttribute("open");
+      logEvent("layout reset to default", "w");
+    }
+
+    function syncCardGutters() {
+      document.querySelectorAll(".body3 > .col").forEach((col) => {
+        col.querySelectorAll(":scope > .gut-h").forEach((g) => g.remove());
+        const cards = [...col.children].filter((el) => !el.hidden && el.classList.contains("card"));
+        for (let i = 1; i < cards.length; i++) {
+          const g = document.createElement("div");
+          g.className = "gut-h";
+          g.title = "Drag to resize";
+          cards[i].before(g);   // after anything that is not a card, e.g. the Start RL button
+          bindCardGutter(g, cards[i - 1], cards[i]);
+        }
+      });
+    }
+
+    function startDrag(e, g, axis, onMove) {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      g.setPointerCapture(e.pointerId);
+      g.classList.add("drag");
+      document.body.classList.add("resizing", axis);
+      const end = () => {
+        g.removeEventListener("pointermove", onMove);
+        g.removeEventListener("lostpointercapture", end);
+        g.classList.remove("drag");
+        document.body.classList.remove("resizing", axis);
+        renderLayoutBtn();
+      };
+      g.addEventListener("pointermove", onMove);
+      g.addEventListener("lostpointercapture", end);
+    }
+
+    function bindColGutter(g) {
+      g.addEventListener("pointerdown", (e) => {
+        const side = g.dataset.side;
+        const col = side === "L" ? g.previousElementSibling : g.nextElementSibling;
+        const w0 = col.getBoundingClientRect().width;
+        const mid0 = document.querySelector(".body3 > .col.mid").getBoundingClientRect().width;
+        const x0 = e.clientX;
+        startDrag(e, g, "v", (ev) => {
+          const dx = ev.clientX - x0;
+          const w = Math.max(MIN_COL, Math.min(w0 + mid0 - MIN_MID, side === "L" ? w0 + dx : w0 - dx));
+          layout.cols[side] = Math.round(w);
+          applyLayout();
+        });
+      });
+    }
+
+    const FILLERS = new Set(["sportCard", "policyCard", "robotViewerPanel", "logCard"]);
+    const isFiller = (el) => FILLERS.has(el.id) || (!el.classList.contains("sized") && parseFloat(getComputedStyle(el).flexGrow) > 0);
+    const minHeight = (el) => Math.max(MIN_CARD, parseFloat(getComputedStyle(el).minHeight) || 0, Number(el.dataset.min) || 0);
+
+    function bindCardGutter(g, a, b) {
+      g.addEventListener("pointerdown", (e) => {
+        const ha = a.getBoundingClientRect().height, hb = b.getBoundingClientRect().height;
+        const fa = isFiller(a), fb = isFiller(b);
+        const lo = minHeight(a) - ha, hi = hb - minHeight(b);
+        const y0 = e.clientY;
+        startDrag(e, g, "h", (ev) => {
+          const d = Math.max(Math.min(lo, 0), Math.min(Math.max(hi, 0), ev.clientY - y0));
+          if (!fa) layout.cards[a.id] = Math.round(ha + d);
+          if (!fb) layout.cards[b.id] = Math.round(hb - d);
+          applyLayout();
+        });
+      });
+    }
+    // The 3D viewer and the joystick knobs paint on canvases: push the tokens to them.
+    function applyThemeToCanvases() {
+      const dark = cssVar("--knob").toLowerCase() === "#e2e8f0";
+      window.go2Viewer?.setTheme?.({ background: cssVar("--view") || "#f8fafc", gridTint: dark ? "#3b4660" : "#ffffff" });
+      joyL?.redraw();
+      joyR?.redraw();
+    }
+
+    // ---- dialogs (Start RL check, flip confirms) ----------------------
+    let dlgResolve = null;
+    function modalOpen() {
+      const stop = $("stopConfirmOverlay");
+      return !!dlgResolve || (stop && stop.style.display === "flex");
+    }
+    // step: small caps line above the title ("Confirm 1 of 2"); tag: right of the title;
+    // foot: centred note under the buttons; stack: buttons in one column, Cancel last.
+    function openDialog({ title, html, step = "", tag = "", foot = "", stack = false, buttons }) {
+      closeDialog(null);
+      kbReleaseAll();
+      const ov = $("dlgOverlay");
+      ov.style.top = `${Math.max(0, document.querySelector(".topbar").getBoundingClientRect().bottom)}px`;
+      $("dlgStep").textContent = step;
+      $("dlgStep").hidden = !step;
+      $("dlgTitle").textContent = title;
+      $("dlgTag").textContent = tag;
+      $("dlgBody").innerHTML = html;
+      $("dlgFoot").textContent = foot;
+      $("dlgFoot").hidden = !foot;
+      const acts = $("dlgActions");
+      acts.className = `dlgActions${stack ? " stack" : ""}`;
+      acts.innerHTML = "";
+      let focus = null;
+      for (const b of buttons) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = b.label;
+        if (b.cls) btn.className = b.cls;
+        btn.disabled = !!b.disabled;
+        if (b.hold) attachHold(btn, b.hold, () => closeDialog(b.value));
+        else btn.onclick = () => closeDialog(b.value);
+        acts.appendChild(btn);
+        if (b.value == null && !focus) focus = btn;     // Cancel takes focus, never the risky one
+      }
+      ov.hidden = false;
+      (focus || acts.firstElementChild)?.focus();
+      return new Promise((res) => { dlgResolve = res; });
+    }
+    function closeDialog(value) {
+      if (!dlgResolve) return;
+      const res = dlgResolve;
+      dlgResolve = null;
+      $("dlgOverlay").hidden = true;
+      res(value);
+    }
+    function attachHold(btn, ms, done) {
+      let t0 = 0, raf = 0;
+      const label = btn.textContent;
+      const stop = () => {
+        cancelAnimationFrame(raf); raf = 0;
+        btn.style.setProperty("--p", 0);
+        btn.classList.remove("filling");
+        btn.textContent = label;
+      };
+      const tick = (t) => {
+        const p = Math.min(1, (t - t0) / ms);
+        btn.style.setProperty("--p", p);
+        btn.classList.toggle("filling", p > 0.4);
+        btn.textContent = `${label} · ${((ms - (t - t0)) / 1000).toFixed(1)} s`;
+        if (p >= 1) { stop(); done(); } else raf = requestAnimationFrame(tick);
+      };
+      const start = (e) => {
+        if (btn.disabled || raf) return;
+        e.preventDefault();
+        t0 = performance.now();
+        raf = requestAnimationFrame(tick);
+      };
+      btn.addEventListener("pointerdown", start);
+      for (const ev of ["pointerup", "pointerleave", "pointercancel"]) btn.addEventListener(ev, stop);
+      btn.addEventListener("keydown", (e) => { if ((e.key === " " || e.key === "Enter") && !e.repeat) start(e); });
+      btn.addEventListener("keyup", (e) => { if (e.key === " " || e.key === "Enter") stop(); });
+      btn.addEventListener("click", (e) => e.preventDefault());
+    }
+    const esc = (v) => String(v ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+
+    // ---- SPORT | RL view switch (interface only) ----------------------
+    function setView(v) {
+      if (v === "sport" && controlMode === "rl") {
+        Go2Shared.setStatus("SPORT is locked while RL runs", false, "Press STOP RL first.");
+        return;
+      }
+      view = v === "rl" ? "rl" : "sport";
+      lsSet("go2_rl_view", view);
+      applyView();
+    }
+    function applyView() {
+      const rl = controlMode === "rl";
+      const s = $("viewSport"), r = $("viewRl");
+      s.classList.toggle("on", view === "sport");
+      s.classList.toggle("lock", rl);
+      s.disabled = rl;
+      s.textContent = rl ? "🔒 SPORT" : "SPORT";
+      s.title = rl ? "Stop RL first" : "";
+      r.classList.toggle("on", view === "rl" && !rl);
+      r.classList.toggle("rl", rl);
+      r.textContent = rl ? `RL · ${fmtRun()}` : "RL";
+      $("sportCard").hidden = view !== "sport";
+      $("policyCard").hidden = view !== "rl";
+      $("rlStartBtn").hidden = view !== "rl";
+      applyPostureUi();
+    }
+
+    // ---- Unitree sport card (same commands as go2_movement_controller.html) ----
+    let sportMode = "movement";
+    const TOGGLES = ["toggle_freebound", "toggle_freeavoid", "toggle_crossstep", "toggle_freejump",
+                     "toggle_walkupright", "toggle_handstand", "toggle_classicwalk"];
+    const toggleState = Object.fromEntries(TOGGLES.map((a) => [a, false]));
+    // Mutually-exclusive base gaits: only one (or none, i.e. EconomicGait) active at a time.
+    let activeBaseGait = null;
+    let gaitKnown = false;     // the robot's gait is unknown until a gait button succeeds
+    const GAIT_NAMES = { trot_run: "TrotRun", freewalk: "FreeWalk", static_walk: "StaticWalk" };
+    const FLIPS = { front_pounce: "FrontPounce", front_flip: "FrontFlip", back_flip: "BackFlip", left_flip: "LeftFlip" };
+
+    function applySportModeUi() {
+      for (const m of ["movement", "actions", "posing"]) {
+        $(`mode_${m}`).classList.toggle("on", m === sportMode);
+        $(`panel_${m}`).hidden = m !== sportMode;
+      }
+      applySportFoot();
+    }
+
+    function applySportFoot() {
+      const cap = sportMode[0].toUpperCase() + sportMode.slice(1);
+      $("sportRoute").textContent = `/actions/mode_${sportMode}`;
+      $("sportModeName").textContent = cap;
+      const gait = $("sportGait");
+      gait.hidden = sportMode !== "movement";
+      gait.textContent = `gait: ${gaitKnown ? (GAIT_NAMES[activeBaseGait] || "Economic") : "–"}`;
+      $("gait_economic").classList.toggle("toggleOn", gaitKnown && !activeBaseGait);
+    }
+
+    async function setSportMode(m) {
+      const r = await postAction(`mode_${m}`);
+      if (!r || !r.ok) return;
+      sportMode = m;
+      applySportModeUi();
+    }
+
+    function setLatchBtn(btn, on) {
+      if (!btn) return;
+      btn.textContent = btn.dataset.label + (on ? " ●" : "");
+      btn.classList.toggle("toggleOn", !!on);
+    }
+
+    async function setToggleExclusive(target) {
+      if (!sportGate()) return;
+      const all = TOGGLES.map((a) => document.querySelector(`[data-action="${a}"]`));
+      all.forEach((b) => { if (b) b.disabled = true; });
+      try {
+        if (toggleState[target]) {
+          const r = await postAction(target);
+          if (!r.ok) return;
+          toggleState[target] = false;
+          setLatchBtn(document.querySelector(`[data-action="${target}"]`), false);
+          return;
+        }
+        for (const a of TOGGLES) {
+          if (a !== target && toggleState[a]) {
+            const rOff = await postAction(a);
+            if (!rOff.ok) return;
+            toggleState[a] = false;
+            setLatchBtn(document.querySelector(`[data-action="${a}"]`), false);
+          }
+        }
+        const rOn = await postAction(target);
+        if (!rOn.ok) return;
+        toggleState[target] = true;
+        setLatchBtn(document.querySelector(`[data-action="${target}"]`), true);
+      } finally {
+        all.forEach((b) => { if (b) b.disabled = false; });
+      }
+    }
+
+    // static_walk/trot_run/freewalk persist server-side until clicked again.
+    async function toggleBaseGait(gait) {
+      const r = await postAction(gait);
+      if (!r || !r.ok) return;
+      const turningOff = activeBaseGait === gait;
+      if (activeBaseGait) setLatchBtn(document.querySelector(`[data-gait="${activeBaseGait}"]`), false);
+      activeBaseGait = turningOff ? null : gait;
+      if (activeBaseGait) setLatchBtn(document.querySelector(`[data-gait="${activeBaseGait}"]`), true);
+      gaitKnown = true;
+      applySportFoot();
+    }
+
+    // EconomicGait is the baseline -- selecting it clears whichever base gait was on.
+    async function selectEconomicGait() {
+      const r = await postAction("economic_gait");
+      if (!r || !r.ok) return;
+      if (activeBaseGait) setLatchBtn(document.querySelector(`[data-gait="${activeBaseGait}"]`), false);
+      activeBaseGait = null;
+      gaitKnown = true;
+      applySportFoot();
+    }
+
+    // ---- flips: two confirms, and off while a RealSense rides on the robot ----
+    // rsDetected: null until /perception/status answers (flips stay off), then true/false.
+    let rsDetected = null;
+    function flipsAllowed() { return rsDetected === false; }
+    function applyFlipGate() {
+      const ok = flipsAllowed();
+      document.querySelectorAll("[data-flip]").forEach((b) => {
+        b.disabled = !ok;
+        b.textContent = (ok ? "" : "🔒 ") + FLIPS[b.dataset.flip];
+        b.title = ok ? "" : "Unavailable: see the note above";
+      });
+      const warn = $("flipWarn");
+      if (!warn) return;
+      warn.hidden = ok;
+      warn.textContent = rsDetected === true
+        ? "RealSense attached, so flips are disabled. Unplug the camera to enable them."
+        : "Waiting for the robot's camera status: flips unlock once it reports no RealSense.";
+    }
+
+    async function postFlip(action) {
+      const label = FLIPS[action];
+      if (!label || !flipsAllowed() || !sportGate()) return;
+      const first = await openDialog({
+        step: "Confirm 1 of 2", title: `Run ${label}?`,
+        html: `The robot will perform a <b>${esc(label)}</b>. Clear at least 2 m around it, `
+            + "on a flat, non-slip floor, with nothing mounted on its back.",
+        buttons: [{ label: "Cancel", value: null }, { label: "Continue", value: true, cls: "pri" }],
+      });
+      if (!first) return;
+      const second = await openDialog({
+        step: "Confirm 2 of 2", title: `Really run ${label}?`,
+        html: "Last check. The robot leaves the ground as soon as you confirm. "
+            + "A failed flip lands it on its back or side: keep the E-STOP within reach.",
+        buttons: [{ label: "Cancel", value: null }, { label: `Confirm ${label}`, value: true, cls: "danger" }],
+      });
+      if (!second) return;
+      if (!flipsAllowed()) {    // camera plugged in while the dialogs were open
+        Go2Shared.setStatus(`${label} cancelled: RealSense detected`, false);
+        return;
+      }
+      await postAction(action);
+    }
 
     // ---- RealSense D435i + height map (perception) ----------------------
     // Driven by GET /perception/status every 2 s (app/api/perception_routes.py):
     //   * is a RealSense on USB (sysfs), USB 2 or USB 3, is the driver publishing
     //   * per-topic frame rates, which launch is running (usb3 cloud / usb2 depth-only)
-    // The RealSense panel is hidden unless a camera is present or the driver is up,
-    // the height-map mode buttons appear only while /go2/height_scan flows, and the
-    // image socket (/ws/cam_realsense?stream=depth|color) is open only while the
-    // panel is visible -- so with no camera the page looks exactly as before.
+    // The RealSense card always shows (with "not detected" and no image without a
+    // camera); the image socket (/ws/cam_realsense?stream=depth|color) is open only
+    // while the driver publishes.
     let perceptionReady = false;        // height scan flowing -> camera policies selectable
+    let lastPerception = null;          // last /perception/status body, for the Start RL check
+    let lastLinkKey = null;             // camera link last logged, so the log shows changes only
     let rsStream = "depth";
     let rsWs = null, rsKeepalive = null, rsBlobUrl = "", rsFrames = 0;
     let rsPanelVisible = false;
@@ -116,6 +971,7 @@ Author: Victor Lim
         rsFrames++;
         const img = document.getElementById("rsImg");
         if (img) img.src = url;
+        $("rsEmpty").hidden = true;
       };
       ws.onclose = () => {
         if (rsKeepalive) { clearInterval(rsKeepalive); rsKeepalive = null; }
@@ -130,6 +986,7 @@ Author: Victor Lim
       rsStream = stream;
       document.getElementById("rsStreamDepth")?.classList.toggle("toggleOn", stream === "depth");
       document.getElementById("rsStreamColor")?.classList.toggle("toggleOn", stream === "color");
+      rsSetStatusText("rsImgLbl", stream === "depth" ? "depth" : "colour");
       if (changed && rsPanelVisible && rsWs) rsOpenStream();
     }
 
@@ -142,55 +999,97 @@ Author: Victor Lim
       }
     }
 
-    function rsShowPanel(show) {
-      const panel = document.getElementById("realsensePanel");
-      if (panel) panel.style.display = show ? "" : "none";
+    // show = a camera is on USB or its driver runs. Without one the card stays, empty.
+    function rsShowPanel(show, why = "No RealSense detected") {
       rsPanelVisible = show;
-      if (!show) rsCloseStream();
+      if (!show) {
+        rsCloseStream();
+        const pill = $("rsLinkPill");
+        if (pill) { pill.textContent = "not detected"; pill.className = "pill off"; }
+        for (const id of ["rsRateDepth", "rsRateColour", "rsRateScan", "rsRateGrid"]) rsSetStatusText(id, "–");
+        rsSetStatusText("rsHint", "");
+        rsSetStatusText("rsScanInfo", "");
+      }
+      const empty = $("rsEmpty");
+      if (empty && !rsBlobUrl) { empty.hidden = false; empty.textContent = show ? "Waiting for frames…" : why; }
     }
 
+    // Top-bar readouts: camera link + scan rate.
+    function setTopStat(id, html) { const el = $(id); if (el) el.innerHTML = html; }
+
     async function pollPerceptionStatus() {
-      // Before login httpGet fails (401) and the panel simply stays hidden.
+      // Before login httpGet fails (401) and the card shows "not detected".
       const r = await Go2Shared.httpGet("/perception/status", { bypassCommsGate: true, suppressStatus: true });
-      if (!r || !r.ok) { rsShowPanel(false); return; }
+      if (!r || !r.ok) {
+        rsShowPanel(false, "No perception status from the robot");
+        rsDetected = null; applyFlipGate();
+        setTopStat("stCam", '<i class="dot x"></i>–');
+        setTopStat("stScan", "–");
+        $("pfLink").textContent = "–";
+        return;
+      }
       let st;
       try { st = JSON.parse(r.text); } catch (_) { return; }
+      lastPerception = st;
       const rs = st.realsense || {};
       const rates = st.rates || {};
       const avail = st.available || {};
       const driverUp = !!st.driver_up;
       const usb2 = rs.usb_class === "USB 2" || st.mode === "usb2";
 
-      // ---- panel visibility: nothing at all without a camera ----
+      // ---- flip gate: a camera on USB or a running driver both count ----
+      rsDetected = !!rs.connected || driverUp;
+      applyFlipGate();
+
+      // ---- log link / scan transitions (not every poll) ----
+      const linkKey = rsDetected ? `${rs.usb_class || "?"}·${driverUp ? st.mode : "off"}` : "none";
+      if (linkKey !== lastLinkKey) {
+        if (lastLinkKey !== null || rsDetected)
+          logEvent(!rsDetected ? "perception: no RealSense"
+                   : driverUp ? `perception: ${rs.usb_class || "USB ?"} · ${st.mode === "usb2" ? "depth-only" : "cloud"} mode`
+                   : `perception: ${rs.usb_class || "USB ?"} · driver not publishing`, driverUp || !rsDetected ? "" : "w");
+        lastLinkKey = linkKey;
+      }
+      if (!!st.height_scan_flowing !== perceptionReady)
+        logEvent(st.height_scan_flowing ? `/go2/height_scan flowing · ${fmtHz(rates.height_scan)}` : "/go2/height_scan stopped",
+                 st.height_scan_flowing ? "g" : "w");
+
+      // ---- card content: empty state without a camera ----
       rsShowPanel(!!rs.connected || driverUp);
+
+      // ---- top bar + policy-list link readouts ----
+      const linkName = rs.connected ? (rs.usb_class || "USB ?") : (driverUp ? "driver up" : "none");
+      setTopStat("stCam", `<i class="dot ${!rsDetected ? "x" : usb2 ? "a" : ""}"></i>${esc(linkName)}`);
+      setTopStat("stScan", st.height_scan_flowing ? fmtHz(rates.height_scan) : "–");
+      $("pfLink").textContent = rsDetected ? linkName : "none";
+      $("pfLink").style.color = !rsDetected ? "" : usb2 ? "var(--amber)" : "var(--green)";
 
       // ---- link pill ----
       const pill = document.getElementById("rsLinkPill");
-      if (pill) {
+      if (pill && rsDetected) {
         let text, cls = "pill";
-        const link = rs.connected
-          ? `${rs.usb_class || "USB ?"}${rs.speed_mbps ? ` · ${rs.speed_mbps} Mb/s` : ""}`
-          : "device not in sysfs";
+        const usb = rs.connected ? (rs.usb_class || "USB ?") : "not in sysfs";
         if (driverUp) {
-          text = `${link} · ${st.mode === "usb2" ? "depth-only mode" : "cloud mode"}`;
-          cls += usb2 ? " warn" : " ok";
-          if (usb2) text += " ⚠";
-        } else if (rs.connected) {
-          text = `${link} · driver not running`;
-          cls += " warn";
+          text = `${usb} · ${st.mode === "usb2" ? "depth only" : "cloud"}`;
+          if (usb2) cls += " warn";
         } else {
-          text = `${link} · driver up`;
+          text = `${usb} · driver off`;
           cls += " warn";
         }
         pill.textContent = text;
         pill.className = cls;
+        pill.title = rs.speed_mbps ? `${rs.speed_mbps} Mb/s` : "";
       }
 
       // ---- rates ----
       const colourOff = st.mode === "usb2" || !rates.color;
-      rsSetStatusText("rsRates",
-        `depth ${fmtHz(rates.depth)} · colour ${colourOff ? "–" : fmtHz(rates.color)} · ` +
-        `scan ${fmtHz(rates.height_scan)} · grid ${fmtHz(rates.grid_map)}`);
+      if (rsDetected) {
+        rsSetStatusText("rsRateDepth", fmtHz(rates.depth));
+        rsSetStatusText("rsRateColour", colourOff ? "–" : fmtHz(rates.color));
+        rsSetStatusText("rsRateScan", fmtHz(rates.height_scan));
+        rsSetStatusText("rsRateGrid", fmtHz(rates.grid_map));
+        $("rsRateColour").classList.toggle("x", colourOff);
+      }
 
       // ---- scan geometry caption ----
       const hs = st.height_scan;
@@ -212,26 +1111,31 @@ Author: Victor Lim
       if (!avail.cv2) hint = "cv2 not importable on the robot's system python3: image preview unavailable";
       else if (usb2) hint = "USB 2 link: depth-only 640×360 @ 30 Hz; move to a USB 3 port + cable for colour + cloud";
       else if (rs.connected && !driverUp) hint = "RealSense present but realsense2_camera is not publishing (see /tmp/go2_perception.log)";
-      rsSetStatusText("rsHint", hint);
+      if (rsDetected) rsSetStatusText("rsHint", hint);
 
-      // ---- image socket: only while visible and the driver publishes ----
+      // ---- image socket: only while the driver publishes ----
       const wantStream = rsPanelVisible && driverUp && !!avail.cv2;
       if (wantStream && !rsWs) rsOpenStream();
       else if (!wantStream && rsWs) rsCloseStream();
+      if (!wantStream && rsDetected) {
+        const empty = $("rsEmpty");
+        empty.hidden = false;
+        empty.textContent = !avail.cv2 ? "Image preview unavailable (no cv2)" : "Driver not publishing";
+      }
 
       renderPerceptionStack(st);
 
-      // ---- height-map mode buttons + camera-policy gate ----
+      // ---- camera-policy gate ----
       const flowing = !!st.height_scan_flowing;
-      const modes = document.getElementById("hmModes");
-      if (modes) modes.style.display = flowing ? "" : "none";
       if (flowing !== perceptionReady) {
         perceptionReady = flowing;
         renderPolicyOptions();
+      } else {
+        renderPolicyFoot();
       }
     }
 
-    // ---- "Current perception stack": policy needs vs node reports ---------
+    // ---- "Stack check": policy needs vs node reports ---------
     // stack_required comes from the selected policy's deploy.yaml, stack_running from
     // /go2/perception_mode (heightmap_node / stepfield_map_node). Snapped-vs-raw and the
     // map memory follow the selected policy automatically (go2_rl_bridge_node sets them on
@@ -247,9 +1151,12 @@ Author: Victor Lim
       const run = st.stack_running;
       const rows = [];
       const notes = [];
-      const esc = (v) => String(v ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
-      const cell = (text, ok) => `<td class="${ok === undefined ? "" : (ok ? "ok" : "bad")}">${esc(text)}${ok === undefined ? "" : (ok ? " ✓" : " ✗")}</td>`;
-      const add = (label, need, have, ok) => rows.push(`<tr><th>${esc(label)}</th>${cell(need)}${cell(have, ok)}</tr>`);
+      let nOk = 0, nChecked = 0;
+      const cell = (text, ok) => {
+        if (ok !== undefined) { nChecked++; if (ok) nOk++; }
+        return `<td class="${ok === undefined ? "" : (ok ? "ok" : "bad")}">${esc(text)}${ok === undefined ? "" : (ok ? " ✓" : " ✗")}</td>`;
+      };
+      const add = (label, need, have, ok) => rows.push(`<tr><th>${esc(label)}</th><td>${esc(need)}</td>${cell(have, ok)}</tr>`);
 
       if (!req) {
         add("Policy", "–", "–");
@@ -257,7 +1164,7 @@ Author: Victor Lim
         add("Policy", req.name || req.policy, "deploy.yaml not found");
       } else if (!req.height_scan) {
         add("Policy", req.name || req.policy, "");
-        add("Height scan", "none (blind policy)", run ? `${run.node}` : "–", true);
+        add("Height scan", "none (blind)", run ? `${run.node}` : "–", true);
       } else {
         add("Policy", req.name || req.policy, "");
         // camera pipeline (USB 2 depth-only vs USB 3 cloud): fixed by the cable + launch
@@ -267,23 +1174,23 @@ Author: Victor Lim
         if (req.camera_profile && !camOk && st.mode)
           notes.push(`camera is ${st.mode}, policy expects ${req.camera_profile}: change the port/cable and restart RL_start`);
         // node
-        add("Height-map node", req.memory_s > 0 ? "stepfield_map_node (map on)" : "either node",
-            run ? run.node : "not running", run ? (req.memory_s > 0 ? run.node === "stepfield_map_node" : true) : false);
+        add("Map node", req.memory_s > 0 ? "stepfield_map" : "either",
+            run ? run.node.replace(/_node$/, "") : "not running", run ? (req.memory_s > 0 ? run.node === "stepfield_map_node" : true) : false);
         // snapped or raw
-        const needHeights = req.snap ? `snapped to ${fmtLevels(req.levels)} (plane fit)` : "raw heights (no snapping)";
+        const needHeights = req.snap ? `snap ${fmtLevels(req.levels)}` : "raw";
         let haveHeights = "–", hOk;
         if (run) {
-          haveHeights = run.snap ? `snapped to ${fmtLevels(run.levels)}${run.preset ? ` · ${run.preset}` : ""}` : "raw heights";
+          haveHeights = run.snap ? `snap ${fmtLevels(run.levels)}${run.preset ? ` · ${run.preset}` : ""}` : "raw";
           hOk = run.snap === req.snap;
         }
         add("Heights", needHeights, haveHeights, hOk);
         if (req.snap && run && run.snap)
           notes.push("snapped policies use the course's block heights you set (GO2_BLOCK_HEIGHTS_CM / preset); training used " + fmtLevels(req.levels));
         // rolling map
-        const needMap = req.memory_s > 0 ? `on, ${req.memory_s} s memory` : "off (current frame only)";
+        const needMap = req.memory_s > 0 ? `on · ${req.memory_s} s` : "off";
         let haveMap = "–", mOk;
         if (run) {
-          haveMap = run.map ? `on, ${run.memory_s} s memory` : "off";
+          haveMap = run.map ? `on · ${run.memory_s} s` : "off";
           mOk = req.memory_s > 0 ? (run.map && Math.abs(run.memory_s - req.memory_s) < 1e-6)
                                  : (!run.map || run.memory_s === 0);
         }
@@ -295,15 +1202,59 @@ Author: Victor Lim
       }
       body.innerHTML = rows.join("");
       if (note) note.textContent = notes.join(" · ");
+      const pill = $("stackPill");
+      if (pill) {
+        pill.textContent = nChecked ? `${nOk} / ${nChecked} match` : "–";
+        pill.className = `pill${!nChecked ? " off" : nOk === nChecked ? "" : " bad"}`;
+      }
     }
 
-    // ---- RL policy dropdown -------------------------------------------
+    // ---- RL policy list -----------------------------------------------
     function policyLabel(p) {
       const kind = p.type === "camera" ? "camera" : "blind";
       let s = `${p.name} · ${p.model || "—"} · ${kind}`;
       if (!p.available) s += "  (onnx missing)";
       else if (!p.runnable || (p.uses_heightmap && !perceptionReady)) s += "  (needs perception)";
       return s;
+    }
+
+    // Why a policy can't be selected right now ("" = selectable). Camera/height-scan
+    // policies unlock once /perception/status reports /go2/height_scan flowing (the
+    // backend allows them -- the controller refuses on its own if the scan is missing
+    // or stale, see go2_rl_policy_node._engage).
+    function policyBlock(p) {
+      if (!p.available) return "onnx missing";
+      if (!p.runnable) return "not runnable";
+      if (p.uses_heightmap && !perceptionReady) return "needs perception";
+      return "";
+    }
+
+    // USB profile a policy was trained on, from the id's naming convention ("" = any).
+    function policyProfile(p) { return /usb2/.test(p.id) ? "usb2" : /usb3/.test(p.id) ? "usb3" : ""; }
+    // Selectable but trained on the other camera link: a warning, not a block.
+    function policyLinkWarn(p) {
+      const prof = policyProfile(p), mode = lastPerception?.driver_up ? lastPerception.mode : "";
+      return prof && mode && prof !== mode ? `trained on ${prof === "usb3" ? "USB 3" : "USB 2"} · camera is ${mode === "usb3" ? "USB 3" : "USB 2"}` : "";
+    }
+
+    // Compact chips derived from the registry fields + the id's naming convention.
+    function policyChips(p) {
+      const id = p.id, out = [];
+      out.push(p.type === "camera" ? ["camera", "cam"] : ["blind", ""]);
+      if (/usb2/.test(id)) out.push(["usb 2", "u2"]);
+      else if (/usb3/.test(id)) out.push(["usb 3", "u3"]);
+      if (/omni/.test(id)) out.push(["omni", ""]);
+      if (/_map|odom map/i.test(`${id} ${p.name}`)) out.push(["map", ""]);
+      if (p.control === "posture") out.push(["posture", ""]);
+      if (p.control === "forward") out.push(["forward only", ""]);
+      if (p.shelf !== "deploy") out.push(["archive", ""]);
+      return out.map(([t, c]) => `<span class="c ${c}">${esc(t)}</span>`).join("");
+    }
+
+    function policyDate(p) {
+      const m = `${p.id} ${p.model}`.match(/(\d{4})-(\d{2})-(\d{2})/);
+      if (!m) return "";
+      return new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(undefined, { day: "numeric", month: "short" });
     }
 
     async function loadPolicies() {
@@ -314,59 +1265,129 @@ Author: Victor Lim
         policies = data.policies || [];
         currentPolicy = data.current || data.default || "";
       } catch (_) { return; }
+      // No short list in the registry -> nothing to hide.
+      if (!policies.some((p) => p.shelf === "deploy") && policyFilter === "shelf") policyFilter = "all";
       renderPolicyOptions();
     }
 
-    function renderPolicyOptions() {
-      const sel = document.getElementById("policySelect");
-      if (!sel) return;
-      sel.innerHTML = "";
-      let currentGroup = null;
-      let grp = null;
-      for (const p of policies) {
-        const groupName = p.group || "";
-        if (groupName !== currentGroup) {
-          if (grp) sel.appendChild(grp);
-          grp = groupName ? document.createElement("optgroup") : null;
-          if (grp) grp.label = groupName;
-          currentGroup = groupName;
-        }
-        const opt = document.createElement("option");
-        opt.value = p.id;
-        opt.textContent = policyLabel(p);
-        // Missing policies stay visible but unselectable; camera/height-scan ones
-        // unlock once /perception/status reports /go2/height_scan flowing (the
-        // backend already allows them -- the controller refuses on its own if the
-        // scan is missing or stale, see go2_rl_policy_node._engage).
-        if (!p.available || !p.runnable || (p.uses_heightmap && !perceptionReady)) opt.disabled = true;
-        if (p.id === currentPolicy) opt.selected = true;
-        (grp || sel).appendChild(opt);
+    function setPolicyFilter(f) {
+      policyFilter = policyFilter === f && f !== "shelf" ? "shelf" : f;   // a second click clears it
+      renderPolicyOptions();
+    }
+
+    function toggleStar(id, ev) {
+      ev.stopPropagation();
+      if (starred.has(id)) starred.delete(id); else starred.add(id);
+      lsSet("go2_rl_starred", JSON.stringify([...starred]));
+      renderPolicyOptions();
+    }
+
+    function policyMatchesFilter(p) {
+      switch (policyFilter) {
+        case "shelf": return p.shelf === "deploy";
+        case "archive": return p.shelf !== "deploy";
+        case "starred": return starred.has(p.id);
+        case "camera": return p.type === "camera";
+        case "blind": return p.type !== "camera";
+        case "match": return !policyLinkWarn(p);
+        default: return true;
       }
-      if (grp) sel.appendChild(grp);
-      applyControlModeUi();       // lock the dropdown while RL is engaged
+    }
+
+    function renderPolicyOptions() {
+      const list = $("policyList");
+      if (!list) return;
+      const locked = controlMode === "rl";
+      const nDeploy = policies.filter((p) => p.shelf === "deploy").length;
+      const counts = { shelf: `Deploy · ${nDeploy}`, archive: `Archive · ${policies.length - nDeploy}` };
+      for (const f of ["shelf", "archive", "starred", "camera", "blind", "match"]) {
+        const b = $(`pf_${f}`);
+        if (!b) continue;
+        b.classList.toggle("on", f === policyFilter);
+        if (counts[f]) b.textContent = counts[f];
+      }
+      const mode = lastPerception?.driver_up ? lastPerception.mode : "";
+      $("pf_match").hidden = !mode;
+      $("pf_match").textContent = `Matches ${mode === "usb3" ? "USB 3" : "USB 2"} ✓`;
+      $("policyState").textContent = locked ? "Locked · running" : `${nDeploy} deploy · ${policies.length - nDeploy} archive`;
+      $("policyState").style.color = locked ? "var(--red)" : "";
+
+      const q = ($("policySearch")?.value || "").trim().toLowerCase();
+      const shown = policies.filter((p) => {
+        if (locked) return p.id === currentPolicy;       // collapsed to the running policy
+        if (q && !`${p.id} ${p.name} ${p.short} ${p.model} ${p.group} ${p.type}`.toLowerCase().includes(q)) return false;
+        if (p.id === currentPolicy) return true;          // the loaded one is always visible
+        return policyMatchesFilter(p);
+      });
+      // Starred first within each group.
+      const groups = new Map();
+      for (const p of shown) {
+        const g = p.group || "Other";
+        if (!groups.has(g)) groups.set(g, []);
+        groups.get(g).push(p);
+      }
+      let html = "";
+      for (const [g, ps] of groups) {
+        if (!locked) html += `<div class="grp">${esc(g)}</div>`;
+        ps.sort((a, b) => starred.has(b.id) - starred.has(a.id));
+        for (const p of ps) {
+          const sel = p.id === currentPolicy;
+          const block = policyBlock(p);
+          const why = block || policyLinkWarn(p);
+          const st = starred.has(p.id);
+          html += `<div class="prow${sel ? " sel" : ""}${block ? " off" : ""}" role="radio" aria-checked="${sel}"
+                     tabindex="0" data-id="${esc(p.id)}" title="${esc(policyLabel(p))}">
+                     <span class="radio"></span>
+                     <div class="meta"><span class="nm">${st ? '<span class="star">★</span> ' : ""}${esc(p.short || p.name)}</span>
+                       ${why && !locked ? `<span class="why">${esc(why)}</span>` : `<div class="chips">${policyChips(p)}</div>`}</div>
+                     <span class="dt">${esc(policyDate(p))}</span>
+                     <button type="button" class="starBtn${st ? " on" : ""}" aria-label="Star"
+                       onclick="toggleStar('${esc(p.id)}', event)">${st ? "★" : "☆"}</button></div>`;
+        }
+      }
+      list.innerHTML = html || `<div class="note" style="padding:10px">No policies match.</div>`;
+      list.classList.toggle("locked", locked);
+      list.querySelectorAll(".prow").forEach((row) => {
+        const pick = () => onPolicyChange(row.dataset.id);
+        row.addEventListener("click", pick);
+        row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+      });
+      renderPolicyFoot();
+      applyControlModeUi();       // lock the list while RL is engaged
       updatePolicyCaption();
     }
 
+    function renderPolicyFoot() {
+      const n = policies.filter((p) => policyBlock(p)).length;
+      $("pfUnavail").textContent = `${n} unavailable`;
+      $("pfArchiveBtn").textContent = policyFilter === "shelf" ? "Show archive" : "Show deploy";
+    }
+
     function updatePolicyCaption() {
-      const cap = document.getElementById("policyCaption");
       const p = policies.find((x) => x.id === currentPolicy);
-      // Track locally so the panel reacts the moment the dropdown changes, rather
+      // Track locally so the panel reacts the moment the selection changes, rather
       // than waiting on the /rl/posture round-trip that confirms it.
       postureSupported = !!p && p.control === "posture";
       forwardBiased = !!p && p.control === "forward";
       applyJoystickLabels();
       applyPostureUi();
-      if (!cap) return;
-      cap.textContent = p ? policyLabel(p) : "";
+      applyRlButton();
     }
 
-    async function onPolicyChange() {
-      const sel = document.getElementById("policySelect");
-      if (!sel) return;
-      const id = sel.value;
+    async function onPolicyChange(id) {
+      if (!id || id === currentPolicy) return;
+      if (controlMode === "rl") {
+        Go2Shared.setStatus("Policy locked while RL runs", false, "Press STOP RL to change policy.");
+        return;
+      }
+      const p = policies.find((x) => x.id === id);
+      if (p && policyBlock(p)) {
+        Go2Shared.setStatus(`Can't select: ${policyBlock(p)}`, false, policyLabel(p));
+        return;
+      }
       const r = await Go2Shared.httpPost(`/rl/policy/${id}`, null, { bypassCommsGate: true });
       Go2Shared.setStatus(
-        r.ok ? `Policy: ${id}` : "Policy switch failed",
+        r.ok ? `policy → ${p ? (p.short || p.name) : id}` : "Policy switch failed",
         r.ok,
         `URL: ${r.url}\n${r.text}`
       );
@@ -380,16 +1401,149 @@ Author: Victor Lim
       try {
         const data = JSON.parse(r.text);
         currentPolicy = data.current || currentPolicy;
-        const sel = document.getElementById("policySelect");
-        if (sel) sel.value = currentPolicy;
-        updatePolicyCaption();
+        renderPolicyOptions();
       } catch (_) {}
     }
 
-    // ---- RL Actions (sit/stand posture) -------------------------------
-    // Distinct from the sport Stand/Sit buttons in the top row: those call the Unitree
-    // sport service, which would fight a running RL policy for the motors. These latch
-    // a posture the policy itself reads as an observation.
+    // ---- Start RL / Stop RL ---------------------------------------------
+    // [state, text, small print] rows for the Start RL check.
+    function rlChecks() {
+      const p = policies.find((x) => x.id === currentPolicy);
+      const loggedIn = !Go2Shared.state.AUTH_ENABLED || !!Go2Shared.state.AUTH_TOKEN;
+      const c = computeCmd();
+      const still = c.linear_x === 0 && c.linear_y === 0 && c.angular_z === 0;
+      const checks = [
+        [loggedIn ? "ok" : "bad", "Connected to the robot", esc(hostLabel())],
+        [safetyLatched ? "bad" : "ok", safetyLatched ? "E-STOP latched: RESUME first" : "E-STOP not latched",
+         "space bar opens the E-STOP"],
+        [still ? "ok" : "bad", "Sticks centred, no drive keys held",
+         `checked live: vx ${c.linear_x.toFixed(2)} · vy ${c.linear_y.toFixed(2)} · wz ${c.angular_z.toFixed(2)}`],
+        [p && p.available && p.runnable ? "ok" : "bad",
+         p ? `Policy ${p.available ? "on the robot" : "onnx missing"}` : "No policy selected", p ? esc(p.model || p.id) : ""],
+      ];
+      if (p && p.uses_heightmap) {
+        checks.push([perceptionReady ? "ok" : "bad", perceptionReady ? "Height scan flowing" : "Height scan not flowing",
+                     "checked live from /perception/status"]);
+        const req = lastPerception?.stack_required;
+        if (req?.camera_profile && lastPerception?.mode && req.camera_profile !== lastPerception.mode)
+          checks.push(["warn", `Camera is ${esc(lastPerception.mode)}, policy trained on ${esc(req.camera_profile)}`,
+                       "change the port/cable and restart RL_start"]);
+      } else if (p) {
+        checks.push(["ok", "Blind policy: no camera needed", ""]);
+      }
+      return checks;
+    }
+
+    async function onRlButton() {
+      if (controlMode === "rl") return stopRl();
+      const p = policies.find((x) => x.id === currentPolicy);
+      const checks = rlChecks();
+      const ready = checks.every(([s]) => s !== "bad");
+      const icon = { ok: "✓", bad: "✗", warn: "!" };
+      const go = await openDialog({
+        title: "Start RL", tag: "sport → rl", stack: true,
+        foot: "Release to cancel · Esc closes",
+        html: (p ? `<div class="eng-pol"><div class="meta"><span class="nm">${esc(p.short || p.name)}</span>
+                      <div class="chips">${policyChips(p)}</div></div><span class="mono note">${esc(policyDate(p))}</span></div>` : "")
+            + `<div>The robot releases the Unitree sport service, ramps to the policy's default pose, then the
+                policy takes the motors. Clear the area or use the gantry.</div>`
+            + `<div class="chk">${checks.map(([s, t, sm]) => `<div><i class="${s}">${icon[s]}</i><span>${t}${sm ? `<small>${sm}</small>` : ""}</span></div>`).join("")}</div>`,
+        buttons: [{ label: "Cancel", value: null },
+                  { label: ready ? "HOLD TO START RL" : "Fix the items above", value: true, cls: "hold", hold: 1200, disabled: !ready }],
+      });
+      if (!go) return;
+      await switchControlMode("rl");
+    }
+
+    async function stopRl() {
+      // Immediate handback: no confirm, this is the safe direction.
+      await switchControlMode("sport");
+    }
+
+    async function switchControlMode(next) {
+      const r = await Go2Shared.httpPost(`/control_mode/${next}`, null, { bypassCommsGate: true });
+      Go2Shared.setStatus(
+        r.ok ? (next === "rl" ? "control_mode → rl · policy engaged" : "control_mode → sport · sport service back") : "Mode switch failed",
+        r.ok,
+        `URL: ${r.url}\n${r.text}`
+      );
+      // On a successful POST, reflect the new mode locally right away. The button
+      // must always flip back, even if the GET /control_mode readback below can't
+      // be reached -- otherwise the toggle gets stuck pointing into RL.
+      if (r.ok) setControlModeLocal(next);
+      await refreshControlMode();
+    }
+
+    function setControlModeLocal(mode) {
+      if (mode === "rl" && controlMode !== "rl") {
+        rlSince = Date.now();
+        runStats.handovers += 1;
+        runStats.maxVx = 0;
+      }
+      if (mode !== "rl") rlSince = 0;
+      controlMode = mode;
+      if (mode === "rl") view = "rl";
+      renderPolicyOptions();      // collapses / re-opens the list, then applyControlModeUi
+    }
+
+    function fmtRun() {
+      const s = rlSince ? Math.floor((Date.now() - rlSince) / 1000) : 0;
+      return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+    }
+    function tickRlTimer() {
+      if (controlMode !== "rl") return;
+      const t = fmtRun();
+      $("viewRl").textContent = `RL · ${t}`;
+      const span = $("rlStartBtn").querySelector("span");
+      if (span) span.textContent = t;
+      $("runEngaged").textContent = t;
+    }
+
+    function applyRlButton() {
+      const btn = $("rlStartBtn");
+      if (!btn) return;
+      const rl = controlMode === "rl";
+      const p = policies.find((x) => x.id === currentPolicy);
+      btn.classList.toggle("go", !rl);
+      btn.classList.toggle("stop", rl);
+      btn.innerHTML = rl ? `■ STOP RL <span>${fmtRun()}</span>`
+                         : `▶ START RL${p ? ` <span>· ${esc(p.short || p.name)}</span>` : ""}`;
+    }
+
+    function applyControlModeUi() {
+      const rl = controlMode === "rl";
+      applyRlButton();
+      document.querySelector(".topbar")?.classList.toggle("armed", rl);
+      setTopStat("stLoop", rl ? '<i class="dot r"></i>running' : "– idle");
+      $("viewLocked").hidden = !rl;
+      $("runCard").hidden = !rl;
+      $("runHandovers").textContent = String(runStats.handovers);
+      // The policy can only be switched while idle -- lock the list once RL owns
+      // the motors so the control law can't change mid-run.
+      $("policyList")?.classList.toggle("locked", rl);
+      for (const id of ["policySearchBox", "policyFilters", "policyFoot"]) $(id).hidden = rl;
+      $("policyStopNote").hidden = !rl;
+      $("policyCard").classList.toggle("grow", !rl);
+      applyView();        // SPORT locked while RL runs; also re-runs applyPostureUi
+    }
+
+    async function refreshControlMode(quiet = false) {
+      const r = await Go2Shared.httpGet("/control_mode", { bypassCommsGate: true, suppressStatus: quiet });
+      if (!r.ok) return;
+      try {
+        const data = JSON.parse(r.text);
+        const mode = data.control_mode || "sport";
+        if (mode !== controlMode) {
+          if (quiet) logEvent(`control_mode → ${mode} (reported by the robot)`, mode === "rl" ? "r" : "w");
+          setControlModeLocal(mode);
+        }
+      } catch (_) {}
+    }
+
+    // ---- Stand / Sit box ----------------------------------------------
+    // Before RL starts these call the Unitree sport service. Once a posture policy
+    // runs they latch a posture the policy reads as an observation instead (sport
+    // Stand/Sit would fight a running policy for the motors).
     async function refreshPosture() {
       const r = await Go2Shared.httpGet("/rl/posture", { bypassCommsGate: true });
       if (!r.ok) return;
@@ -412,12 +1566,17 @@ Author: Victor Lim
       await refreshPosture();
     }
 
+    function postureClick(posture) {
+      if (controlMode === "rl") { if (postureSupported) setPosture(posture); return; }
+      postAction(posture);
+    }
+
     function applyJoystickLabels() {
       const title = document.getElementById("joyLeftTitle");
       if (!title) return;
       // Left/right on this stick TURNS a forward-biased policy: it walks forward, and a
       // sideways push asks it to face that way first. Pull straight back still reverses.
-      title.textContent = forwardBiased ? "Move / Turn toward" : "Move (X/Y)";
+      title.textContent = forwardBiased && controlMode === "rl" ? "Move · turn toward" : "Move  x · y";
       title.title = forwardBiased
         ? "This policy only walks forward. Push sideways and it turns to face that way "
           + "(it does not strafe); hold to keep turning, centre to walk straight."
@@ -425,24 +1584,33 @@ Author: Victor Lim
     }
 
     function applyPostureUi() {
-      const active = controlMode === "rl" && postureSupported;
+      const rl = controlMode === "rl";
+      const live = !rl || postureSupported;
       for (const p of ["sit", "stand"]) {
         const btn = document.getElementById(`posture_${p}`);
         if (!btn) continue;
-        btn.disabled = !active;
-        // Highlight whichever posture is currently latched.
-        btn.classList.toggle("activeMode", active && rlPosture === p);
+        btn.disabled = !live;
+        // Highlight whichever posture the policy is currently holding.
+        btn.classList.toggle("activeMode", rl && postureSupported && rlPosture === p);
+      }
+      const tag = $("postureTarget");
+      if (tag) {
+        tag.textContent = rl ? "via policy" : "via sport service";
+        tag.style.color = rl && postureSupported ? "var(--red)" : "";
       }
       const note = document.getElementById("postureNote");
       if (!note) return;
-      if (controlMode !== "rl") {
-        note.textContent = "Turn RL: ON to command a posture.";
+      let text = "";
+      if (!rl) {
+        text = view === "rl" ? "The robot stays on the sport service until you press Start RL." : "";
       } else if (!postureSupported) {
-        note.textContent = "The selected policy is velocity-driven — drive it with the joysticks.";
+        text = "This policy is velocity-driven. Drive it with the sticks.";
       } else {
-        note.textContent = `Policy is holding: ${rlPosture.toUpperCase()}. `
-          + "The joysticks do nothing for a posture policy.";
+        text = `Policy is holding: ${rlPosture.toUpperCase()}. The sticks do nothing for a posture policy.`;
       }
+      note.textContent = text;
+      note.hidden = !text;
+      applyJoystickLabels();
     }
 
     // ---- Move X m (distance move) --------------------------------------
@@ -465,7 +1633,7 @@ Author: Victor Lim
       }
       const r = await Go2Shared.httpPost("/rl/move", { meters });
       Go2Shared.setStatus(
-        r.ok ? `Move sent: ${meters > 0 ? "+" : ""}${meters.toFixed(2)} m` : `Move failed (HTTP ${r.status})`,
+        r.ok ? `move ${meters > 0 ? "+" : ""}${meters.toFixed(2)} m sent` : `Move failed (HTTP ${r.status})`,
         r.ok, r.text);
       pollMove();
     }
@@ -477,7 +1645,7 @@ Author: Victor Lim
     }
 
     async function pollMove() {
-      const r = await Go2Shared.httpGet("/rl/move", { bypassCommsGate: true });
+      const r = await Go2Shared.httpGet("/rl/move", { bypassCommsGate: true, suppressStatus: true });
       if (!r.ok) return;
       let m;
       try { m = JSON.parse(r.text); } catch (_) { return; }
@@ -495,84 +1663,54 @@ Author: Victor Lim
       }[m.state] || m.state;
       let text = label;
       if (m.state !== "idle" && m.state !== "pending") {
-        text += ` — ${fmt(m.travelled)} of ${fmt(m.target)} m`;
+        text += ` · ${fmt(m.travelled)} of ${fmt(m.target)} m`;
         if (m.state === "driving" && m.speed) text += ` @ ${Number(m.speed).toFixed(2)} m/s`;
       }
       if (m.why) text += ` (${m.why})`;
       const el = document.getElementById("moveStatus");
       if (el) {
         el.textContent = text;
-        el.style.color = m.state === "refused" || m.state === "timeout" ? "#b71c1c" : "#555";
+        el.style.color = m.state === "refused" || m.state === "timeout" ? "var(--red)" : "";
       }
+      const bar = $("moveBar");
+      const showBar = live && m.state !== "pending";
+      bar.hidden = !showBar;
+      if (showBar && m.target) bar.firstElementChild.style.width = `${Math.min(100, Math.abs(m.travelled / m.target) * 100)}%`;
+      if (m.state !== "idle") $("runMove").textContent = `${fmt(m.travelled)} m`;
       const go = document.getElementById("moveGoBtn");
       const cancel = document.getElementById("moveCancelBtn");
       if (go) go.disabled = live;
-      if (cancel) cancel.disabled = !live;
-    }
-
-    async function toggleControlMode() {
-      // Decide from the current mode: RL on -> turn sport service OFF,
-      // RL off -> hand control back so the sport service starts again.
-      const next = controlMode === "rl" ? "sport" : "rl";
-      if (next === "rl" && !confirm(
-        "Switch to LOW-LEVEL RL POLICY control?\n\n" +
-        "The robot releases the Unitree sport service, stands to the policy's " +
-        "default pose, then walks under the trained policy. Ensure the area is " +
-        "clear / the robot is on a gantry, with the E-stop in reach.")) return;
-
-      const r = await Go2Shared.httpPost(`/control_mode/${next}`, null, { bypassCommsGate: true });
-      Go2Shared.setStatus(
-        r.ok ? `Control mode: ${next}` : "Mode switch failed",
-        r.ok,
-        `URL: ${r.url}\n${r.text}`
-      );
-
-      // On a successful POST, reflect the new mode locally right away. The button
-      // must always flip back, even if the GET /control_mode readback below can't
-      // be reached -- otherwise the toggle gets stuck pointing into RL.
-      if (r.ok) {
-        controlMode = next;
-        applyControlModeUi();
-      }
-      await refreshControlMode();
-    }
-
-    function applyControlModeUi() {
-      const btn = document.getElementById("controlModeBtn");
-      if (btn) {
-        btn.textContent = controlMode === "rl" ? "RL: ON" : "RL: OFF";
-        btn.classList.toggle("activeMode", controlMode === "rl");
-      }
-      const banner = document.getElementById("rlBanner");
-      if (banner) banner.style.display = controlMode === "rl" ? "block" : "none";
-      // The policy can only be switched while idle -- lock the dropdown once RL owns
-      // the motors so the control law can't change mid-run.
-      const sel = document.getElementById("policySelect");
-      if (sel) sel.disabled = controlMode === "rl";
-      applyPostureUi();   // the panel is only live while RL owns the motors
-    }
-
-    async function refreshControlMode() {
-      const r = await Go2Shared.httpGet("/control_mode", { bypassCommsGate: true });
-      if (!r.ok) return;
-      try {
-        const data = JSON.parse(r.text);
-        controlMode = data.control_mode || "sport";
-        applyControlModeUi();
-      } catch (_) {}
+      if (cancel) cancel.hidden = !live;
     }
 
     async function loginAndStart() {
       await Go2Shared.login();
+      $("tbLink").textContent = hostLabel();
+    }
+
+    // SPORT commands are refused while RL runs (here and in app/api/actions.py).
+    function sportGate() {
+      if (!Go2Shared.ensureLoggedIn()) return false;
+      if (!Go2Shared.state.COMMS_ENABLED) {
+        Go2Shared.setStatus("STOP latched 🔒", false, "Press RESUME to enable commands.");
+        return false;
+      }
+      if (controlMode === "rl") {
+        Go2Shared.setStatus("Sport commands are locked while RL runs", false, "Press STOP RL first.");
+        return false;
+      }
+      return true;
     }
 
     async function postAction(action) {
+      if (!sportGate()) return { ok: false };
       const r = await Go2Shared.httpPost(`/actions/${action}`);
       Go2Shared.setStatus(
-        r.ok ? `Action sent: ${action}` : `Action failed: ${action}`,
+        r.ok ? `action: ${action}` : `Action failed: ${action}`,
         r.ok,
         `URL: ${r.url}\n${r.text}`
       );
+      return r;
     }
 
     async function toggleSafety() {
@@ -590,8 +1728,14 @@ Author: Victor Lim
       await refreshControlMode();   // STOP drops RL back to sport mode
     }
 
-    async function refreshSafetyStatus() {
-      const r = await Go2Shared.httpGet("/safety/status", { bypassCommsGate: true });
+    async function refreshSafetyStatus(quiet = false) {
+      // Doubles as the top bar's link latency probe (one small GET every 2 s).
+      const t0 = performance.now();
+      const r = await Go2Shared.httpGet("/safety/status", { bypassCommsGate: true, suppressStatus: quiet });
+      const ms = Math.round(performance.now() - t0);
+      setTopStat("stLink", r.ok
+        ? `<i class="dot ${ms > 250 ? "r" : ms > 80 ? "a" : ""}"></i>${ms} ms`
+        : '<i class="dot r"></i>offline');
       if (!r.ok) return;
 
       try {
@@ -601,56 +1745,186 @@ Author: Victor Lim
 
         const btn = document.getElementById("safetyToggleBtn");
         if (btn) {
-          btn.textContent = safetyLatched ? "RESUME" : "STOP";
-          btn.classList.toggle("danger", !safetyLatched);
-          btn.classList.toggle("activeMode", safetyLatched);
+          btn.innerHTML = safetyLatched ? "RESUME" : "E-STOP <kbd>Space</kbd>";
+          btn.classList.toggle("latched", safetyLatched);
+          btn.title = safetyLatched ? "Stand back up and re-arm control" : "Damp the motors (Space)";
         }
       } catch (_) {}
     }
 
-    function initJoysticks() {
-      Go2Shared.createJoystick("joyLeft", (x, y, active) => {
-        latest.lx = active ? x : 0;
-        latest.ly = active ? y : 0;
-      });
+    // ---- joysticks + keyboard (WASD = left stick, Q/E = turn) -----------
+    let joy = { lx: 0, ly: 0, rx: 0 };
+    let joyL = null, joyR = null;
+    const KEYS = { KeyW: ["ly", -1], KeyS: ["ly", 1], KeyA: ["lx", -1], KeyD: ["lx", 1], KeyQ: ["rx", -1], KeyE: ["rx", 1] };
+    const kbDown = new Set();
 
-      Go2Shared.createJoystick("joyRight", (x, y, active) => {
-        latest.rx = active ? x : 0;
-        latest.ry = active ? y : 0;
+    function kbAxes() {
+      const a = { lx: 0, ly: 0, rx: 0 };
+      for (const code of kbDown) { const [ax, v] = KEYS[code]; a[ax] += v; }
+      const n = Math.hypot(a.lx, a.ly);       // W+D is a diagonal, not 1.4x speed
+      if (n > 1) { a.lx /= n; a.ly /= n; }
+      return a;
+    }
+    function kbRender() {
+      document.querySelectorAll(".key[data-code]").forEach((k) => k.classList.toggle("on", kbDown.has(k.dataset.code)));
+      const pill = $("kbPill");
+      if (pill) {
+        const held = [...kbDown].map((c) => c.slice(3)).join("+");
+        pill.textContent = held ? `⌨ ${held} held` : "⌨ WASD · Q E";
+        pill.classList.toggle("on", !!held);
+      }
+    }
+    function kbReleaseAll() { kbDown.clear(); kbRender(); }
+    function isTyping(t) { return !!t?.closest?.("input, textarea, select, [contenteditable]"); }
+
+    function initKeyboard() {
+      window.addEventListener("keydown", (e) => {
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        if (e.key === "Escape" && dlgResolve) { closeDialog(null); return; }
+        if (modalOpen() || isTyping(e.target)) return;
+        if (e.code === "Space") {
+          e.preventDefault();
+          if (!e.repeat && !safetyLatched) toggleSafety();   // opens the STOP confirm
+          return;
+        }
+        if (e.key === "/" && view === "rl" && controlMode !== "rl") {
+          e.preventDefault();
+          $("policySearch").focus();
+          return;
+        }
+        if (!KEYS[e.code]) return;
+        e.preventDefault();
+        kbDown.add(e.code);
+        kbRender();
       });
+      window.addEventListener("keyup", (e) => {
+        if (kbDown.delete(e.code)) kbRender();
+      });
+      // A key held while the window loses focus would never see its keyup.
+      window.addEventListener("blur", kbReleaseAll);
+      document.addEventListener("visibilitychange", () => { if (document.hidden) kbReleaseAll(); });
+    }
+
+    function initJoysticks() {
+      // The stick base (ring + crosshair) is the canvas' CSS background; only the knob is drawn.
+      const look = { radiusFrac: 0.30, knobFrac: 1 / 6, ring: false, knobColor: () => cssVar("--knob") || "#1e293b" };
+      joyL = Go2Shared.createJoystick("joyLeft", (x, y, active) => {
+        joy.lx = active ? x : 0;
+        joy.ly = active ? y : 0;
+      }, look);
+
+      joyR = Go2Shared.createJoystick("joyRight", (x, y, active) => {
+        joy.rx = active ? x : 0;
+        latest.ry = active ? y : 0;
+      }, look);
+
+      // A resized drive dock scales the sticks to fit it; an unsized one keeps the CSS size.
+      const dockCard = $("dockCard");
+      new ResizeObserver(() => {
+        const sticks = dockCard.querySelectorAll(".stick");
+        if (dockCard.classList.contains("sized")) {
+          const h = dockCard.clientHeight - 24 - 26;                                  // padding, title
+          const w = (dockCard.querySelector(".dock").clientWidth - 240 - 28) / 2;     // speed limits, gaps
+          const js = Math.round(Math.max(110, Math.min(240, h, w)));
+          sticks.forEach((s) => s.style.setProperty("--js", `${js}px`));
+        } else {
+          sticks.forEach((s) => s.style.removeProperty("--js"));
+        }
+        joyL?.resize();
+        joyR?.resize();
+        lastKnob = "";   // tickHud puts a held key's knob back
+      }).observe(dockCard);
 
       Go2Shared.createSpeedLimitControls("speedLimitControls");
+      // Short axis names + the yaw unit, as on the robot's own cmd_vel.
+      const LIM = { speedLimitLinX: ["vx", "m/s"], speedLimitLinY: ["vy", "m/s"], speedLimitAng: ["wz", "rad/s"] };
+      document.querySelectorAll("#speedLimitControls .speedBox").forEach((box) => {
+        const id = box.querySelector(".speedValue")?.id.replace(/Val$/, "");
+        const [lbl, unit] = LIM[id] || [];
+        if (!lbl) return;
+        box.title = box.querySelector(".speedLabel").textContent;
+        box.querySelector(".speedLabel").textContent = lbl;
+        box.querySelector(".speedUnit").textContent = unit;
+      });
 
       if (teleopTimer) clearInterval(teleopTimer);
       teleopTimer = setInterval(sendTeleop, 120);
+    }
+
+    // Stick + keyboard -> the cmd_vel the next teleop tick sends. A touched stick wins
+    // over the keyboard on its own axes.
+    function computeCmd() {
+      const kb = kbAxes();
+      const stickL = joy.lx !== 0 || joy.ly !== 0;
+      latest.lx = stickL ? joy.lx : kb.lx;
+      latest.ly = stickL ? joy.ly : kb.ly;
+      latest.rx = joy.rx !== 0 ? joy.rx : kb.rx;
+      return {
+        linear_x: -latest.ly * Go2Shared.state.MAX_LIN_X + 0,
+        linear_y: latest.lx * Go2Shared.state.MAX_LIN_Y + 0,
+        angular_z: latest.rx * Go2Shared.state.MAX_ANG + 0,
+      };
     }
 
     async function sendTeleop() {
       if (!Go2Shared.ensureLoggedIn()) return;
       if (!Go2Shared.state.COMMS_ENABLED) return;
 
-      const cmd = {
-        linear_x: -latest.ly * Go2Shared.state.MAX_LIN_X,
-        linear_y: latest.lx * Go2Shared.state.MAX_LIN_Y,
-        angular_z: latest.rx * Go2Shared.state.MAX_ANG,
-      };
+      const cmd = computeCmd();
+      if (controlMode === "rl") runStats.maxVx = Math.max(runStats.maxVx, Math.abs(cmd.linear_x));
 
       const r = await Go2Shared.httpPost("/teleop", cmd);
       if (!r.ok && r.status !== 0) {
         Go2Shared.setStatus(`Teleop failed (HTTP ${r.status})`, false, `URL: ${r.url}\n${r.text}`);
       }
     }
+
+    // ---- live readouts: cmd line, viewer HUD, keyboard knob (display only) ----
+    const fmtS = (v) => `${v < 0 ? "−" : "+"}${Math.abs(v).toFixed(2)}`;
+    let lastKnob = "";
+    function tickHud() {
+      const c = computeCmd();
+      $("cmdVx").textContent = fmtS(c.linear_x);
+      $("cmdVy").textContent = fmtS(c.linear_y);
+      $("cmdWz").textContent = fmtS(c.angular_z);
+      $("runMaxVx").textContent = runStats.maxVx.toFixed(2);
+
+      // Keys move the drawn knob too (a finger on the stick wins inside createJoystick).
+      const kb = kbAxes();
+      const key = `${kb.lx},${kb.ly},${kb.rx}`;
+      if (key !== lastKnob) {
+        lastKnob = key;
+        joyL?.setKnob(kb.lx, kb.ly);
+        joyR?.setKnob(kb.rx, 0);
+      }
+
+      const v = window.go2Viewer;
+      const base = v?.getBasePose?.();
+      if (base?.quaternion) {
+        const [x, y, z, w] = base.quaternion;
+        const roll = Math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y)) * 180 / Math.PI;
+        const pitch = Math.asin(Math.max(-1, Math.min(1, 2 * (w * y - z * x)))) * 180 / Math.PI;
+        $("hudRoll").textContent = `${roll < 0 ? "−" : ""}${Math.abs(roll).toFixed(1)}°`;
+        $("hudPitch").textContent = `${pitch < 0 ? "−" : ""}${Math.abs(pitch).toFixed(1)}°`;
+        $("hudZ").textContent = `${Number(base.position?.[2] || 0).toFixed(2)} m`;
+      }
+      const hm = v?.getHeightMapState?.();
+      const si = hm?.fresh ? hm.scanInfo : null;
+      $("hudScan").innerHTML = si
+        ? `scan ${si.num_x}×${si.num_y} @ ${Number(si.resolution).toFixed(2)} m · unobserved <b>${si.unobserved_count}</b>/${si.num_x * si.num_y}`
+        : "scan: no height map";
+    }
   </script>
 </head>
 
-<body>
+<body class="console">
   <div id="loginOverlay" class="loginOverlay">
     <div class="loginCard">
       <h2>Connect to Go2</h2>
       <div class="loginForm">
         <input id="loginBaseUrl" placeholder="http://robot-ip:8000 or https://robot.domain" />
         <input id="loginToken" placeholder="Password" type="password" />
-        <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#333;">
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px;">
           <input id="showPw" type="checkbox" onclick="Go2Shared.togglePasswordVisibility()" />
           Show password
         </label>
@@ -662,127 +1936,273 @@ Author: Victor Lim
   </div>
 
   <div id="appRoot">
-    <div class="card">
-      <h1>Go2 RL Sim-to-Real – Joystick Teleop</h1>
-
-      <div id="rlBanner" style="display:none; background:#b71c1c; color:#fff; padding:8px;
-           border-radius:6px; margin-bottom:8px; font-weight:bold; text-align:center;">
-        ⚠ LOW-LEVEL RL POLICY ACTIVE — the joystick drives the trained policy
-      </div>
-
-      <div class="row">
-        <input id="baseUrl" placeholder="http://<go2-ip>:8000" />
-        <button onclick="Go2Shared.checkHealth()">Health</button>
-        <button onclick="postAction('stand')">Stand</button>
-        <button onclick="postAction('sit')">Sit</button>
-        <button id="controlModeBtn" onclick="toggleControlMode()">RL: OFF</button>
-        <button id="safetyToggleBtn" class="danger" onclick="toggleSafety()">STOP</button>
-        <button onclick="Go2Shared.logout()">Logout</button>
-      </div>
-
-      <div class="row" style="align-items:center; gap:8px; margin-bottom:2px;">
-        <label for="policySelect" style="font-weight:bold; white-space:nowrap;">RL policy:</label>
-        <select id="policySelect" onchange="onPolicyChange()"
-                style="flex:1; min-width:240px; padding:4px;"></select>
-      </div>
-      <div id="policyCaption" class="small" style="margin-bottom:8px; color:#555;"></div>
-
-      <div style="border:1px solid #ccc; border-radius:6px; padding:8px; margin-bottom:10px;">
-        <div style="font-weight:bold; margin-bottom:6px;">RL Actions</div>
-        <div class="row" style="margin-bottom:4px;">
-          <button id="posture_stand" onclick="setPosture('stand')">Stand</button>
-          <button id="posture_sit" onclick="setPosture('sit')">Sit</button>
+    <header class="topbar">
+      <div class="tb-left">
+        <div class="brand">
+          <div class="logo">G2</div>
+          <div><div class="tb-title">Go2 · <span>RL Console</span></div><div id="tbLink" class="tb-host">—</div></div>
         </div>
-        <div id="postureNote" class="small" style="color:#555;"></div>
-        <div class="small" style="color:#777; margin-top:4px;">
-          These drive the <em>trained policy</em>. The Stand/Sit buttons in the top row
-          call the Unitree sport service instead — do not use those while RL is on.
+        <div id="viewSeg" class="seg" role="tablist" aria-label="View">
+          <button id="viewSport" role="tab" onclick="setView('sport')">SPORT</button>
+          <button id="viewRl" role="tab" onclick="setView('rl')">RL</button>
         </div>
       </div>
-
-      <div style="border:1px solid #ccc; border-radius:6px; padding:8px; margin-bottom:10px;">
-        <div style="font-weight:bold; margin-bottom:6px;">Move X m</div>
-        <div class="row" style="align-items:center; gap:8px; margin-bottom:4px;">
-          <input id="moveMeters" type="number" min="-5" max="5" step="0.1" placeholder="e.g. 1.5 or -0.5"
-                 style="width:140px;" onkeydown="if (event.key === 'Enter') submitMove()" />
-          <span>m</span>
-          <button id="moveGoBtn" onclick="submitMove()">Go</button>
-          <button id="moveCancelBtn" onclick="cancelMove()" disabled>Cancel</button>
-        </div>
-        <div id="moveStatus" class="small" style="color:#555;">No move yet.</div>
-        <div class="small" style="color:#777; margin-top:4px;">
-          Walks that far along the current heading and stops; negative = backwards (−5…5 m).
-          Works with RL on (the policy is driven) or off (sport service). Distance comes
-          from leg odometry. Touching a joystick cancels it.
-        </div>
+      <div class="tb-mid">
+        <button id="safetyToggleBtn" onclick="toggleSafety()" title="Damp the motors (Space)">E-STOP <kbd>Space</kbd></button>
       </div>
-
-      <div class="joyRow">
-        <div class="joyBox">
-          <div class="joyTitle" id="joyLeftTitle">Move (X/Y)</div>
-          <canvas id="joyLeft" class="joyCanvas"></canvas>
-        </div>
-        <div class="joyBox">
-          <div class="joyTitle">Turn</div>
-          <canvas id="joyRight" class="joyCanvas"></canvas>
-        </div>
+      <div class="tb-right">
+        <div class="st" id="stLinkBox" title="Round trip of the 2 s status poll"><span class="ml">Link</span><span id="stLink" class="v">–</span></div>
+        <div class="st"><span class="ml">Camera</span><span id="stCam" class="v"><i class="dot x"></i>–</span></div>
+        <div class="st opt"><span class="ml">Scan</span><span id="stScan" class="v">–</span></div>
+        <div class="st opt"><span class="ml">Policy loop</span><span id="stLoop" class="v">– idle</span></div>
+        <button id="layoutSaveBtn" class="tbBtn" onclick="saveLayout()"
+                title="Drag the gaps between columns and cards to resize; this keeps the sizes for next time">Save layout</button>
+        <details class="menu">
+          <summary aria-label="Connection menu">⋯</summary>
+          <div class="menuBody">
+            <span class="ml">Robot URL</span>
+            <input id="baseUrl" placeholder="http://<go2-ip>:8000" />
+            <div class="two">
+              <button onclick="Go2Shared.checkHealth()">Health</button>
+              <button onclick="Go2Shared.logout()">Logout</button>
+            </div>
+            <button onclick="resetLayout()">Reset layout</button>
+            <span class="note">E-STOP damps the robot (soft collapse) and latches the system; RESUME stands
+              it back up and re-arms control. Works in both RL and sport modes.</span>
+          </div>
+        </details>
+        <button id="themeBtn" onclick="cycleTheme()" title="Theme: auto">◐</button>
       </div>
+    </header>
 
-      <div id="speedLimitsPanel" class="panel">
-        <h2>Speed Limits</h2>
-        <div id="speedLimitControls"></div>
-      </div>
+    <main class="body3">
+      <!-- ============ control column ============ -->
+      <section class="col">
+        <!-- SPORT view: Unitree sport-service commands -->
+        <div id="sportCard" class="card grow">
+          <div class="ch"><h4>Unitree sport</h4><span id="sportRoute" class="route mono">/actions/mode_movement</span></div>
+          <div class="seg3" role="tablist" aria-label="Sport mode">
+            <button id="mode_movement" class="on" onclick="setSportMode('movement')">Movement</button>
+            <button id="mode_actions" onclick="setSportMode('actions')">Actions</button>
+            <button id="mode_posing" onclick="setSportMode('posing')">Posing</button>
+          </div>
 
-      <div id="robotViewerPanel" class="panel">
-        <h2>Robot Model
-          <span id="hmModes" class="hmModes" style="display:none" title="Height map drawn under the robot">
-            <span class="small">height map:</span>
-            <button id="hmMode_cubes" class="toggleOn" onclick="setHeightMapMode('cubes')"
-                    title="The policy's 17x11 /go2/height_scan observation (blue low value, red high)">Policy cells</button>
-            <button id="hmMode_columns" onclick="setHeightMapMode('columns')"
-                    title="/go2/local_heightmap terrain columns (min_elevation to elevation)">Terrain</button>
-            <button id="hmMode_fit" onclick="setHeightMapMode('fit')"
-                    title="stepfield_map_node's plane fit (/go2/stepfield_fit): one plane per block height, cells coloured by the level they snapped to">Plane fit</button>
-            <button id="hmMode_off" onclick="setHeightMapMode('off')">Off</button>
-          </span>
-        </h2>
-        <div id="go2ViewerRoot"></div>
-      </div>
+          <div id="panel_movement" style="display:contents">
+            <div class="grp">Gait · one at a time</div>
+            <div class="cmdgrid">
+              <button id="gait_economic" onclick="selectEconomicGait()">Economic</button>
+              <button data-gait="trot_run" data-label="TrotRun" onclick="toggleBaseGait('trot_run')">TrotRun</button>
+              <button data-gait="freewalk" data-label="FreeWalk" onclick="toggleBaseGait('freewalk')">FreeWalk</button>
+              <button data-gait="static_walk" data-label="StaticWalk" onclick="toggleBaseGait('static_walk')">StaticWalk</button>
+            </div>
+            <div class="grp">Special modes · one at a time</div>
+            <div class="cmdgrid">
+              <button data-action="toggle_freebound" data-label="FreeBound" onclick="setToggleExclusive('toggle_freebound')">FreeBound</button>
+              <button data-action="toggle_freeavoid" data-label="FreeAvoid" onclick="setToggleExclusive('toggle_freeavoid')">FreeAvoid</button>
+              <button data-action="toggle_crossstep" data-label="CrossStep" onclick="setToggleExclusive('toggle_crossstep')">CrossStep</button>
+              <button data-action="toggle_freejump" data-label="FreeJump" onclick="setToggleExclusive('toggle_freejump')">FreeJump</button>
+              <button data-action="toggle_walkupright" data-label="WalkUpright" onclick="setToggleExclusive('toggle_walkupright')">WalkUpright</button>
+              <button data-action="toggle_handstand" data-label="HandStand" onclick="setToggleExclusive('toggle_handstand')">HandStand</button>
+              <button data-action="toggle_classicwalk" data-label="ClassicWalk" onclick="setToggleExclusive('toggle_classicwalk')">ClassicWalk</button>
+            </div>
+            <div class="grp">Commands</div>
+            <div class="cmdgrid">
+              <button onclick="postAction('switch_avoid')">SwitchAvoid</button>
+              <button onclick="postAction('cycle_speed')">SpeedLevel ▸</button>
+              <button onclick="postAction('stop_move')">StopMove</button>
+            </div>
+          </div>
 
-      <div id="realsensePanel" class="panel" style="display:none">
-        <h2>RealSense D435i</h2>
-        <div class="row" style="align-items:center; gap:8px;">
-          <span id="rsLinkPill" class="pill">…</span>
-          <span id="rsRates" class="mono small">depth – · colour – · scan – · grid –</span>
+          <div id="panel_actions" style="display:contents" hidden>
+            <div class="grp">Tricks</div>
+            <div class="cmdgrid">
+              <button onclick="postAction('sit_toggle')">Sit ⇄ Stand</button>
+              <button onclick="postAction('hello')">Hello</button>
+              <button onclick="postAction('stretch')">Stretch</button>
+              <button onclick="postAction('content')">Content</button>
+              <button onclick="postAction('heart')">Heart</button>
+              <button onclick="postAction('scrape')">Scrape</button>
+              <button onclick="postAction('front_jump')">FrontJump</button>
+              <button onclick="postAction('recovery')">RecoveryStand</button>
+            </div>
+            <div class="grp red">Flips · two confirms</div>
+            <div id="flipWarn" class="camWarn" hidden></div>
+            <div class="cmdgrid flips">
+              <button data-flip="front_pounce" onclick="postFlip('front_pounce')">FrontPounce</button>
+              <button data-flip="front_flip" onclick="postFlip('front_flip')">FrontFlip</button>
+              <button data-flip="back_flip" onclick="postFlip('back_flip')">BackFlip</button>
+              <button data-flip="left_flip" onclick="postFlip('left_flip')">LeftFlip</button>
+            </div>
+          </div>
+
+          <div id="panel_posing" style="display:contents" hidden>
+            <div class="grp">Posing</div>
+            <div class="cmdgrid">
+              <button onclick="postAction('damp')">Damp</button>
+              <button onclick="postAction('balance_stand')">BalanceStand</button>
+            </div>
+          </div>
+
+          <div class="foot"><span>Robot mode: <b id="sportModeName">Movement</b></span><span id="sportGait">gait: –</span></div>
         </div>
-        <div class="row" style="align-items:center; gap:8px; margin-top:6px;">
-          <button id="rsStreamDepth" class="toggleOn" onclick="rsSelectStream('depth')">Depth</button>
-          <button id="rsStreamColor" onclick="rsSelectStream('color')">Colour</button>
-          <span id="rsHint" class="small" style="color:#555;"></span>
+
+        <!-- RL view: policy list, then Start / Stop RL -->
+        <div id="policyCard" class="card grow" hidden>
+          <div class="ch"><h4>Policy</h4><span id="policyState" class="ml"></span></div>
+          <label id="policySearchBox" class="search">⌕
+            <input id="policySearch" type="search" placeholder="Search policies" oninput="renderPolicyOptions()" />
+            <kbd>/</kbd></label>
+          <div id="policyFilters" class="fchips">
+            <button id="pf_shelf" onclick="setPolicyFilter('shelf')">Deploy</button>
+            <button id="pf_archive" onclick="setPolicyFilter('archive')">Archive</button>
+            <button id="pf_starred" onclick="setPolicyFilter('starred')">★ Starred</button>
+            <button id="pf_camera" onclick="setPolicyFilter('camera')">Camera</button>
+            <button id="pf_blind" onclick="setPolicyFilter('blind')">Blind</button>
+            <button id="pf_match" onclick="setPolicyFilter('match')" hidden>Matches</button>
+          </div>
+          <div id="policyList" class="plist" role="radiogroup" aria-label="RL policy"></div>
+          <div id="policyStopNote" class="note" hidden>Stop RL hands back to the sport service at once, then unlocks the list and the SPORT view.</div>
+          <div id="policyFoot" class="foot"><span>Camera link: <b id="pfLink">–</b> · <span id="pfUnavail">0 unavailable</span></span>
+            <button id="pfArchiveBtn" class="linkbtn" onclick="setPolicyFilter(policyFilter === 'shelf' ? 'archive' : 'shelf')">Show archive</button></div>
         </div>
-        <div class="rsBody">
-          <img id="rsImg" alt="RealSense stream" />
-          <div id="rsStack" class="rsStack">
-            <h3>Current perception stack</h3>
-            <table>
-              <thead><tr><th></th><th>Policy needs</th><th>Running</th></tr></thead>
-              <tbody id="rsStackRows"></tbody>
-            </table>
-            <div id="rsStackNote" class="small" style="color:#555; margin-top:6px;"></div>
+        <button id="rlStartBtn" class="bigbtn go" onclick="onRlButton()" hidden>▶ START RL</button>
+
+        <div id="postureCard" class="card">
+          <div class="ch"><h4>Posture</h4><span id="postureTarget" class="ml">via sport service</span></div>
+          <div class="btns2">
+            <button id="posture_stand" onclick="postureClick('stand')">Stand</button>
+            <button id="posture_sit" onclick="postureClick('sit')">Sit</button>
+          </div>
+          <div id="postureNote" class="note" hidden></div>
+        </div>
+
+        <div id="moveCard" class="card">
+          <div class="ch" title="Walks that far along the current heading and stops; negative = backwards. Works with RL on (the policy is driven) or off (sport service). Distance comes from leg odometry. Touching a joystick cancels it.">
+            <h4>Move distance</h4><span class="ml">−5 … 5 m</span></div>
+          <div class="moveRow">
+            <input id="moveMeters" type="number" min="-5" max="5" step="0.1" placeholder="1.50"
+                   onkeydown="if (event.key === 'Enter') submitMove()" />
+            <span class="note">m</span>
+            <button id="moveGoBtn" class="pri" onclick="submitMove()">Go</button>
+            <button id="moveCancelBtn" onclick="cancelMove()" hidden>Cancel</button>
+          </div>
+          <div id="moveBar" class="bar" hidden><i></i></div>
+          <div id="moveStatus" class="note mono">No move yet.</div>
+        </div>
+
+        <div id="runCard" class="card" hidden>
+          <div class="ch"><h4>Run</h4><span class="ml">this session</span></div>
+          <div class="rates">
+            <div class="rate"><span class="ml">Engaged</span><span id="runEngaged" class="mono">00:00</span></div>
+            <div class="rate"><span class="ml">Last move</span><span id="runMove" class="mono">–</span></div>
+            <div class="rate"><span class="ml">Max |vx|</span><span id="runMaxVx" class="mono">0.00</span></div>
+            <div class="rate"><span class="ml">Handovers</span><span id="runHandovers" class="mono">0</span></div>
           </div>
         </div>
-        <div id="rsScanInfo" class="small" style="color:#555; text-align:center; margin-top:6px;"></div>
-      </div>
+      </section>
+      <div class="gut-v" data-side="L" title="Drag to resize"></div>
 
-      <div class="status">
-        <div id="msg" class="small">Ready.</div>
-        <div id="detail" class="mono"></div>
-      </div>
+      <!-- ============ robot + drive column ============ -->
+      <section class="col mid">
+        <div id="robotViewerPanel" class="card robotCard" data-min="280">
+          <div class="ch"><h4>Robot</h4>
+            <div id="hmModes" class="tabs" title="Height map drawn under the robot">
+              <button id="hmMode_cubes" class="toggleOn" onclick="setHeightMapMode('cubes')"
+                      title="The policy's 17x11 /go2/height_scan observation (blue low value, red high)">Policy cells</button>
+              <button id="hmMode_columns" onclick="setHeightMapMode('columns')"
+                      title="/go2/local_heightmap terrain columns (min_elevation to elevation)">Terrain</button>
+              <button id="hmMode_fit" onclick="setHeightMapMode('fit')"
+                      title="stepfield_map_node's plane fit (/go2/stepfield_fit): one plane per block height, cells coloured by the level they snapped to">Plane fit</button>
+              <button id="hmMode_off" onclick="setHeightMapMode('off')">Off</button>
+            </div>
+          </div>
+          <div class="view">
+            <div id="go2ViewerRoot"></div>
+            <div class="hud"><span>roll <b id="hudRoll">–</b>  pitch <b id="hudPitch">–</b>  z <b id="hudZ">–</b></span><span id="hudScan">scan: no height map</span></div>
+            <span id="viewLocked" class="lockTag" hidden>● Policy driving</span>
+            <div class="legend">low<i></i>high</div>
+          </div>
+        </div>
 
-      <div class="small" style="margin-top:10px;">
-        STOP damps the robot (soft collapse) and latches the system; RESUME stands
-        it back up and re-arms control. Works in both RL and Unitree-gait modes.
+        <div id="dockCard" class="card dockCard" data-min="190">
+          <div class="dock">
+            <div class="joyL">
+              <div class="stick">
+                <canvas id="joyLeft" class="joy"></canvas>
+                <span class="key n" data-code="KeyW" aria-hidden="true">W</span>
+                <span class="key w" data-code="KeyA" aria-hidden="true">A</span>
+                <span class="key e" data-code="KeyD" aria-hidden="true">D</span>
+                <span class="key s" data-code="KeyS" aria-hidden="true">S</span>
+              </div>
+              <span id="joyLeftTitle" class="ml" style="white-space:pre">Move  x · y</span>
+            </div>
+            <div class="dockMid">
+              <div class="ch"><span class="ml">Speed limits</span><span id="kbPill" class="kbPill">⌨ WASD · Q E</span></div>
+              <div id="speedLimitControls"></div>
+              <div class="cmd"><span>cmd vx <b id="cmdVx">+0.00</b></span><span>vy <b id="cmdVy">+0.00</b></span><span>wz <b id="cmdWz">+0.00</b></span></div>
+            </div>
+            <div class="joyL">
+              <div class="stick">
+                <canvas id="joyRight" class="joy"></canvas>
+                <span class="key w" data-code="KeyQ" aria-hidden="true">Q</span>
+                <span class="key e" data-code="KeyE" aria-hidden="true">E</span>
+              </div>
+              <span class="ml">Turn</span>
+            </div>
+          </div>
+        </div>
+      </section>
+      <div class="gut-v" data-side="R" title="Drag to resize"></div>
+
+      <!-- ============ perception column ============ -->
+      <section class="col">
+        <div id="realsensePanel" class="card">
+          <div class="ch"><h4>RealSense D435i</h4><span id="rsLinkPill" class="pill off">not detected</span></div>
+          <div class="rates">
+            <div class="rate"><span class="ml">Depth</span><span id="rsRateDepth" class="mono">–</span></div>
+            <div class="rate"><span class="ml">Colour</span><span id="rsRateColour" class="mono">–</span></div>
+            <div class="rate"><span class="ml">Scan</span><span id="rsRateScan" class="mono">–</span></div>
+            <div class="rate"><span class="ml">Grid</span><span id="rsRateGrid" class="mono">–</span></div>
+          </div>
+          <div class="depth">
+            <img id="rsImg" alt="RealSense stream" />
+            <span id="rsImgLbl" class="lbl">depth</span>
+            <div id="rsEmpty" class="empty">No RealSense detected</div>
+          </div>
+          <div class="tabs" style="align-self:flex-start">
+            <button id="rsStreamDepth" class="toggleOn" onclick="rsSelectStream('depth')">Depth</button>
+            <button id="rsStreamColor" onclick="rsSelectStream('color')">Colour</button>
+          </div>
+          <div id="rsHint" class="note"></div>
+          <div id="rsScanInfo" class="note mono" style="font-size:9.5px"></div>
+        </div>
+
+        <div id="stackCard" class="card">
+          <div class="ch"><h4>Stack check</h4><span id="stackPill" class="pill off">–</span></div>
+          <table class="stack">
+            <thead><tr><th></th><th>Policy needs</th><th>Running</th></tr></thead>
+            <tbody id="rsStackRows"></tbody>
+          </table>
+          <div id="rsStackNote" class="note"></div>
+        </div>
+
+        <div id="logCard" class="card logCard">
+          <div class="ch"><h4>Event log</h4><span class="ml">newest last</span></div>
+          <ul id="eventLog" class="log" aria-label="Event log"></ul>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="dlgOverlay" class="dlgOverlay" hidden>
+    <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
+      <div>
+        <span id="dlgStep" class="ml" hidden></span>
+        <div class="ch"><h4 id="dlgTitle" class="dlgTitle"></h4><span id="dlgTag" class="ml"></span></div>
       </div>
+      <div id="dlgBody" class="dlgBody"></div>
+      <div id="dlgActions" class="dlgActions"></div>
+      <div id="dlgFoot" class="dlgFoot" hidden></div>
     </div>
   </div>
 
@@ -808,6 +2228,7 @@ Author: Victor Lim
     import { mountGo2Viewer } from "/app/static/robot_viewer.js";
     window.addEventListener("DOMContentLoaded", () => {
       window.go2Viewer = mountGo2Viewer("go2ViewerRoot", { heightMap: true, heightMapMode: "cubes" });
+      applyThemeToCanvases();
     });
   </script>
 </body>

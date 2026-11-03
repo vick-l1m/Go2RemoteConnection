@@ -23,5 +23,9 @@ async def start_action(action: str, _=Depends(require_token)):
     if action not in ALLOWED_ACTIONS:
         raise HTTPException(status_code=404, detail="Action not allowed")
 
+    # Sport commands would fight a running RL policy for the motors: Stop RL first.
+    if state.control_mode == "rl" and action != "stop":
+        raise HTTPException(status_code=423, detail="RL engaged: stop RL before sending sport commands")
+
     get_bridge().publish_action(action)
     return {"ok": True, "action": action}
