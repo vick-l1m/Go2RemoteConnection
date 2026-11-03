@@ -642,6 +642,56 @@
       "group": "Stepfield",
       "shelf": "deploy",
       "short": "omni30-smooth"
+    },
+    {
+      "id": "unitree_go2_omni30_headclear_usb2_2026-11-02",
+      "name": "omni30-headclear-usb2 (2026-11-02_23-53-52, model_1499)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_headclear_usb2 \u00b7 2026-11-02_23-53-52 (1500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_headclear_usb2_2026-11-02/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_speed_usb2_2026-11-03",
+      "name": "omni30-speed-usb2 (2026-11-03_02-51-12, model_1499)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_speed_usb2 \u00b7 2026-11-03_02-51-12 (1500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_speed_usb2_2026-11-03/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_mem6_usb2_2026-11-03",
+      "name": "omni30-mem6-usb2 (2026-11-03_06-08-42)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_mem6_usb2 \u00b7 2026-11-03_06-08-42 (1500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_mem6_usb2_2026-11-03/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_blind_2026-11-03",
+      "name": "omni30-blind (2026-11-03_17-49-43, model_1999)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_blind \u00b7 2026-11-03_17-49-43 (2000 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_blind_2026-11-03/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_nostuck_usb2_2026-11-03",
+      "name": "omni30-nostuck-usb2 (2026-11-03_21-22-41, model_1499)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_nostuck_usb2 \u00b7 2026-11-03_21-22-41 (1500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_nostuck_usb2_2026-11-03/policy.onnx"
     }
   ]
 }
