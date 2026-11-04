@@ -692,6 +692,46 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_omni30_nostuck_usb2_2026-11-03/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_nosnap_usb2_2026-11-04",
+      "name": "omni30-nosnap-usb2 (2026-11-04_00-30-42, model_1499)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_nosnap_usb2 \u00b7 2026-11-04_00-30-42 (1500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_nosnap_usb2_2026-11-04/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_nodagger_usb2_2026-11-04",
+      "name": "omni30-nodagger-usb2 (2026-11-04_03-36-42, model_2999)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_nodagger_usb2 \u00b7 2026-11-04_03-36-42 (3000 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_nodagger_usb2_2026-11-04/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_finetune_nomap_usb2_2026-11-04",
+      "name": "omni30-finetune-nomap-usb2 (2026-11-04_12-05-34, model_1499)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_finetune_nomap_usb2 \u00b7 2026-11-04_12-05-34 (1500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_finetune_nomap_usb2_2026-11-04/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_finetune_usb2_2026-11-04",
+      "name": "omni30-finetune-usb2 (2026-11-04_19-24-59, model_1499)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_finetune_usb2 \u00b7 2026-11-04_19-24-59 (1500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_finetune_usb2_2026-11-04/policy.onnx"
     }
   ]
 }
