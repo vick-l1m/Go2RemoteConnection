@@ -732,6 +732,56 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_omni30_finetune_usb2_2026-11-04/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_pallet_student_usb2_2026-11-05",
+      "name": "pallet-student-usb2 (2026-11-05_13-40-27)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_pallet_student_usb2 \u00b7 2026-11-05_13-40-27 (2500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_pallet_student_usb2_2026-11-05/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_pallet_finetune_usb2_2026-11-05",
+      "name": "pallet-finetune-usb2 (2026-11-05_06-40-29)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_pallet_finetune_usb2 \u00b7 2026-11-05_06-40-29 (1500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_pallet_finetune_usb2_2026-11-05/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_pallet_fwd_student_usb2_2026-11-05",
+      "name": "pallet-student-usb2 (2026-11-05_20-57-21)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_pallet_fwd_student_usb2 \u00b7 2026-11-05_20-57-21 (2500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_pallet_fwd_student_usb2_2026-11-05/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_pallet_fwd_finetune_usb2_2026-11-05",
+      "name": "pallet-finetune-usb2 (2026-11-05_23-41-48)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_pallet_fwd_finetune_usb2 \u00b7 2026-11-05_23-41-48 (1500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_pallet_fwd_finetune_usb2_2026-11-05/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_mem6_fwd_usb2_2026-11-07",
+      "name": "omni30-mem6-fwd-usb2 (2026-11-07_15-00-30, model_499)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_mem6_fwd_usb2 \u00b7 2026-11-07_15-00-30 (500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_mem6_fwd_usb2_2026-11-07/policy.onnx"
     }
   ]
 }
