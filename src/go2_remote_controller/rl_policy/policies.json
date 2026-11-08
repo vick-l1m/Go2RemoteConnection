@@ -782,6 +782,32 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_omni30_mem6_fwd_usb2_2026-11-07/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_classical_omni30_student_usb2_2026-11-08",
+      "name": "classical-omni30-student-usb2 (2026-11-08_09-48-27) -- RESIDUAL ONLY, not runnable",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_classical_omni30_student_usb2 \u00b7 2026-11-08_09-48-27 (2000 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": false,
+      "path": "policies/unitree_go2_classical_omni30_student_usb2_2026-11-08/policy.onnx",
+      "note": "Residual on top of the classical MPC trot: the ONNX outputs a correction, not joint targets, and its obs ends in the gait clock. Needs ClassicalGait.step() + phase_obs() in the node before it can run."
+    },
+    {
+      "id": "go2w_drive_flat",
+      "name": "Go2-W flat, wheels driven (16 actions)",
+      "model": "PPO warm-started from flat_dr_omni_amp_uncond through the layout widening \u00b7 unitree_go2w_drive_flat (go2w-drive-flat)",
+      "type": "blind",
+      "control": "velocity",
+      "obs_dim": 53,
+      "uses_heightmap": false,
+      "runnable": true,
+      "group": "Go2-W (wheeled)",
+      "shelf": "deploy",
+      "short": "Go2-W drive flat",
+      "path": "policies/unitree_go2w_drive_flat/policy.onnx",
+      "_note": "Needs GO2_ROBOT=go2w on the launcher. The locked twin needs no entry: flat_amp_uncond (the Go2 policy) is the locked policy -- on a go2w the node brakes the wheels itself."
     }
   ]
 }
