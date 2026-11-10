@@ -160,6 +160,62 @@ joystick. Press **RL: OFF** to hand back to the Unitree sport gaits.
 | `--dry-run` | compute everything, publish `kp=kd=0` (no torque) |
 | `--no-handover` | skip sport-service release/recover — you guarantee no sport service is running |
 | `--no-prompt` | skip the Enter confirmation (used by the launcher; node still idles until `rl`) |
+| `--robot go2\|go2w` | which robot the lowcmd goes to (`GO2_ROBOT`, default `go2`). See **Go2-W** below |
+
+## Go2-W (wheeled)
+
+The Go2-W speaks the **same SDK**: `unitree_sdk2py`, the same `rt/lowstate` /
+`rt/lowcmd` `LowCmd_` (20 motor slots), the same `SportClient` and
+`MotionSwitcherClient`. The only difference is which slots are populated: the 12 legs on
+**slots 0–11 in the Go2 order**, the four wheel axles on **slots 12–15 = FR, FL, RR, RL**
+(unitree_sdk2 `example/go2w/unitree_legged_const.LegID`). A wheel is a velocity-mode
+motor: `q 0, kp 0, dq <rad/s>, kd`. So there is no second node and no second repo — the
+same launcher drives both robots:
+
+```bash
+GO2_ROBOT=go2w ./RL_start_remote_connection.sh          # tells the policy node + viewers
+```
+
+What the node then does, per policy (read off `deploy.yaml`, never guessed):
+
+| policy's `deploy.yaml` | legs (slots 0–11) | wheels (slots 12–15) |
+|---|---|---|
+| 12 joints (any Go2 policy, e.g. `flat_amp_uncond`) | as on the Go2 | **held** at the angle they had on engage, kp 25 / kd 0.5 (the sim's `go2w-locked-*` actuator) |
+| 16 joints, one `JointPositionAction` (`go2w-locked-*`) | as on the Go2 | held with the contract's wheel gains |
+| 16 joints + `WheelVelocityAction` (`go2w-drive-*`) | as on the Go2 | **driven**: `dq = scale × action[12:16]`, kp 0, the contract's wheel kd |
+
+A 16-joint contract on `--robot go2`, or a wheel-driving one on a Go2, is refused at
+load. `joint_pos_rel` stays legs-only while `joint_vel_rel` / `last_action` widen to 16
+for a drive policy; the node sizes each term to what the contract recorded. ESTOP damps
+the wheels too (kd 3, unitree_rl_lab's Passive). `--dry-run` zeroes wheel torque and
+velocity targets like everything else. The classical gait is refused on a Go2-W.
+
+**Before the first wheel command — verify the slot order on the gantry:**
+
+```bash
+~/venvs/unitree_sdk2_python/bin/python tools/go2w_wheel_check.py --net enP8p1s0
+```
+
+Releases the sport service with the legs damped, spins slots 12..15 one at a time at
+2 rad/s and asks which wheel turned. `[FAIL]` means the order differs from what the node
+and training assume (`SDK_WHEEL_JOINTS` here, `GO2W_WHEEL_JOINT_SDK_NAMES` in
+`training/go2_training/assets/joint_order.py`): fix both and re-export, since
+`joint_ids_map` is derived from those names. A measured `|dq|` near zero means the
+wheel motor did not accept a velocity-mode command, which also has to be settled before
+a drive policy runs.
+
+Bring-up order on the Go2-W, each step on the gantry first: (1) the wheel check above;
+(2) `flat_amp_uncond` with `GO2_ROBOT=go2w` — the Go2 gait on the heavier plant, wheels
+braked; (3) `go2w_drive_flat` once `training/scripts/go2w_chain.sh --flat` has exported
+it to `policies/unitree_go2w_drive_flat/` (the registry entry is already there). Unit
+tests for the slot writes: `~/venvs/unitree_sdk2_python/bin/python rl_policy/tests/test_go2w_wheels.py`.
+
+The high-level side needs nothing: the Go2-W example in `unitree_sdk2` only *demos* ten
+sport calls (damp, stand_up, stand_down, move, stop_move, speed_level, switch_gait,
+get_state, recovery, balance), but it links the same `go2::SportClient` whose header
+carries every API id `web_bridge` already sends (1001–2058). Whether a given trick
+(dances, flips, handstand…) executes on the wheeled firmware is answered by the
+return code of that call on the robot, not by the SDK.
 
 ## Safety behaviour
 

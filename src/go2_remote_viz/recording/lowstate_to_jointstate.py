@@ -18,6 +18,8 @@ of truth: record_session.sh session_metadata.yaml `sdk_joint_order`). We append
 "_joint" to match the Go2 URDF joint names.
 """
 
+import os
+
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException
@@ -32,6 +34,9 @@ JOINT_NAMES = [
     "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
     "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
 ]
+# Go2-W: wheel axles on motor_state[12..15] (GO2_ROBOT=go2w, as for the RL node).
+if os.environ.get("GO2_ROBOT", "go2") == "go2w":
+    JOINT_NAMES += ["FR_foot_joint", "FL_foot_joint", "RR_foot_joint", "RL_foot_joint"]
 
 
 class LowStateToJointState(Node):

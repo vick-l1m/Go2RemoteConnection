@@ -797,17 +797,37 @@
     {
       "id": "go2w_drive_flat",
       "name": "Go2-W flat, wheels driven (16 actions)",
-      "model": "PPO warm-started from flat_dr_omni_amp_uncond through the layout widening \u00b7 unitree_go2w_drive_flat (go2w-drive-flat)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2w_drive_flat \u00b7 2026-11-08_18-28-45 (2000 iterations)",
       "type": "blind",
-      "control": "velocity",
       "obs_dim": 53,
       "uses_heightmap": false,
       "runnable": true,
+      "path": "policies/go2w_drive_flat/policy.onnx",
+      "control": "velocity",
       "group": "Go2-W (wheeled)",
       "shelf": "deploy",
       "short": "Go2-W drive flat",
-      "path": "policies/unitree_go2w_drive_flat/policy.onnx",
-      "_note": "Needs GO2_ROBOT=go2w on the launcher. The locked twin needs no entry: flat_amp_uncond (the Go2 policy) is the locked policy -- on a go2w the node brakes the wheels itself."
+      "note": "Needs GO2_ROBOT=go2w on the launcher (16 motor slots). The locked twin needs no entry: any Go2 policy on a go2w brakes the wheels at the engage angle. Flat eval: 4.5 % falls, 91 % exits at 0.5 m/s."
+    },
+    {
+      "id": "unitree_go2_omni30_mem6_fwd_usb2_2026-11-10",
+      "name": "omni30-mem6-fwd-usb2 (2026-11-10_09-17-18, model_499)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_mem6_fwd_usb2 \u00b7 2026-11-10_09-17-18 (500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_mem6_fwd_usb2_2026-11-10/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_nosnap_usb2_2026-11-10",
+      "name": "omni30-nosnap-usb2 (2026-11-10_10-45-05, model_1499)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_nosnap_usb2 \u00b7 2026-11-10_10-45-05 (1500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_nosnap_usb2_2026-11-10/policy.onnx"
     }
   ]
 }

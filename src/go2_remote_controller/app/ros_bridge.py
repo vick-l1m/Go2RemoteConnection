@@ -13,6 +13,7 @@ Author: Victor Lim
 """
 
 import asyncio
+import os
 import gzip
 import json
 import threading
@@ -64,6 +65,10 @@ ROBOT_JOINT_NAMES = [
     "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
     "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
 ]
+# Go2-W: the wheel axles follow on motor_state[12..15] (GO2_ROBOT=go2w, same switch as
+# the RL policy node). The names match the Go2-W URDF's *_foot_joint.
+if os.environ.get("GO2_ROBOT", "go2") == "go2w":
+    ROBOT_JOINT_NAMES += ["FR_foot_joint", "FL_foot_joint", "RR_foot_joint", "RL_foot_joint"]
 
 
 # ============================================================

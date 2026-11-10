@@ -143,6 +143,26 @@ SDK_JOINTS = [
     "RR_hip", "RR_thigh", "RR_calf",
     "RL_hip", "RL_thigh", "RL_calf",
 ]
+# Go2-W: the same 12 leg slots, then the four wheel axles on lowcmd/lowstate slots
+# 12..15 (unitree_sdk2 example/go2w `unitree_legged_const.LegID`: FR_w 12, FL_w 13,
+# RR_w 14, RL_w 15). The Go2's contract is a prefix of the Go2-W's. A wheel is a
+# velocity-mode motor: q 0 / kp 0 / dq target / kd, as unitree_rl_lab's go2w deploy
+# and the SDK's go2w_stand_example write it.
+SDK_WHEEL_JOINTS = ["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
+SDK_JOINTS_BY_ROBOT = {
+    "go2": SDK_JOINTS,
+    "go2w": SDK_JOINTS + SDK_WHEEL_JOINTS,
+}
+# Isaac Lab orders joints breadth-first, so the wheels follow the 12 legs in this order
+# (training/go2_training/assets/go2w.py). Only a fallback: a contract's joint_ids_map
+# is the authority once a policy is loaded.
+ISAAC_WHEEL_JOINTS = ["FL_foot", "FR_foot", "RL_foot", "RR_foot"]
+# Gains for a wheel slot that no loaded policy drives (a Go2 policy on a Go2-W, or the
+# engage/disengage ramps): a position hold at the angle the wheel had on engage -- the
+# sim's "locked" wheel actuator (go2w.py WHEEL_LOCK_KP) -- and, when damping, the
+# Passive kd of unitree_rl_lab's go2w config.
+WHEEL_HOLD_KP, WHEEL_HOLD_KD = 25.0, 0.5
+WHEEL_DAMP_KD = 3.0
 
 # Default joint angles by name (env.yaml init_state.joint_pos). Single source of
 # truth; per-order arrays are derived from this so they cannot drift apart.
@@ -150,6 +170,7 @@ Q_DEFAULT_BY_NAME = {
     "FL_hip": 0.1, "RL_hip": 0.1, "FR_hip": -0.1, "RR_hip": -0.1,
     "FL_thigh": 0.8, "FR_thigh": 0.8, "RL_thigh": 1.0, "RR_thigh": 1.0,
     "FL_calf": -1.5, "FR_calf": -1.5, "RL_calf": -1.5, "RR_calf": -1.5,
+    "FL_foot": 0.0, "FR_foot": 0.0, "RL_foot": 0.0, "RR_foot": 0.0,
 }
 
 # Deployment contract.
@@ -338,16 +359,37 @@ class Go2RLPolicyController:
         self.flip_recovery = True    # auto flip-recovery is always armed while the policy runs
         self.lin_vel_mode = args.lin_vel_mode
 
-        # ---- joint remap -------------------------------------------------
+        # ---- robot + joint remap ------------------------------------------
+        # Which robot the lowcmd goes to: 12 motor slots on the Go2, 16 on the Go2-W.
+        # The policy decides how many of them it drives (deploy.yaml); the robot decides
+        # how many exist. A Go2 policy on a Go2-W holds the wheels braked; a Go2-W drive
+        # policy on a Go2 is refused at load.
+        self.robot = args.robot
+        self.sdk_joints = SDK_JOINTS_BY_ROBOT[self.robot]
+        self.n_sdk = len(self.sdk_joints)
         isaac_joints, used_default = load_isaac_joints(args.joint_names)
+        self.isaac_leg_joints = list(isaac_joints)      # joint_names.json, legs only
         self.isaac_joints = isaac_joints
         self.isaac_from_sdk = [SDK_JOINTS.index(n) for n in isaac_joints]   # lowstate -> obs order
         self.sdk_from_isaac = [isaac_joints.index(n) for n in SDK_JOINTS]   # action  -> lowcmd order
+        # Which SDK slots the loaded policy's position action drives (the legs), which
+        # it leaves to this node (wheel axles: held), and which its wheel action drives.
+        self.leg_isaac = list(range(12))                # Isaac indices of the leg action
+        self.leg_sdk = list(range(12))                  # their lowcmd slots
+        self.wheel_sdk = list(range(12, self.n_sdk))    # every other slot (held or driven)
+        self.driven_sdk = []                            # wheel slots with a velocity target
+        self.driven_isaac = []                          # Isaac indices of the wheel action
+        self.wheel_kp, self.wheel_kd = WHEEL_HOLD_KP, WHEEL_HOLD_KD
+        self.wheel_scale = 0.0
+        self.action_dim = 12
         # Provisional: every one of these is replaced by the active policy's
         # deploy.yaml in _load_policy_file(). They exist so the stand-up ramp and the
         # damping path have sane values before any policy is loaded.
         self.q_default_isaac = np.array([Q_DEFAULT_BY_NAME[n] for n in isaac_joints], np.float32)
-        self.q_default_sdk = np.array([Q_DEFAULT_BY_NAME[n] for n in SDK_JOINTS], np.float32)
+        self.q_default_sdk = np.array([Q_DEFAULT_BY_NAME[n] for n in self.sdk_joints], np.float32)
+        # Wheel angle to hold on the undriven wheel slots, captured at engage: a wheel
+        # axle is continuous, so holding it at 0 could spin it several turns.
+        self.wheel_hold_q_sdk = np.zeros(self.n_sdk, np.float32)
         self.contract = None
 
         # ---- perception height scan (forwarded by the bridge) -------------
@@ -431,7 +473,9 @@ class Go2RLPolicyController:
                 raise
             self.active_policy_id = self.default_policy_id
         self.get_logger().info(
+            f"robot={self.robot} ({self.n_sdk} motor slots) "
             f"active_policy={self.active_policy_id} obs_dim={self.obs_dim} "
+            f"action_dim={self.action_dim} "
             f"joint_order={'DEFAULT(verify!)' if used_default else 'joint_names.json'} "
             f"dry_run={self.dry_run} handover={self.handover} lin_vel={self.lin_vel_mode} "
             f"flip_recovery={self.flip_recovery}")
@@ -457,7 +501,7 @@ class Go2RLPolicyController:
         self.posture_cmd = 1.0
         self._sit_still_since = None   # when the sit last became still
         self._sit_damp_t0 = None       # when damping engaged (latched)
-        self.last_action = np.zeros(12, np.float32)
+        self.last_action = np.zeros(self.action_dim, np.float32)
         self.phase = SPORT
         self.requested_mode = "sport"
         self._prev_sport_mode = "normal"       # sport mode to restore on disengage (set at release)
@@ -883,17 +927,39 @@ class Go2RLPolicyController:
             )
 
         # The joint order the contract was exported under must match the order this
-        # node builds observations in, or every joint is fed the wrong number.
-        if contract.joint_ids_map is not None and len(contract.joint_ids_map) != len(self.isaac_joints):
+        # node builds observations in, or every joint is fed the wrong number. The
+        # contract's joint_ids_map (Isaac index -> SDK slot) is the authority; without
+        # one (older exports) joint_names.json's leg order stands in.
+        if contract.num_joints > self.n_sdk:
             raise DeployContractError(
-                f"{contract.source}: joint_ids_map has {len(contract.joint_ids_map)} entries, "
-                f"this node maps {len(self.isaac_joints)} joints"
+                f"{contract.source}: policy has {contract.num_joints} joints but this is a "
+                f"{self.robot} with {self.n_sdk} motor slots (start the node with --robot go2w "
+                "/ GO2_ROBOT=go2w for a Go2-W policy)"
             )
-        if len(contract.default_joint_pos) != len(self.isaac_joints):
+        if contract.drives_wheels and self.robot != "go2w":
             raise DeployContractError(
-                f"{contract.source}: default_joint_pos has {len(contract.default_joint_pos)} "
-                f"entries, expected {len(self.isaac_joints)}"
+                f"{contract.source}: policy drives wheel velocities; this is a {self.robot}"
             )
+        if contract.joint_ids_map is not None:
+            isaac_joints = [self.sdk_joints[s] for s in contract.joint_ids_map]
+        elif contract.num_joints == 12:
+            isaac_joints = list(self.isaac_leg_joints)
+        else:
+            raise DeployContractError(
+                f"{contract.source}: a {contract.num_joints}-joint contract needs joint_ids_map"
+            )
+        isaac_from_sdk = [self.sdk_joints.index(n) for n in isaac_joints]
+        leg_sdk = [isaac_from_sdk[i] for i in contract.leg_joint_ids]
+        if sorted(leg_sdk) != list(range(12)):
+            raise DeployContractError(
+                f"{contract.source}: the position action must drive exactly the 12 leg "
+                f"slots 0-11, got {leg_sdk}"
+            )
+        leg_order = [isaac_joints[i] for i in contract.leg_joint_ids]
+        if leg_order != self.isaac_leg_joints:
+            self.get_logger().warn(
+                f"{contract.source}: leg order from joint_ids_map {leg_order} differs from "
+                f"joint_names.json {self.isaac_leg_joints}; using the contract's")
 
         # A perception policy is only loadable if the scan it expects matches the grid
         # the perception stack produces. Width is the part the contract records; the
@@ -965,9 +1031,56 @@ class Go2RLPolicyController:
             self.gait_phase_period = contract.gait_phase_period
             self.gait_phase_dt = contract.step_dt
             self.gait_phase = 0.0
+            # Joint tables for this policy: which Isaac joints it observes/acts on and
+            # where they sit in lowcmd. Wheel slots the policy does not drive are held.
+            self.isaac_joints = isaac_joints
+            self.isaac_from_sdk = isaac_from_sdk
+            self.sdk_from_isaac = ([isaac_joints.index(n) for n in self.sdk_joints]
+                                   if len(isaac_joints) == self.n_sdk else None)
+            self.leg_isaac = list(contract.leg_joint_ids)
+            self.leg_sdk = leg_sdk
+            self.wheel_sdk = [s for s in range(self.n_sdk) if s not in set(leg_sdk)]
+            self.driven_isaac = list(contract.wheel_joint_ids)
+            self.driven_sdk = [isaac_from_sdk[i] for i in self.driven_isaac]
+            if contract.has_wheels:
+                self.wheel_kp, self.wheel_kd = contract.wheel_kp, contract.wheel_kd
+            else:   # a Go2 policy: on a Go2-W the wheels are braked, on a Go2 there are none
+                self.wheel_kp, self.wheel_kd = WHEEL_HOLD_KP, WHEEL_HOLD_KD
+            self.wheel_scale = contract.wheel_action_scale or 0.0
+            self.action_dim = contract.action_dim
+            self.last_action = np.zeros(self.action_dim, np.float32)
             # default_joint_pos is recorded in Isaac order, same as our obs vector
             self.q_default_isaac = np.asarray(contract.default_joint_pos, np.float32)
-            self.q_default_sdk = self.q_default_isaac[self.sdk_from_isaac]
+            self.q_default_sdk = self._to_sdk(self.q_default_isaac)
+            if self.wheel_sdk:
+                self.get_logger().info(
+                    f"wheels: slots {self.wheel_sdk} "
+                    + (f"driven by the policy (dq scale {self.wheel_scale:g} rad/s, "
+                       f"kd {self.wheel_kd:g})" if self.driven_sdk
+                       else f"held (kp {self.wheel_kp:g}, kd {self.wheel_kd:g})"))
+
+    def _to_sdk(self, x_isaac, fill=0.0):
+        """Scatter an Isaac-ordered per-joint vector into lowcmd slot order. Slots no
+        Isaac joint of the loaded policy maps to (a Go2 policy's wheels) get ``fill``."""
+        out = np.full(self.n_sdk, fill, np.float32)
+        out[self.isaac_from_sdk] = np.asarray(x_isaac, np.float32)
+        return out
+
+    def _joint_obs(self, name, full_isaac):
+        """A joint-indexed observation term at the width the contract records: every
+        joint of the policy, or the legs only (``joint_pos_rel`` on the Go2-W, where a
+        wheel angle is meaningless as an input)."""
+        widths = getattr(self.contract, "obs_widths", None) or {}
+        if name not in widths:
+            return full_isaac
+        width = widths[name] // self.contract.obs_history.get(name, 1)
+        if width == len(full_isaac):
+            return full_isaac
+        if width == len(self.leg_isaac):
+            return full_isaac[self.leg_isaac]
+        raise RuntimeError(
+            f"{name}: contract wants {width} values, the policy has {len(full_isaac)} "
+            f"joints / {len(self.leg_isaac)} legs")
 
     def _load_classical_file(self, path):
         """Install a classical gait (``classical_gait.ClassicalGait``) as the policy.
@@ -980,6 +1093,10 @@ class Go2RLPolicyController:
         Everything else -- engage ramp, blend, deadmans, tilt/flip guards, ESTOP,
         recorder -- is the same path an RL policy takes.
         """
+        if self.robot != "go2":
+            raise DeployContractError(
+                f"{path}: the classical gait is Go2-only (its kinematics and 12-slot "
+                f"publish path know nothing of a {self.robot}'s wheels)")
         gait, cfg = ClassicalGait.from_json(str(path))
         kp, kd = float(cfg.get("kp", 25.0)), float(cfg.get("kd", 0.5))
         if abs(kp - gait.p.ff_kp) > 1e-6:
@@ -999,6 +1116,14 @@ class Go2RLPolicyController:
             self.obs_dim = 0
             self.classical = gait
             self.classical_cfg = cfg
+            # Back to the plain 12-joint tables (a Go2-W policy may have widened them).
+            self.isaac_joints = list(self.isaac_leg_joints)
+            self.isaac_from_sdk = [SDK_JOINTS.index(n) for n in self.isaac_joints]
+            self.sdk_from_isaac = [self.isaac_joints.index(n) for n in SDK_JOINTS]
+            self.leg_isaac, self.leg_sdk = list(range(12)), list(range(12))
+            self.wheel_sdk, self.driven_sdk, self.driven_isaac = [], [], []
+            self.action_dim = 12
+            self.last_action = np.zeros(12, np.float32)
             # leg order (FL,FR,RL,RR x hip/thigh/calf) <-> this node's Isaac order
             self.isaac_from_leg = np.array([leg_names.index(n) for n in self.isaac_joints])
             self.leg_from_isaac = np.array([self.isaac_joints.index(n) for n in leg_names])
@@ -1251,7 +1376,8 @@ class Go2RLPolicyController:
             self._release_sport()            # kill sport svc; robot now low + limp briefly
         with self._lock:
             self.start_pos_sdk = self._read_q_sdk()
-            self.last_action = np.zeros(12, np.float32)
+            self.wheel_hold_q_sdk = self.start_pos_sdk.copy()   # hold undriven wheels where they are
+            self.last_action = np.zeros(self.action_dim, np.float32)
             self.gait_phase = 0.0        # fresh episode: restart the gait clock
             # Same reason: a stale observation window would feed the policy frames
             # from before the robot was last put down.
@@ -1337,7 +1463,8 @@ class Go2RLPolicyController:
         self.get_logger().info("RECOVER: standing back up under RL policy")
         with self._lock:
             self.start_pos_sdk = self._read_q_sdk()
-            self.last_action = np.zeros(12, np.float32)
+            self.wheel_hold_q_sdk = self.start_pos_sdk.copy()
+            self.last_action = np.zeros(self.action_dim, np.float32)
             self.gait_phase = 0.0        # fresh episode: restart the gait clock
             # Same reason: a stale observation window would feed the policy frames
             # from before the robot was last put down.
@@ -1629,8 +1756,17 @@ class Go2RLPolicyController:
         # through the blend is what stops the policy reacting to a move it never made.
         with self._lock:
             self.last_action = action.astype(np.float32)
-        q_target_isaac = self.q_default_isaac + self.action_scale * action
-        q_target_sdk = q_target_isaac[self.sdk_from_isaac]
+        # Legs first, then (Go2-W drive) the wheel velocities -- Isaac Lab's action
+        # concatenation order. The legs are position targets around the default pose;
+        # a wheel is a velocity target in rad/s, applied on its lowcmd slot by _publish.
+        n_leg = len(self.leg_isaac)
+        q_target_isaac = self.q_default_isaac[self.leg_isaac] + self.action_scale * action[:n_leg]
+        q_target_sdk = self.q_default_sdk.copy()
+        q_target_sdk[self.leg_sdk] = q_target_isaac
+        dq_sdk = None
+        if self.driven_sdk:
+            dq_sdk = np.zeros(self.n_sdk, np.float32)
+            dq_sdk[self.driven_sdk] = self.wheel_scale * action[n_leg:]
         # Gains ride the same curve, RAMP_KP/KD -> the trained kp/kd.
         kp_run = RAMP_KP + alpha * (self.kp - RAMP_KP)
         kd_run = RAMP_KD + alpha * (self.kd - RAMP_KD)
@@ -1641,7 +1777,7 @@ class Go2RLPolicyController:
         damp = self._sit_damp_blend()
         kp_out = (1.0 - damp) * kp_run
         kd_out = (1.0 - damp) * kd_run + damp * SIT_DAMP_KD
-        self._publish(q_target_sdk, kp_out, kd_out)
+        self._publish(q_target_sdk, kp_out, kd_out, dq_sdk=dq_sdk, wheel_damp=damp)
         self._rec_step(obs, action_raw, action, q_target_sdk, kp_out, kd_out, alpha)
 
     def _classical_step(self):
@@ -1732,11 +1868,11 @@ class Go2RLPolicyController:
         scan, age = self._height_scan_for_obs()
         rec.step(
             obs=obs, action_raw=action_raw, action_cmd=action_cmd,
-            q_target_sdk=(np.full(12, np.nan, np.float32) if q_target_sdk is None
+            q_target_sdk=(np.full(self.n_sdk, np.nan, np.float32) if q_target_sdk is None
                           else q_target_sdk),
             kp=kp, kd=kd, alpha=alpha,
-            q=[ls.motor_state[i].q for i in range(12)],
-            dq=[ls.motor_state[i].dq for i in range(12)],
+            q=[ls.motor_state[i].q for i in range(self.n_sdk)],
+            dq=[ls.motor_state[i].dq for i in range(self.n_sdk)],
             quat=list(ls.imu_state.quaternion), gyro=list(ls.imu_state.gyroscope),
             cmd=self.cmd,
             scan_raw=(scan if scan is not None else np.zeros(0, np.float32)),
@@ -1766,7 +1902,7 @@ class Go2RLPolicyController:
         if self._sit_damp_t0 is not None:
             return float(np.clip((now - self._sit_damp_t0) / SIT_DAMP_FADE, 0.0, 1.0))
 
-        dq = np.array([self.low_state.motor_state[i].dq for i in range(12)], np.float32)
+        dq = np.array([self.low_state.motor_state[i].dq for i in self.leg_sdk], np.float32)
         if np.max(np.abs(dq)) > SIT_SETTLE_DQ:
             self._sit_still_since = None
             return 0.0
@@ -1958,8 +2094,8 @@ class Go2RLPolicyController:
 
     def _build_obs(self):
         ls = self.low_state
-        q_sdk = np.array([ls.motor_state[i].q for i in range(12)], np.float32)
-        dq_sdk = np.array([ls.motor_state[i].dq for i in range(12)], np.float32)
+        q_sdk = np.array([ls.motor_state[i].q for i in range(self.n_sdk)], np.float32)
+        dq_sdk = np.array([ls.motor_state[i].dq for i in range(self.n_sdk)], np.float32)
         q_isaac = q_sdk[self.isaac_from_sdk]
         dq_isaac = dq_sdk[self.isaac_from_sdk]
         with self._lock:
@@ -1969,13 +2105,15 @@ class Go2RLPolicyController:
         # Keyed by term name and emitted in the contract's own order, rather than
         # positionally: which terms are present *and in what order* is recorded in
         # deploy.yaml, and a reordered observation is well-formed and silently wrong.
+        # On the Go2-W joint_pos_rel is legs-only while joint_vel_rel spans the wheels
+        # too; _joint_obs sizes each to what the contract recorded.
         raw = {
             "base_lin_vel": np.zeros(3, np.float32),   # lin_vel_mode == "zero"
             "base_ang_vel": np.asarray(ls.imu_state.gyroscope, np.float32),
             "projected_gravity": projected_gravity(ls.imu_state.quaternion),
             "velocity_commands": cmd,
-            "joint_pos_rel": q_isaac - self.q_default_isaac,
-            "joint_vel_rel": dq_isaac,
+            "joint_pos_rel": self._joint_obs("joint_pos_rel", q_isaac - self.q_default_isaac),
+            "joint_vel_rel": self._joint_obs("joint_vel_rel", dq_isaac),
             "last_action": last_a,
             "posture_command": np.array([posture], np.float32),
         }
@@ -2061,17 +2199,23 @@ class Go2RLPolicyController:
             m.kd = 0.0
             m.tau = 0.0
 
-    def _publish(self, q_target_sdk, kp, kd, tau_sdk=None):
+    def _publish(self, q_target_sdk, kp, kd, tau_sdk=None, dq_sdk=None, wheel_damp=0.0):
         """PD targets, plus an optional feedforward torque (SDK order, Nm) -- the motor
         applies kp (q* - q) + kd (0 - dq) + tau. Only the classical gait sends tau; it is
-        clamped to TAU_FF_MAX here as well as in the controller."""
+        clamped to TAU_FF_MAX here as well as in the controller.
+
+        Leg slots take ``q_target_sdk`` under the scalar ``kp``/``kd``. Wheel slots (Go2-W
+        only; none on a Go2) are either DRIVEN -- ``dq_sdk`` velocity targets, kp 0, the
+        trained wheel kd -- or HELD at the angle captured on engage under the wheel
+        hold gains, scaled by ``wheel_damp`` like the legs' sit-damp fade."""
         if self.dry_run:
             kp, kd = 0.0, 0.0                # compute everything, apply no torque
             tau_sdk = None
+            dq_sdk = None
         if tau_sdk is None:
-            tau_sdk = np.zeros(12)
+            tau_sdk = np.zeros(self.n_sdk)
         tau_sdk = np.clip(np.asarray(tau_sdk, dtype=float), -TAU_FF_MAX, TAU_FF_MAX)
-        for i in range(12):
+        for i in self.leg_sdk:
             m = self.low_cmd.motor_cmd[i]
             m.mode = 0x01
             m.q = float(q_target_sdk[i])
@@ -2079,24 +2223,40 @@ class Go2RLPolicyController:
             m.kp = float(kp)
             m.kd = float(kd)
             m.tau = float(tau_sdk[i])
+        wkp = 0.0 if self.dry_run else (1.0 - wheel_damp) * float(self.wheel_kp)
+        wkd = 0.0 if self.dry_run else float(self.wheel_kd)
+        for i in self.wheel_sdk:
+            m = self.low_cmd.motor_cmd[i]
+            m.mode = 0x01
+            m.tau = 0.0
+            if i in self.driven_sdk:
+                m.q = 0.0
+                m.kp = 0.0
+                m.dq = 0.0 if dq_sdk is None else float(dq_sdk[i])
+                m.kd = wkd
+            else:
+                m.q = float(self.wheel_hold_q_sdk[i])
+                m.kp = wkp
+                m.dq = 0.0
+                m.kd = wkd
         self.low_cmd.crc = self.crc.Crc(self.low_cmd)
         self.lowcmd_pub.Write(self.low_cmd)
 
     def _damp(self):
-        for i in range(12):
+        for i in range(self.n_sdk):
             m = self.low_cmd.motor_cmd[i]
             m.mode = 0x01
             m.q = 0.0
             m.dq = 0.0
             m.kp = 0.0
-            m.kd = DAMP_KD
+            m.kd = WHEEL_DAMP_KD if i in self.wheel_sdk else DAMP_KD
             m.tau = 0.0
         self.low_cmd.crc = self.crc.Crc(self.low_cmd)
         self.lowcmd_pub.Write(self.low_cmd)
 
     def _read_q_sdk(self):
         ls = self.low_state
-        return np.array([ls.motor_state[i].q for i in range(12)], np.float32)
+        return np.array([ls.motor_state[i].q for i in range(self.n_sdk)], np.float32)
 
     def _now(self):
         return time.monotonic() - self._t0
@@ -2163,6 +2323,10 @@ def main():
     ap.add_argument("--policies", default=str(HERE / "policies.json"),
                     help="policy registry (JSON) listing the web-selectable policies")
     ap.add_argument("--joint-names", default=str(HERE / "joint_names.json"))
+    ap.add_argument("--robot", default=os.environ.get("GO2_ROBOT", "go2"), choices=["go2", "go2w"],
+                    help="which robot the lowcmd goes to: go2 (12 motors) or go2w (12 legs + 4 "
+                         "wheel axles on slots 12-15). A Go2 policy on a go2w holds the wheels "
+                         "braked; a Go2-W drive policy on a go2 is refused. Env: GO2_ROBOT.")
     ap.add_argument("--lin-vel-mode", default="zero", choices=["zero"],
                     help="source for base_lin_vel obs (48-dim policy). 'zero' = un-retrained test.")
     ap.add_argument("--dry-run", action="store_true",

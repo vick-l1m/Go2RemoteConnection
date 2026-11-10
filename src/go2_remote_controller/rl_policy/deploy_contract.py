@@ -145,6 +145,13 @@ OBS_TERM_ALIASES = {
     "actions": "last_action",
 }
 
+# Action terms the nodes know how to drive. Exactly one position term (the legs, q
+# targets on lowcmd slots 0-11) and, for the Go2-W's ``go2w-drive-*`` tasks, at most
+# one wheel velocity term (dq targets on slots 12-15, kp 0). The names are the term
+# names in the training env cfgs (``envs/go2w_omni30_env_cfg.py``).
+POSITION_ACTION_TERMS = ("JointPositionAction",)
+WHEEL_ACTION_TERMS = ("WheelVelocityAction",)
+
 
 class DeployContract:
     """The values a policy must be run with, as recorded when it was trained."""
@@ -167,6 +174,22 @@ class DeployContract:
         )
         self.stiffness: list[float] | None = data.get("stiffness")
         self.damping: list[float] | None = data.get("damping")
+
+        # Every joint the articulation has, in Isaac order: 12 on the Go2, 16 on the
+        # Go2-W (the 12 legs + 4 wheel axles). The gain lists and joint_ids_map are in
+        # SDK order and must be the same length.
+        self.num_joints: int = len(self.default_joint_pos)
+        if self.joint_ids_map is not None and len(self.joint_ids_map) != self.num_joints:
+            raise DeployContractError(
+                f"{source}: joint_ids_map has {len(self.joint_ids_map)} entries but "
+                f"default_joint_pos has {self.num_joints}"
+            )
+        for what, vals in (("stiffness", self.stiffness), ("damping", self.damping)):
+            if vals is not None and len(vals) != self.num_joints:
+                raise DeployContractError(
+                    f"{source}: {what} has {len(vals)} entries but the policy has "
+                    f"{self.num_joints} joints"
+                )
 
         self._parse_action()
         self._parse_observations()
@@ -405,17 +428,23 @@ class DeployContract:
             )
         return value
 
-    def _uniform_gain(self, values, what: str) -> float:
+    def _uniform_gain(self, values, what: str, slots: list[int] | None = None) -> float:
         """Collapse a per-joint gain list to the single value the nodes command.
 
         The Go2's lowcmd carries a kp/kd per motor, but every policy trained here uses
         one gain for all twelve. A contract with mixed gains would be quietly flattened,
         so refuse it instead -- the robot would hold a different stance than it trained
         with, which looks like a bad policy rather than a config error.
+
+        ``slots`` restricts the check to those SDK slots: the legs and the wheels of a
+        Go2-W carry different gains by design (a driven wheel is kp 0), so each group is
+        collapsed on its own.
         """
         if values is None:
             raise DeployContractError(f"{self.source}: no {what} recorded")
         vals = [round(float(v), 9) for v in values]
+        if slots is not None:
+            vals = [vals[i] for i in slots]
         if not vals:
             raise DeployContractError(f"{self.source}: {what} is empty")
         if len(set(vals)) != 1:
@@ -424,39 +453,139 @@ class DeployContract:
             )
         return vals[0]
 
+    def _slots(self, isaac_ids: list[int]) -> list[int]:
+        """SDK lowcmd slots of the given Isaac joint indices."""
+        if self.joint_ids_map is None:
+            return list(isaac_ids)
+        return [self.joint_ids_map[i] for i in isaac_ids]
+
+    @property
+    def leg_slots(self) -> list[int]:
+        """SDK slots of the joints the position action drives (the 12 legs)."""
+        return self._slots(self.leg_joint_ids)
+
+    @property
+    def wheel_slots(self) -> list[int]:
+        """SDK slots the position action does NOT drive -- the Go2-W's wheel axles,
+        whether braked (no wheel action) or driven. Empty on the Go2."""
+        legs = set(self.leg_slots)
+        return [s for s in range(self.num_joints) if s not in legs]
+
+    @property
+    def has_wheels(self) -> bool:
+        """True for a Go2-W policy (16 joints), whatever it does with the wheels."""
+        return bool(self.wheel_slots)
+
+    @property
+    def drives_wheels(self) -> bool:
+        """True when the policy emits wheel velocity targets (``go2w-drive-*``)."""
+        return self.wheel_action_term is not None
+
     @property
     def kp(self) -> float:
-        """Joint stiffness the policy was trained against."""
-        return self._uniform_gain(self.stiffness, "stiffness")
+        """Leg joint stiffness the policy was trained against."""
+        return self._uniform_gain(self.stiffness, "stiffness", self.leg_slots)
 
     @property
     def kd(self) -> float:
-        """Joint damping the policy was trained against."""
-        return self._uniform_gain(self.damping, "damping")
+        """Leg joint damping the policy was trained against."""
+        return self._uniform_gain(self.damping, "damping", self.leg_slots)
+
+    @property
+    def wheel_kp(self) -> float | None:
+        """Wheel-axle stiffness (a brake when the policy does not drive them, 0 when it
+        does), or None on a Go2 policy."""
+        if not self.has_wheels:
+            return None
+        return self._uniform_gain(self.stiffness, "stiffness", self.wheel_slots)
+
+    @property
+    def wheel_kd(self) -> float | None:
+        if not self.has_wheels:
+            return None
+        return self._uniform_gain(self.damping, "damping", self.wheel_slots)
 
     # -- parsing ----------------------------------------------------------------
 
-    def _parse_action(self) -> None:
-        actions = self._d["actions"]
-        if len(actions) != 1:
-            raise DeployContractError(
-                f"{self.source}: expected exactly one action term, found {sorted(actions)}. "
-                "The policy nodes drive joint positions only."
-            )
-        self.action_term, term = next(iter(actions.items()))
+    def _uniform_action_scale(self, name: str, term: dict) -> tuple[float, int]:
+        """(scale, width) of an action term. The nodes apply one scalar scale per term;
+        per-joint scales are legal in Isaac Lab but would silently be collapsed here, so
+        reject rather than mis-apply them."""
         scale = term.get("scale")
         if scale is None:
-            raise DeployContractError(f"{self.source}: action term {self.action_term!r} has no scale")
+            raise DeployContractError(f"{self.source}: action term {name!r} has no scale")
         scales = [float(s) for s in scale] if isinstance(scale, (list, tuple)) else [float(scale)]
-        # The nodes apply one scalar scale. Per-joint scales are legal in Isaac Lab but
-        # would silently be collapsed here, so reject rather than mis-apply them.
         if len(set(scales)) != 1:
             raise DeployContractError(
                 f"{self.source}: per-joint action scales {scales} are not supported by this node"
             )
-        self.action_scale: float = scales[0]
+        return scales[0], len(scales)
+
+    def _term_joint_ids(self, name: str, term: dict, width: int) -> list[int]:
+        """Isaac joint indices an action term drives. ``null`` means every joint."""
+        ids = term.get("joint_ids")
+        if ids is None:
+            if width != self.num_joints:
+                raise DeployContractError(
+                    f"{self.source}: action term {name!r} is {width} wide with joint_ids "
+                    f"null, but the policy has {self.num_joints} joints"
+                )
+            return list(range(self.num_joints))
+        ids = [int(i) for i in ids]
+        if len(ids) != width:
+            raise DeployContractError(
+                f"{self.source}: action term {name!r} is {width} wide but lists "
+                f"{len(ids)} joint_ids"
+            )
+        bad = [i for i in ids if not 0 <= i < self.num_joints]
+        if bad or len(set(ids)) != len(ids):
+            raise DeployContractError(
+                f"{self.source}: action term {name!r} joint_ids {ids} are not distinct "
+                f"indices into {self.num_joints} joints"
+            )
+        return ids
+
+    def _parse_action(self) -> None:
+        """One position term for the legs, plus -- on the Go2-W -- an optional wheel
+        velocity term. Anything else is refused: the nodes drive joint positions, and
+        wheel velocities only where a contract declares them."""
+        actions = self._d["actions"]
+        if not isinstance(actions, dict) or not actions:
+            raise DeployContractError(f"{self.source}: 'actions' must be a non-empty mapping")
+        pos = [n for n in actions if n in POSITION_ACTION_TERMS]
+        wheel = [n for n in actions if n in WHEEL_ACTION_TERMS]
+        other = [n for n in actions if n not in pos and n not in wheel]
+        if len(pos) != 1 or len(wheel) > 1 or other:
+            raise DeployContractError(
+                f"{self.source}: action terms {sorted(actions)} are not supported. The policy "
+                f"nodes drive one {'/'.join(POSITION_ACTION_TERMS)} (the legs) plus, on the "
+                f"Go2-W, at most one {'/'.join(WHEEL_ACTION_TERMS)}."
+            )
+        self.action_term = pos[0]
+        term = actions[self.action_term]
+        self.action_scale, width = self._uniform_action_scale(self.action_term, term)
         self.action_offset: list[float] | None = term.get("offset")
         self.action_clip = term.get("clip")
+        #: Isaac joint indices of the position action (the legs), in action order.
+        self.leg_joint_ids: list[int] = self._term_joint_ids(self.action_term, term, width)
+
+        self.wheel_action_term: str | None = wheel[0] if wheel else None
+        self.wheel_action_scale: float | None = None
+        #: Isaac joint indices of the wheel velocity action, in action order ([] if none).
+        self.wheel_joint_ids: list[int] = []
+        if self.wheel_action_term is not None:
+            wterm = actions[self.wheel_action_term]
+            self.wheel_action_scale, wwidth = self._uniform_action_scale(self.wheel_action_term, wterm)
+            self.wheel_joint_ids = self._term_joint_ids(self.wheel_action_term, wterm, wwidth)
+            overlap = set(self.wheel_joint_ids) & set(self.leg_joint_ids)
+            if overlap:
+                raise DeployContractError(
+                    f"{self.source}: joints {sorted(overlap)} are driven by both "
+                    f"{self.action_term} and {self.wheel_action_term}"
+                )
+        #: Width of the policy's action vector: legs first, then wheels (if any), which
+        #: is the order Isaac Lab concatenates action terms in.
+        self.action_dim: int = len(self.leg_joint_ids) + len(self.wheel_joint_ids)
 
     def _parse_observations(self) -> None:
         obs = self._d["observations"]
@@ -640,6 +769,8 @@ class DeployContract:
         scaled = [t for t, s in self.obs_scales.items() if s is not None]
         return (
             f"<DeployContract {self.obs_dim}-dim obs {self.obs_terms}, "
+            f"{self.action_dim} actions on {self.num_joints} joints"
+            f"{' (drives wheels)' if self.drives_wheels else ''}, "
             f"{self.control_rate:g} Hz, action_scale={self.action_scale:g}, "
             f"obs_scaled={scaled or 'none'}, src={self.source}>"
         )

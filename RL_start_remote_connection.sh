@@ -28,6 +28,9 @@ Authentication
 RL policy
   GO2_RL_POLICY=1|0            Start the RL bridge + policy nodes. Default: 1.
   GO2_RL_DRY_RUN=0|1           1 = no torque (kp=kd=0), for a bench check. Default: 0.
+  GO2_ROBOT=go2|go2w           Which robot: go2 (12 motors) or go2w (12 legs + 4 wheel axles
+                               on lowcmd slots 12-15). A Go2 policy on a go2w holds the wheels
+                               braked; a Go2-W drive policy on a go2 is refused. Default: go2.
 
 Perception (RealSense D435i -> /go2/height_scan)
   GO2_PERCEPTION=auto|usb3|usb2|0   Camera launch: auto-detect, force, or off.
@@ -63,7 +66,7 @@ EOF
 # Names are checked against the documented settings: an unknown name (e.g. a case typo
 # like Go2_RECORD) would otherwise be exported and silently ignored.
 KNOWN_VARS="ROS_DOMAIN_ID RMW_IMPLEMENTATION UNITREE_IFACE GO2_WS_DIR
-  GO2_AUTH_ENABLED GO2_TOKEN_FILE GO2_RL_POLICY GO2_RL_DRY_RUN
+  GO2_AUTH_ENABLED GO2_TOKEN_FILE GO2_RL_POLICY GO2_RL_DRY_RUN GO2_ROBOT
   GO2_PERCEPTION GO2_HEIGHTMAP_MODE GO2_STEPFIELD_PRESET GO2_BLOCK_HEIGHTS_CM
   GO2_HEIGHT_EMPTY_FILL GO2_STOP_VIP_REALSENSE GO2_CALIBRATE GO2_CALIBRATE_MASK_DEG GO2_MAP
   GO2_RECORD GO2_RECORD_NAME GO2_RECORD_TERRAIN GO2_RECORD_NOTES GO2_RECORD_DEPTH
@@ -956,7 +959,7 @@ if [ "$SPORT_READY" -eq 1 ]; then
     # The node compares it against a policy's deploy.yaml camera_profile (omni30
     # students are trained per pipeline) and warns on a mismatch at load time.
     GO2_CAMERA_PROFILE="$([ -n "$PERCEPTION_USB" ] && echo "usb$PERCEPTION_USB")" \
-    "$VENV_PYTHON" "$RL_NODE" --net "$UNITREE_IFACE" --no-prompt $RL_EXTRA_ARGS \
+    "$VENV_PYTHON" "$RL_NODE" --net "$UNITREE_IFACE" --no-prompt --robot "${GO2_ROBOT:-go2}" $RL_EXTRA_ARGS \
       > /tmp/go2_rl_policy.log 2>&1 &
     RL_PID=$!
     register_pid "$RL_PID" "go2_rl_policy_node" "/tmp/go2_rl_policy.log"
