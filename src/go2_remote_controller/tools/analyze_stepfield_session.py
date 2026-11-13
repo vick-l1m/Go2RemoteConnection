@@ -31,6 +31,13 @@ Sections:
                    preceded by a block in view, i.e. were avoidable.
   4. FLIGHT        per engaged run: steps, policy, scan age inside the policy node,
                    and a pointer to eval_rl_flight.py for the counterfactual replay.
+  5. NIST RECORDS  with ``--lane <id>``: one record per engaged run in the sim evaluators'
+                   per-episode schema (outcome, time to pass, distance and lane fraction
+                   reached, drift; ``tools/stepfield_nist.py``), written to
+                   ``analysis/episodes.jsonl`` so real runs drop into the across-run
+                   tables with ``sim = real``. ``--outcomes pass,side,...`` gives the
+                   operator's call per run, in flight order; without it the outcome is
+                   odometry's guess and says so (``outcome_source: auto``).
 
 Everything here is open-loop evidence from one run. Pair it with the sim probe
 (eval_fixed_rung.py --scan_override flat) before concluding anything about the policy.
@@ -171,6 +178,64 @@ def scan_frame_stats(h, unobs, nx, ny, cx, res, mask):
 
 
 # ---------------------------------------------------------------- main
+def lane_geometry(lane: str) -> tuple[float, float, str]:
+    """``(lane end x, pass line x, lane id)`` from the spawn: a final-eval lane id from the
+    outer repo's eval_stepfields_layout.py (the submodule sits inside it), or ``rows:N``."""
+    import stepfield_nist as nist
+    if lane.startswith("rows:"):
+        end, pass_x = nist.lane_geometry(int(lane.split(":", 1)[1]))
+        return end, pass_x, lane
+    sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "..", "src", "go2_sim_isaaclab", "go2_sim_isaaclab"))
+    import eval_stepfields_layout as layout
+    t = layout.by_id(lane)
+    end = layout.course_length(t)
+    return end, end + layout.RUN_OUT_MIN, t.id
+
+
+def nist_records(args, sess, out_dir, runs, ls, t_ls, arrays) -> list[str]:
+    """Section 5: one NIST record per engaged run -> <out>/episodes.jsonl."""
+    import stepfield_nist as nist
+    from flight_recorder import load
+    out = [f"\n[5] NIST RECORDS  lane {args.lane}"]
+    if arrays is None or not runs:
+        return out + ["    needs /lowstate in the bag and at least one flight run"]
+    lane_end, pass_x, lane_id = lane_geometry(args.lane)
+    outcomes = [o.strip() for o in args.outcomes.split(",")] if args.outcomes else []
+    if outcomes and len(outcomes) != len(runs):
+        out.append(f"    !! {len(outcomes)} outcomes for {len(runs)} runs: matched in order, the rest auto")
+    q, dq, gyro, quat, ff = arrays
+    recs = []
+    for i, mp in enumerate(runs):
+        rd = os.path.dirname(mp)
+        try:
+            meta, st, _ev = load(rd)
+            wall = np.asarray(st["wall"], float)
+            sel = (t_ls >= wall[0]) & (t_ls <= wall[-1])
+            if sel.sum() < 10:
+                out.append(f"    {os.path.basename(rd)}: no /lowstate inside the run's window -- skipped")
+                continue
+            tr = nist.track(t_ls[sel], q[sel], dq[sel], gyro[sel], quat[sel], ff[sel])
+            onset = nist.command_onset(wall, st.get("cmd", []))
+            rec = nist.run_record(tr, lane_id=lane_id, lane_end_x=lane_end, pass_x=pass_x,
+                                  run_id=args.run_id or meta.get("policy_id") or meta.get("policy") or "",
+                                  episode_idx=i, outcome=outcomes[i] if i < len(outcomes) else None,
+                                  t_onset=onset)
+            recs.append(rec)
+            out.append(f"    {os.path.basename(rd)}: {rec['outcome']} ({rec['outcome_source']})  "
+                       f"x reached {rec['x_reached_m']} m of {lane_end:.2f}  "
+                       f"time to pass {rec['time_to_pass_s']} s  fraction {rec['lane_fraction_completed']}")
+        except Exception as e:  # noqa: BLE001
+            out.append(f"    {os.path.basename(rd)}: no record ({e})")
+    if recs:
+        path = os.path.join(out_dir, "episodes.jsonl")
+        with open(path, "w") as f:
+            for r in recs:
+                f.write(json.dumps(r) + "\n")
+        out.append(f"    wrote {len(recs)} record(s) to {path} (pass line {pass_x:.2f} m from the spawn; "
+                   f"distance is leg odometry, the outcome is the operator's unless marked auto)")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("session")
@@ -179,6 +244,13 @@ def main():
     ap.add_argument("--lookahead", type=float, default=2.0,
                     help="seconds before a swing/bump in which a seen block counts")
     ap.add_argument("--out", default=None, help="output dir (default <session>/analysis)")
+    ap.add_argument("--lane", default=None,
+                    help="final-eval lane id (eval_stepfields_layout, e.g. t1a / t3_fsq) or rows:N; "
+                         "turns on the NIST per-run records (section 5)")
+    ap.add_argument("--outcomes", default=None,
+                    help="operator outcome per engaged run, comma-separated in flight order "
+                         "(pass / head / side / stuck / other)")
+    ap.add_argument("--run_id", default=None, help="run id for the records (default: the flight's policy id)")
     args = ap.parse_args()
 
     sess = os.path.abspath(args.session)
@@ -253,6 +325,8 @@ def main():
         t_ls = np.array([t for t, _ in ls])
         quat = np.array([list(m.imu_state.quaternion) for _, m in ls])
         q = np.array([[m.motor_state[i].q for i in range(12)] for _, m in ls])
+        dq = np.array([[m.motor_state[i].dq for i in range(12)] for _, m in ls])
+        gyro = np.array([list(m.imu_state.gyroscope) for _, m in ls])
         ff = np.array([list(m.foot_force)[:4] for _, m in ls], dtype=float)
         rp = np.array([rpy_deg(qq) for qq in quat])
         roll, pitch = rp[:, 0], rp[:, 1]
@@ -340,6 +414,11 @@ def main():
         except Exception as e:  # noqa: BLE001
             lines.append(f"    {os.path.basename(rd)}: could not load ({e})")
         lines.append(f"      counterfactual replay: python3 {os.path.relpath(os.path.join(HERE, 'eval_rl_flight.py'))} {os.path.relpath(rd)}")
+
+    # ---- 5. NIST per-run records
+    if args.lane:
+        lines += nist_records(args, sess, out_dir, runs, ls, t_ls,
+                              (q, dq, gyro, quat, ff) if ls else None)
 
     text = "\n".join(lines)
     print(text)
