@@ -878,6 +878,36 @@
       "uses_heightmap": true,
       "runnable": true,
       "path": "policies/unitree_go2_omni30_mem6_fwd_usb2_2026-11-13/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_mem6_usb2_2026-11-14",
+      "name": "omni30-mem6-usb2 (2026-11-14_06-45-45, model_1499)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_mem6_usb2 \u00b7 2026-11-14_06-45-45 (1500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_mem6_usb2_2026-11-14/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_mem6_fwd_usb2_2026-11-14",
+      "name": "omni30-mem6-fwd-usb2 (2026-11-14_09-47-21, model_499)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_mem6_fwd_usb2 \u00b7 2026-11-14_09-47-21 (500 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_mem6_fwd_usb2_2026-11-14/policy.onnx"
+    },
+    {
+      "id": "unitree_go2_omni30_mem6_fwd_usb2_2026-11-14_13-49",
+      "name": "omni30-mem6-fwd-usb2 (2026-11-14_13-49-17, model_1498)",
+      "model": "RSL-RL PPO \u00b7 unitree_go2_omni30_mem6_fwd_usb2 \u00b7 2026-11-14_13-49-17 (1499 iterations)",
+      "type": "camera",
+      "obs_dim": null,
+      "uses_heightmap": true,
+      "runnable": true,
+      "path": "policies/unitree_go2_omni30_mem6_fwd_usb2_2026-11-14_13-49/policy.onnx"
     }
   ]
 }
