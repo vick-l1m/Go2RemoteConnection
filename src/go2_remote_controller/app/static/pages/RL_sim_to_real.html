@@ -394,8 +394,9 @@ Author: Victor Lim
       .body3 { display:flex; flex-direction:column; padding:10px; gap:10px; }
       .col { display:contents; }
       .gut-v, .gut-h, #layoutSaveBtn { display:none; }
-      #sportCard, #policyCard { order:1; } #rlStartBtn { order:2; } .robotCard { order:3; }
-      #postureCard { order:4; } .dockCard { order:5; } #moveCard { order:6; } #runCard { order:7; }
+      /* left column (top -> bottom), joysticks, robot, right column (top -> bottom) */
+      #sportCard, #policyCard { order:1; } #rlStartBtn { order:2; } #postureCard { order:3; }
+      #moveCard { order:4; } #runCard { order:5; } .dockCard { order:6; } .robotCard { order:7; }
       #realsensePanel { order:8; } #stackCard { order:9; } .logCard { order:10; }
       .robotCard { flex:none; } .view { flex:none; height:260px; }
       .card.grow { flex:none; }
