@@ -781,7 +781,10 @@
       "obs_dim": null,
       "uses_heightmap": true,
       "runnable": true,
-      "path": "policies/unitree_go2_omni30_mem6_fwd_usb2_2026-11-07/policy.onnx"
+      "path": "policies/unitree_go2_omni30_mem6_fwd_usb2_2026-11-07/policy.onnx",
+      "group": "Stepfield",
+      "shelf": "deploy",
+      "short": "Lineage policy (mem6-fwd)"
     },
     {
       "id": "unitree_go2_classical_omni30_student_usb2_2026-11-08",
@@ -937,7 +940,10 @@
       "obs_dim": 232,
       "uses_heightmap": true,
       "runnable": true,
-      "path": "policies/unitree_go2_omni30_mem6_fwd_direct_usb2_2026-11-15/policy.onnx"
+      "path": "policies/unitree_go2_omni30_mem6_fwd_direct_usb2_2026-11-15/policy.onnx",
+      "group": "Stepfield",
+      "shelf": "deploy",
+      "short": "Recreated policy (direct-riser)"
     }
   ]
 }
