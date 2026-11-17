@@ -90,6 +90,15 @@ for arg in "$@"; do
   esac
 done
 
+# GO2_ROBOT clashes with the VIP deploy helpers in the robot's ~/.bashrc, which export it
+# as an ssh target (unitree@...). Only go2/go2w mean anything here; anything else is that
+# inherited value, not a choice, so fall back to go2 instead of crashing the policy node.
+case "${GO2_ROBOT:-go2}" in
+  go2|go2w) ;;
+  *) echo "[run_all] ⚠️  Ignoring GO2_ROBOT='$GO2_ROBOT' (not go2|go2w; likely the ssh target from ~/.bashrc) -- using go2. Pass GO2_ROBOT=go2w for the wheeled robot."
+     GO2_ROBOT=go2 ;;
+esac
+
 # If the script is in workspace root:
 if [ -d "$WS_DIR/src/go2_remote_controller" ]; then
   PKG_DIR="$WS_DIR/src/go2_remote_controller"
