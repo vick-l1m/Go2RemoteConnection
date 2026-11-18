@@ -52,7 +52,9 @@ Photo memory override (2026-11-18). ``/web_map_memory_override`` (Float32, latch
 off) comes from the web page's photo mode, where RL cannot be engaged: while it is >= 0
 this node sets THAT memory instead of the policy's (a longer trail for a picture) and
 reports the policy's memory as not set, so the controller refuses a memory policy until
-the override is cleared and the policy's value is back.
+the override is cleared and the policy's value is back. The topic can also be published
+by hand, which skips the page's photo-mode gate, so the override is IGNORED while
+/web_control_mode is "rl": a running policy always gets its own memory.
 """
 
 import argparse
@@ -153,6 +155,7 @@ class Go2RLBridge(Node):
         self._map_sent_t = 0.0             # monotonic time of the in-flight set_parameters
         self._map_state = None             # last (want, ok, why) reported, to log changes only
         self._memory_override = None       # seconds from the page's photo mode, None = off
+        self._rl_mode = False              # /web_control_mode == "rl": override ignored
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(Float32, "/web_map_memory_override", self._on_memory_override, latched)
@@ -185,6 +188,13 @@ class Go2RLBridge(Node):
         new = msg.data.strip().lower()
         if new in ("sport", "rl"):
             self._send({"t": "mode", "mode": new}, repeat=CRITICAL_REPEAT)
+            was = self._rl_mode
+            self._rl_mode = new == "rl"
+            if self._rl_mode and not was and self._memory_override is not None:
+                self.get_logger().warn("RL engaged: photo memory override ignored, "
+                                       "restoring the policy's map memory")
+                self._map_busy = False          # do not wait on an in-flight override set
+                self._sync_map_memory()
 
     def _on_policy(self, msg: String):
         pid = msg.data.strip()
@@ -293,7 +303,7 @@ class Go2RLBridge(Node):
         restarted map node is caught too) and tell the controller whether it took.
         A photo memory override replaces the value and reports the policy's as unset."""
         want = self._want_memory
-        override = self._memory_override
+        override = None if self._rl_mode else self._memory_override
         if override is None and want is None:
             return
         if override is not None:
