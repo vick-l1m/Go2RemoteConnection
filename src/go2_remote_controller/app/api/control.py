@@ -38,6 +38,9 @@ async def set_control_mode(mode: str, _=Depends(require_token)):
     if mode == "rl" and state.stop_latched:
         raise HTTPException(status_code=423, detail="STOP latched: RESUME before engaging RL")
 
+    if mode == "rl" and state.photo_mode:
+        raise HTTPException(status_code=423, detail="Photo mode is on (camera colour stream): turn it off before engaging RL")
+
     # Don't release the sport service for a policy the controller can't actually
     # run (needs perception, or its onnx isn't on the robot).
     if mode == "rl":

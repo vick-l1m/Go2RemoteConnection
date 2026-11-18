@@ -47,6 +47,12 @@ Snapped or raw (2026-10-30). ``policy_out`` also carries ``scan_snap``: True whe
 policy's scan was snapped to levels in training (deploy.yaml ``snap``), False for a raw
 scan, absent for a blind policy. It is set as ``snap_enabled`` on the same node in the
 same request, so one stepfield_map_node serves snapped and raw policies alike.
+
+Photo memory override (2026-11-18). ``/web_map_memory_override`` (Float32, latched; < 0 =
+off) comes from the web page's photo mode, where RL cannot be engaged: while it is >= 0
+this node sets THAT memory instead of the policy's (a longer trail for a picture) and
+reports the policy's memory as not set, so the controller refuses a memory policy until
+the override is cleared and the policy's value is back.
 """
 
 import argparse
@@ -58,6 +64,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
@@ -145,6 +152,10 @@ class Go2RLBridge(Node):
         self._map_busy = False
         self._map_sent_t = 0.0             # monotonic time of the in-flight set_parameters
         self._map_state = None             # last (want, ok, why) reported, to log changes only
+        self._memory_override = None       # seconds from the page's photo mode, None = off
+        latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.create_subscription(Float32, "/web_map_memory_override", self._on_memory_override, latched)
         self.create_timer(1.0, self._sync_map_memory)
 
         # 10 Hz keepalive so the controller's bridge-link deadman stays satisfied
@@ -268,11 +279,36 @@ class Go2RLBridge(Node):
                 self._pub_move_status.publish(String(data=json.dumps(msg)))
 
     # ---- rolling-map memory ------------------------------------------- #
+    def _on_memory_override(self, msg: Float32):
+        val = float(msg.data)
+        new = val if val >= 0.0 else None
+        if new != self._memory_override:
+            self.get_logger().info(
+                f"photo memory override {'off' if new is None else f'{new:g} s'}")
+        self._memory_override = new
+        self._sync_map_memory()
+
     def _sync_map_memory(self):
         """Set map_memory_s to the loaded policy's value (re-asserted each second, so a
-        restarted map node is caught too) and tell the controller whether it took."""
+        restarted map node is caught too) and tell the controller whether it took.
+        A photo memory override replaces the value and reports the policy's as unset."""
         want = self._want_memory
-        if want is None:
+        override = self._memory_override
+        if override is None and want is None:
+            return
+        if override is not None:
+            if want is not None:
+                self._report_memory(want, False, "photo mode memory override is on")
+            if self._map_busy and time.monotonic() - self._map_sent_t < MAP_SET_TIMEOUT_S:
+                return
+            if not self._map_client.service_is_ready():
+                return
+            req = SetParameters.Request()
+            req.parameters = [Parameter(name="map_memory_s", value=ParameterValue(
+                type=ParameterType.PARAMETER_DOUBLE, double_value=float(override)))]
+            self._map_busy = True
+            self._map_sent_t = time.monotonic()
+            self._map_client.call_async(req).add_done_callback(self._on_override_set)
             return
         if self._map_busy:
             # No timeout on call_async: a map node whose executor never serves its parameter
@@ -302,6 +338,15 @@ class Go2RLBridge(Node):
         self._map_sent_t = time.monotonic()
         self._map_client.call_async(req).add_done_callback(
             lambda fut: self._on_map_memory_set(fut, want, snap))
+
+    def _on_override_set(self, fut):
+        self._map_busy = False
+        try:
+            res = fut.result().results[0]
+            if not res.successful:
+                self.get_logger().warn(f"photo memory override not set: {res.reason}")
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warn(f"photo memory override not set: {e}")
 
     def _on_map_memory_set(self, fut, want, snap=None):
         self._map_busy = False

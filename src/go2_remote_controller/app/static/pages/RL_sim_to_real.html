@@ -301,6 +301,7 @@ Author: Victor Lim
     .pill.bad { background:var(--red-bg); color:var(--red); }
     .pill.off { background:var(--chip); color:var(--dim); }
     .depth { border-radius:7px; overflow:hidden; position:relative; aspect-ratio:16/9; background:#111; }
+    .console #rsPhotoBtn.toggleOn { border-color:var(--amber); background:var(--amber-bg); color:var(--amber); font-weight:700; }
     .console .depth #rsImg { width:100%; height:100%; object-fit:cover; display:block; margin:0; border:0; border-radius:0; max-width:none; }
     .depth #rsImg:not([src]) { visibility:hidden; }
     .depth .lbl { position:absolute; left:6px; top:5px; font:9.5px var(--mono); color:#fff; background:rgba(0,0,0,.45);
@@ -924,6 +925,7 @@ Author: Victor Lim
     let rsStream = "depth";
     let rsWs = null, rsKeepalive = null, rsBlobUrl = "", rsFrames = 0;
     let rsPanelVisible = false;
+    let photoMode = false, photoBusy = false;  // photo mode = colour on in the USB 2 launch; blocks RL
     let hmMode = "cubes";
 
     function rsAuthWsSuffix() {
@@ -989,6 +991,50 @@ Author: Victor Lim
       document.getElementById("rsStreamColor")?.classList.toggle("toggleOn", stream === "color");
       rsSetStatusText("rsImgLbl", stream === "depth" ? "depth" : "colour");
       if (changed && rsPanelVisible && rsWs) rsOpenStream();
+    }
+
+    async function togglePhotoMode() {
+      if (photoBusy) return;
+      const next = photoMode ? "off" : "on";
+      photoBusy = true;
+      $("rsPhotoBtn").disabled = true;
+      $("rsPhotoBtn").textContent = "⏳ switching…";
+      // The driver restarts its streams on the switch: a few seconds.
+      const r = await Go2Shared.httpPost(`/perception/photo_mode/${next}`, null, { bypassCommsGate: true });
+      photoBusy = false;
+      let body = {};
+      try { body = JSON.parse(r.text); } catch (_) {}
+      if (body.color_already_on) logEvent("photo mode: colour is already on (USB 3), nothing to switch", "");
+      else if (!r.ok) logEvent(`photo mode ${next} failed: ${body.detail || r.text}`, "w");
+      Go2Shared.setStatus(r.ok ? `photo mode → ${next}` : "Photo mode switch failed", r.ok, `URL: ${r.url}\n${r.text}`);
+      pollPerceptionStatus();
+    }
+
+    async function setPhotoMemory(v) {
+      const r = await Go2Shared.httpPost(`/perception/photo_memory/${v}`, null, { bypassCommsGate: true });
+      let body = {};
+      try { body = JSON.parse(r.text); } catch (_) {}
+      logEvent(r.ok ? `photo map memory → ${v === "policy" ? "policy's" : v + " s"}` : `map memory failed: ${body.detail || r.text}`,
+               r.ok ? "" : "w");
+      pollPerceptionStatus();
+    }
+
+    async function savePhoto() {
+      const base = Go2Shared.apiBase();
+      try {
+        const res = await fetch(`${base}/perception/photo.jpg`, { headers: Go2Shared.authHeaders(), cache: "no-store" });
+        if (!res.ok) { logEvent(`save photo failed: ${res.status} ${await res.text()}`, "w"); return; }
+        const cd = res.headers.get("Content-Disposition") || "";
+        const name = (cd.match(/filename="([^"]+)"/) || [])[1] || "realsense.jpg";
+        const url = URL.createObjectURL(await res.blob());
+        const a = document.createElement("a");
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        logEvent(`photo saved: ${name}`, "g");
+      } catch (e) {
+        logEvent(`save photo failed: ${e}`, "w");
+      }
     }
 
     function setHeightMapMode(mode) {
@@ -1071,7 +1117,7 @@ Author: Victor Lim
         let text, cls = "pill";
         const usb = rs.connected ? (rs.usb_class || "USB ?") : "not in sysfs";
         if (driverUp) {
-          text = `${usb} · ${st.mode === "usb2" ? "depth only" : "cloud"}`;
+          text = `${usb} · ${st.photo_mode ? "photo mode" : st.mode === "usb2" ? "depth only" : "cloud"}`;
           if (usb2) cls += " warn";
         } else {
           text = `${usb} · driver off`;
@@ -1083,7 +1129,7 @@ Author: Victor Lim
       }
 
       // ---- rates ----
-      const colourOff = st.mode === "usb2" || !rates.color;
+      const colourOff = (st.mode === "usb2" && !st.photo_mode) || !rates.color;
       if (rsDetected) {
         rsSetStatusText("rsRateDepth", fmtHz(rates.depth));
         rsSetStatusText("rsRateColour", colourOff ? "–" : fmtHz(rates.color));
@@ -1107,10 +1153,32 @@ Author: Victor Lim
       }
       if (colourOff && rsStream === "color") rsSelectStream("depth");
 
+      // ---- photo mode: colour switched on in the running driver, RL blocked ----
+      const wasPhoto = photoMode;
+      photoMode = !!st.photo_mode;
+      if (photoMode !== wasPhoto) {
+        logEvent(photoMode ? "photo mode ON: colour streaming, RL blocked" : "photo mode off", photoMode ? "w" : "");
+        renderPolicyFoot();
+      }
+      if (photoMode && !wasPhoto && !colourOff) rsSelectStream("color");
+      const usb3Colour = !st.photo_mode && st.mode === "usb3";
+      const pBtn = $("rsPhotoBtn");
+      pBtn.classList.toggle("toggleOn", photoMode);
+      pBtn.textContent = photoBusy ? "⏳ switching…" : photoMode ? "📷 Photo mode ON" : "📷 Photo mode";
+      pBtn.disabled = photoBusy || !driverUp || usb3Colour || (!photoMode && controlMode === "rl");
+      pBtn.title = usb3Colour ? "Colour is already on (USB 3 launch): just use Save photo"
+                 : (!photoMode && controlMode === "rl") ? "Stop RL first"
+                 : "Switch the colour stream on to take a picture. RL cannot start while it is on.";
+      $("rsSaveBtn").disabled = colourOff || !avail.cv2;
+      $("rsMemRow").hidden = !photoMode;
+      const memKey = st.photo_memory_s == null ? "policy" : String(st.photo_memory_s);
+      for (const k of ["policy", "10", "30"]) $(`rsMem_${k}`).classList.toggle("toggleOn", k === memKey);
+
       // ---- hint ----
       let hint = "";
       if (!avail.cv2) hint = "cv2 not importable on the robot's system python3: image preview unavailable";
-      else if (usb2) hint = "USB 2 link: depth-only 640×360 @ 30 Hz; move to a USB 3 port + cable for colour + cloud";
+      else if (photoMode) hint = "Photo mode: colour on over USB 2 (depth may stall). RL is blocked until you turn it off.";
+      else if (usb2) hint = "USB 2 link: depth-only 640×360 @ 30 Hz; Photo mode turns colour on for a picture (RL blocked)";
       else if (rs.connected && !driverUp) hint = "RealSense present but realsense2_camera is not publishing (see /tmp/go2_perception.log)";
       if (rsDetected) rsSetStatusText("rsHint", hint);
 
@@ -1419,6 +1487,7 @@ Author: Victor Lim
          "space bar opens the E-STOP"],
         [still ? "ok" : "bad", "Sticks centred, no drive keys held",
          `checked live: vx ${c.linear_x.toFixed(2)} · vy ${c.linear_y.toFixed(2)} · wz ${c.angular_z.toFixed(2)}`],
+        ...(photoMode ? [["bad", "Photo mode is on: turn it off first", "RealSense card · colour over USB 2 can stall depth"]] : []),
         [p && p.available && p.runnable ? "ok" : "bad",
          p ? `Policy ${p.available ? "on the robot" : "onnx missing"}` : "No policy selected", p ? esc(p.model || p.id) : ""],
       ];
@@ -2173,6 +2242,19 @@ Author: Victor Lim
           <div class="tabs" style="align-self:flex-start">
             <button id="rsStreamDepth" class="toggleOn" onclick="rsSelectStream('depth')">Depth</button>
             <button id="rsStreamColor" onclick="rsSelectStream('color')">Colour</button>
+          </div>
+          <div class="btns2">
+            <button id="rsPhotoBtn" onclick="togglePhotoMode()" disabled
+                    title="Switch the colour stream on to take a picture. RL cannot start while it is on.">📷 Photo mode</button>
+            <button id="rsSaveBtn" onclick="savePhoto()" disabled title="Download the latest colour frame at full resolution">Save photo</button>
+          </div>
+          <div id="rsMemRow" class="ch" hidden>
+            <span class="route" title="Rolling-map memory while in photo mode; back to the policy's when photo mode turns off">MAP MEMORY</span>
+            <div class="tabs">
+              <button id="rsMem_policy" class="toggleOn" onclick="setPhotoMemory('policy')">policy</button>
+              <button id="rsMem_10" onclick="setPhotoMemory(10)">10 s</button>
+              <button id="rsMem_30" onclick="setPhotoMemory(30)">30 s</button>
+            </div>
           </div>
           <div id="rsHint" class="note"></div>
           <div id="rsScanInfo" class="note mono" style="font-size:9.5px"></div>

@@ -26,6 +26,8 @@ from fastapi import WebSocket
 from geometry_msgs.msg import Twist
 from map_msgs.msg import OccupancyGridUpdate
 from nav_msgs.msg import OccupancyGrid
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import GetParameters, SetParameters
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage, Image
@@ -206,6 +208,7 @@ def get_robot_pose_store() -> RobotPoseStore:
 # launch streams depth only, so the colour topic may simply never publish.
 RS_DEPTH_TOPIC = "/go2/camera/depth/image_rect_raw"
 RS_COLOR_TOPIC = "/go2/camera/color/image_raw"
+RS_DRIVER_NODE = "/go2/camera"    # realsense2_camera node (real_perception*.launch.py)
 HEIGHT_SCAN_TOPIC = "/go2/height_scan"
 GRID_MAP_TOPIC = "/go2/local_heightmap"
 STEPFIELD_FIT_TOPIC = "/go2/stepfield_fit"   # stepfield_map_node only (go2_perception)
@@ -235,6 +238,7 @@ class PerceptionStore:
         "stepfield_fit": RateMeter(),
     })
     scan_info: Optional[Dict[str, Any]] = None
+    last_color_msg: Optional[Any] = None      # latest raw colour Image, for a full-res photo
 
 
 _perception_store: Optional[PerceptionStore] = None
@@ -256,8 +260,14 @@ def get_perception_status() -> Dict[str, Any]:
     color_alive = st.rates["color"].alive()
     # Which launch is running: the USB 3 launch publishes colour, the USB 2 (depth-only)
     # launch cannot. Inferred from live topics, so it reports reality, not the link speed.
-    mode = "usb3" if color_alive else ("usb2" if depth_alive else None)
+    # Photo mode switches colour on in the USB 2 launch, so colour no longer means usb3.
+    if state.photo_mode:
+        mode = "usb2" if (depth_alive or color_alive) else None
+    else:
+        mode = "usb3" if color_alive else ("usb2" if depth_alive else None)
     return {
+        "photo_mode": state.photo_mode,
+        "photo_memory_s": state.photo_memory_s,
         "driver_up": depth_alive or color_alive,
         "mode": mode,
         "height_scan_flowing": st.rates["height_scan"].alive(),
@@ -306,6 +316,17 @@ class WebRosBridge(Node):
         self.pub_rl_posture = self.create_publisher(RosString, "/web_rl_posture", 1)
         self.pub_estop = self.create_publisher(Bool, "/web_estop", 1)
         self.pub_rl_move = self.create_publisher(Float32, "/web_rl_move", 10)
+
+        # Photo mode's rolling-map memory override for go2_rl_bridge_node (< 0 = off).
+        # Latched, so a restarted bridge picks up the current value.
+        self.pub_map_memory_override = self.create_publisher(
+            Float32, "/web_map_memory_override",
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
+
+        # RealSense driver parameter services (photo mode toggles enable_color live).
+        self.cli_cam_get = self.create_client(GetParameters, f"{RS_DRIVER_NODE}/get_parameters")
+        self.cli_cam_set = self.create_client(SetParameters, f"{RS_DRIVER_NODE}/set_parameters")
 
         # ---------------- Map subscriptions ----------------
         map_qos = QoSProfile(
@@ -542,6 +563,49 @@ class WebRosBridge(Node):
         else:
             msg.data = json.dumps(payload)
         self.pub_sport_cmd.publish(msg)
+
+    # ---------------- RealSense driver parameters ----------------
+    # Blocking: call from a worker thread (asyncio.to_thread), never from the spin thread.
+    def _call_cam(self, client, request, timeout_s: float):
+        if not client.wait_for_service(timeout_sec=1.0):
+            return None
+        done = threading.Event()
+        future = client.call_async(request)
+        future.add_done_callback(lambda _f: done.set())
+        if not done.wait(timeout_s):
+            return None
+        return future.result()
+
+    def get_camera_bools(self, names):
+        """{name: bool} from the RealSense driver, or None if it is unreachable."""
+        req = GetParameters.Request()
+        req.names = list(names)
+        res = self._call_cam(self.cli_cam_get, req, 3.0)
+        if res is None:
+            return None
+        return {n: bool(v.bool_value) for n, v in zip(names, res.values)}
+
+    def set_camera_bools(self, values, timeout_s: float = 10.0):
+        """Set bool parameters on the RealSense driver. Returns (ok, reason); reason
+        'unreachable' means the driver's parameter service did not answer."""
+        req = SetParameters.Request()
+        for name, val in values.items():
+            req.parameters.append(Parameter(
+                name=name, value=ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=bool(val))))
+        # Toggling a stream restarts the sensor, which takes a few seconds.
+        res = self._call_cam(self.cli_cam_set, req, timeout_s)
+        if res is None:
+            return False, "unreachable"
+        bad = [r.reason or "rejected" for r in res.results if not r.successful]
+        return (not bad), "; ".join(bad)
+
+    def publish_map_memory_override(self, seconds):
+        """None clears the override (the loaded policy's memory applies again)."""
+        if not self._ok_to_publish():
+            return
+        msg = Float32()
+        msg.data = -1.0 if seconds is None else float(seconds)
+        self.pub_map_memory_override.publish(msg)
 
     def publish_control_mode(self, mode: str):
         if not self._ok_to_publish():
@@ -815,6 +879,8 @@ class WebRosBridge(Node):
     def _on_rs_image(self, stream: str, msg: Image):
         store = get_perception_store()
         store.rates[stream].tick()
+        if stream == "color":
+            store.last_color_msg = msg
 
         clients = store.depth_clients if stream == "depth" else store.color_clients
         if not clients or not HAVE_CV2:
@@ -1013,6 +1079,7 @@ def start_ros_bridge():
     t.start()
 
     _bridge.publish_enabled(True)
+    _bridge.publish_map_memory_override(None)   # a fresh API has no photo mode
     return _bridge
 
 
