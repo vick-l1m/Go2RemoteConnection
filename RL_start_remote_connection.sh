@@ -41,6 +41,9 @@ Perception (RealSense D435i -> /go2/height_scan)
   GO2_STEPFIELD_PRESET=lab_blocks|half_cubic|full_cubic|grid_pallet
                                Course step heights (10 / 15+30 / 30 / 3.8+7.6 cm).
   GO2_BLOCK_HEIGHTS_CM=10,15   Custom block-top heights in cm; overrides the preset.
+  GO2_SCAN_SNAP=auto|0|1       auto (default): snapped or raw per the policy's deploy.yaml
+                               snap. 0: force RAW heights for any policy (final-eval Test 2,
+                               keeps the rolling map). 1: force snapped levels. stepfield only.
   GO2_HEIGHT_EMPTY_FILL=-1.0   Unseen-cell value; must match policy unobserved_value.
   GO2_STOP_VIP_REALSENSE=0|1   1 = docker stop vip-realsense if it holds the camera.
   GO2_CALIBRATE=0|1|strict     Calibrate camera mount at start (robot still, flat floor).
@@ -67,7 +70,7 @@ EOF
 # like Go2_RECORD) would otherwise be exported and silently ignored.
 KNOWN_VARS="ROS_DOMAIN_ID RMW_IMPLEMENTATION UNITREE_IFACE GO2_WS_DIR
   GO2_AUTH_ENABLED GO2_TOKEN_FILE GO2_RL_POLICY GO2_RL_DRY_RUN GO2_ROBOT
-  GO2_PERCEPTION GO2_HEIGHTMAP_MODE GO2_STEPFIELD_PRESET GO2_BLOCK_HEIGHTS_CM
+  GO2_PERCEPTION GO2_HEIGHTMAP_MODE GO2_STEPFIELD_PRESET GO2_BLOCK_HEIGHTS_CM GO2_SCAN_SNAP
   GO2_HEIGHT_EMPTY_FILL GO2_STOP_VIP_REALSENSE GO2_CALIBRATE GO2_CALIBRATE_MASK_DEG GO2_MAP
   GO2_RECORD GO2_RECORD_NAME GO2_RECORD_TERRAIN GO2_RECORD_NOTES GO2_RECORD_DEPTH
   GO2_RECORD_TOPICS"
@@ -476,6 +479,20 @@ fi
 # map-less scan. So it is on by default; the controller refuses to engage a map-trained
 # policy without it. Robot odometry settings = the ones validated on robot bags
 # (docs/measurements/odom_map_sim.md: force contacts, speed-adaptive touchdown gate).
+GO2_SCAN_SNAP="${GO2_SCAN_SNAP:-auto}"
+case "$GO2_SCAN_SNAP" in
+  auto|0|1) ;;
+  *) echo "[run_all] ❌ GO2_SCAN_SNAP='$GO2_SCAN_SNAP' (expected auto|0|1)" >&2; exit 2 ;;
+esac
+export GO2_SCAN_SNAP     # read by go2_rl_bridge_node, which sets snap_enabled on the map node
+if [ "$GO2_SCAN_SNAP" != "auto" ]; then
+  if [ "$HEIGHTMAP_EXE" = "stepfield_map_node" ]; then
+    echo "[run_all] GO2_SCAN_SNAP=$GO2_SCAN_SNAP: height map forced to $([ "$GO2_SCAN_SNAP" = 0 ] && echo 'RAW heights' || echo 'snapped levels') for every policy."
+  else
+    echo "[run_all] ⚠️  GO2_SCAN_SNAP needs GO2_HEIGHTMAP_MODE=stepfield; ignored (voxel is always raw)."
+  fi
+fi
+
 GO2_MAP="${GO2_MAP:-1}"
 LEG_ODOM_LOG="/tmp/go2_leg_odom.log"
 MAP_ENABLED=false
@@ -859,6 +876,7 @@ session:
   perception_usb: "${PERCEPTION_USB:-}"
   calibrate: "${GO2_CALIBRATE}"
   heightmap_mode: "${GO2_HEIGHTMAP_MODE}"
+  scan_snap: "${GO2_SCAN_SNAP}"
   stepfield_preset: "${GO2_STEPFIELD_PRESET}"
   block_heights_cm: "${GO2_BLOCK_HEIGHTS_CM}"
   camera_yaml_used: "${CAMERA_YAML_USED:-$CAMERA_YAML}"

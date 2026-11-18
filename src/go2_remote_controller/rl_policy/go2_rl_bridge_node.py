@@ -47,6 +47,10 @@ Snapped or raw (2026-10-30). ``policy_out`` also carries ``scan_snap``: True whe
 policy's scan was snapped to levels in training (deploy.yaml ``snap``), False for a raw
 scan, absent for a blind policy. It is set as ``snap_enabled`` on the same node in the
 same request, so one stepfield_map_node serves snapped and raw policies alike.
+``--scan-snap`` / ``GO2_SCAN_SNAP`` (2026-11-18): ``auto`` (default) follows the policy as
+above; ``0`` forces raw heights and ``1`` forces snapped levels for whatever policy is
+loaded, keeping the rolling map (final-eval Test 2 runs unsnapped with memory). The forced
+value is re-asserted every second, so a hand ``ros2 param set`` is not needed.
 
 Photo memory override (2026-11-18). ``/web_map_memory_override`` (Float32, latched; < 0 =
 off) comes from the web page's photo mode, where RL cannot be engaged: while it is >= 0
@@ -105,7 +109,7 @@ MAP_SET_TIMEOUT_S = 3.0
 
 class Go2RLBridge(Node):
     def __init__(self, udp_host, ctrl_port, bridge_port, height_scan_topic=DEF_HEIGHT_SCAN_TOPIC,
-                 map_node=DEF_MAP_NODE):
+                 map_node=DEF_MAP_NODE, scan_snap="auto"):
         super().__init__("go2_rl_bridge_node")
 
         self._ctrl_addr = (udp_host, ctrl_port)
@@ -151,6 +155,11 @@ class Go2RLBridge(Node):
         self._map_client = self.create_client(SetParameters, f"{map_node}/set_parameters")
         self._want_memory = None
         self._want_snap = None             # True snapped / False raw / None leave alone
+        self._snap_force = {"0": False, "1": True}.get(str(scan_snap))   # None = per policy
+        if self._snap_force is not None:
+            self.get_logger().warn(
+                f"GO2_SCAN_SNAP={scan_snap}: height map forced to "
+                f"{'snapped levels' if self._snap_force else 'raw heights'} for every policy")
         self._map_busy = False
         self._map_sent_t = 0.0             # monotonic time of the in-flight set_parameters
         self._map_state = None             # last (want, ok, why) reported, to log changes only
@@ -279,6 +288,8 @@ class Go2RLBridge(Node):
                 self._pub_active_policy.publish(String(data=str(msg.get("id") or "")))
                 self._want_memory = float(msg.get("scan_memory_s") or 0.0)
                 snap = msg.get("scan_snap")
+                if snap is not None and self._snap_force is not None:
+                    snap = self._snap_force       # GO2_SCAN_SNAP override (scan policies only)
                 self._want_snap = None if snap is None else bool(snap)
             elif t == "mode_out":
                 self._pub_mode_out.publish(String(data=str(msg.get("mode", "sport"))))
@@ -418,11 +429,14 @@ def main():
                          "(empty string disables forwarding)")
     ap.add_argument("--map-node", default=os.environ.get("GO2_RL_MAP_NODE", DEF_MAP_NODE),
                     help="node whose map_memory_s follows the loaded policy")
+    ap.add_argument("--scan-snap", choices=("auto", "0", "1"),
+                    default=os.environ.get("GO2_SCAN_SNAP", "auto") or "auto",
+                    help="auto = snap per policy deploy.yaml; 0 = force raw; 1 = force snapped")
     args = ap.parse_args()
 
     rclpy.init()
     node = Go2RLBridge(args.udp_host, args.ctrl_port, args.bridge_port, args.height_scan_topic,
-                       args.map_node)
+                       args.map_node, scan_snap=args.scan_snap)
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, SystemExit):
