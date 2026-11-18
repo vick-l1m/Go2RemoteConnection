@@ -13,7 +13,7 @@ changes the interface; it never changes who drives the motors:
   (Movement / Actions / Posing, exclusive). Flips sit behind two confirms and are
   disabled while a RealSense is attached (or before /perception/status has answered).
 - RL: the policy list (short list from policies.json `shelf: deploy`, or the archive)
-  and START RL, which runs a pre-flight check + hold-to-start, then POST /control_mode/rl.
+  and START RL, which runs a pre-flight check + a second confirm, then POST /control_mode/rl.
   While RL runs the policy is locked, the button becomes STOP RL (immediate handback)
   and the SPORT view is locked; /actions/* also refuses sport commands server side.
 
@@ -343,10 +343,6 @@ Author: Victor Lim
     .console .dlgActions button { padding:7px 0; font-size:11.5px; border-radius:7px; }
     .console .dlgActions .pri { background:var(--blue); border-color:var(--blue); color:#fff; }
     .console .dlgActions .danger { background:var(--red); border-color:var(--red); color:#fff; }
-    .console .dlgActions .hold { --p:0; height:42px; border-radius:9px; font-weight:800; letter-spacing:.6px; font-size:12.5px;
-             color:var(--red); border-color:var(--red); touch-action:none; user-select:none;
-             background:linear-gradient(90deg, var(--red) calc(var(--p) * 100%), var(--red-bg) 0); }
-    .console .dlgActions .hold.filling { color:#fff; }
     .eng-pol { display:flex; justify-content:space-between; align-items:center; gap:8px; background:var(--card2);
                border:1px solid var(--border); border-radius:8px; padding:9px 11px; }
     .eng-pol .meta { display:flex; flex-direction:column; gap:3px; min-width:0; }
@@ -703,8 +699,9 @@ Author: Victor Lim
         btn.textContent = b.label;
         if (b.cls) btn.className = b.cls;
         btn.disabled = !!b.disabled;
-        if (b.hold) attachHold(btn, b.hold, () => closeDialog(b.value));
-        else btn.onclick = () => closeDialog(b.value);
+        // armMs: stays disabled briefly so a double-tap on the previous dialog can't land on it.
+        if (b.armMs && !b.disabled) { btn.disabled = true; setTimeout(() => { btn.disabled = false; }, b.armMs); }
+        btn.onclick = () => closeDialog(b.value);
         acts.appendChild(btn);
         if (b.value == null && !focus) focus = btn;     // Cancel takes focus, never the risky one
       }
@@ -718,34 +715,6 @@ Author: Victor Lim
       dlgResolve = null;
       $("dlgOverlay").hidden = true;
       res(value);
-    }
-    function attachHold(btn, ms, done) {
-      let t0 = 0, raf = 0;
-      const label = btn.textContent;
-      const stop = () => {
-        cancelAnimationFrame(raf); raf = 0;
-        btn.style.setProperty("--p", 0);
-        btn.classList.remove("filling");
-        btn.textContent = label;
-      };
-      const tick = (t) => {
-        const p = Math.min(1, (t - t0) / ms);
-        btn.style.setProperty("--p", p);
-        btn.classList.toggle("filling", p > 0.4);
-        btn.textContent = `${label} · ${((ms - (t - t0)) / 1000).toFixed(1)} s`;
-        if (p >= 1) { stop(); done(); } else raf = requestAnimationFrame(tick);
-      };
-      const start = (e) => {
-        if (btn.disabled || raf) return;
-        e.preventDefault();
-        t0 = performance.now();
-        raf = requestAnimationFrame(tick);
-      };
-      btn.addEventListener("pointerdown", start);
-      for (const ev of ["pointerup", "pointerleave", "pointercancel"]) btn.addEventListener(ev, stop);
-      btn.addEventListener("keydown", (e) => { if ((e.key === " " || e.key === "Enter") && !e.repeat) start(e); });
-      btn.addEventListener("keyup", (e) => { if (e.key === " " || e.key === "Enter") stop(); });
-      btn.addEventListener("click", (e) => e.preventDefault());
     }
     const esc = (v) => String(v ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 
@@ -1512,16 +1481,25 @@ Author: Victor Lim
       const icon = { ok: "✓", bad: "✗", warn: "!" };
       const go = await openDialog({
         title: "Start RL", tag: "sport → rl", stack: true,
-        foot: "Release to cancel · Esc closes",
+        foot: "Esc closes",
         html: (p ? `<div class="eng-pol"><div class="meta"><span class="nm">${esc(p.short || p.name)}</span>
                       <div class="chips">${policyChips(p)}</div></div><span class="mono note">${esc(policyDate(p))}</span></div>` : "")
             + `<div>The robot releases the Unitree sport service, ramps to the policy's default pose, then the
                 policy takes the motors. Clear the area or use the gantry.</div>`
             + `<div class="chk">${checks.map(([s, t, sm]) => `<div><i class="${s}">${icon[s]}</i><span>${t}${sm ? `<small>${sm}</small>` : ""}</span></div>`).join("")}</div>`,
         buttons: [{ label: "Cancel", value: null },
-                  { label: ready ? "HOLD TO START RL" : "Fix the items above", value: true, cls: "hold", hold: 1200, disabled: !ready }],
+                  { label: ready ? "START RL" : "Fix the items above", value: true, cls: "danger", disabled: !ready }],
       });
       if (!go) return;
+      // Second, separate confirmation (replaces the old 1.2 s hold-to-start).
+      const sure = await openDialog({
+        title: "Confirm start", tag: "sport → rl", stack: true, foot: "Esc closes",
+        html: `<div>Start <b>${esc(p ? (p.short || p.name) : "the policy")}</b> on the robot now?
+                The robot ramps to the default pose, then the policy takes the motors.</div>`,
+        buttons: [{ label: "Cancel", value: null },
+                  { label: "CONFIRM — START RL", value: true, cls: "danger", armMs: 600 }],
+      });
+      if (!sure || controlMode === "rl") return;
       await switchControlMode("rl");
     }
 
