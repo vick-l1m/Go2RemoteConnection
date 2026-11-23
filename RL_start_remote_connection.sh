@@ -28,6 +28,9 @@ Authentication
 RL policy
   GO2_RL_POLICY=1|0            Start the RL bridge + policy nodes. Default: 1.
   GO2_RL_DRY_RUN=0|1           1 = no torque (kp=kd=0), for a bench check. Default: 0.
+  GO2_REQUIRE_SPORT=0|1        1 = exit (code 1) if the robot's sport topics are not up
+                               after 30 s, so a supervisor (the systemd unit) retries.
+                               0 (default) = carry on with the web API only.
   GO2_ROBOT=go2|go2w           Which robot: go2 (12 motors) or go2w (12 legs + 4 wheel axles
                                on lowcmd slots 12-15). A Go2 policy on a go2w holds the wheels
                                braked; a Go2-W drive policy on a go2 is refused. Default: go2.
@@ -75,7 +78,7 @@ KNOWN_VARS="ROS_DOMAIN_ID RMW_IMPLEMENTATION UNITREE_IFACE GO2_WS_DIR
   GO2_PERCEPTION GO2_HEIGHTMAP_MODE GO2_STEPFIELD_PRESET GO2_BLOCK_HEIGHTS_CM GO2_SCAN_SNAP
   GO2_HEIGHT_EMPTY_FILL GO2_STOP_VIP_REALSENSE GO2_CALIBRATE GO2_CALIBRATE_MASK_DEG GO2_MAP
   GO2_RECORD GO2_RECORD_NAME GO2_RECORD_TERRAIN GO2_RECORD_NOTES GO2_RECORD_DEPTH
-  GO2_RECORD_TOPICS"
+  GO2_RECORD_TOPICS GO2_REQUIRE_SPORT"
 for arg in "$@"; do
   case "$arg" in
     -h|--help) usage; exit 0 ;;
@@ -792,7 +795,7 @@ else
   elif realsense_driver_running; then
     if height_scan_flowing; then
       echo "[run_all] Perception already running (driver + /go2/height_scan) -- reusing it."
-      if ! timeout 10 ros2 node list 2>/dev/null | grep -q "/$HEIGHTMAP_EXE\$"; then
+      if ! timeout 10 ros2 node list 2>/dev/null | grep "/$HEIGHTMAP_EXE\$" >/dev/null; then
         echo "[run_all] ⚠️  The running height map is not $HEIGHTMAP_EXE (GO2_HEIGHTMAP_MODE=$GO2_HEIGHTMAP_MODE). Stop that perception stack and rerun RL_start to switch."
       fi
       CAMERA_YAML_USED="$([ -f "$WS_DIR/sessions/camera_live.yaml" ] && echo "$WS_DIR/sessions/camera_live.yaml" || echo "$CAMERA_YAML")"
@@ -928,13 +931,21 @@ ok_or_die "FastAPI" "$API_PID" "/tmp/go2_fastapi.log"
 echo "[run_all] Waiting for Unitree sport topics..."
 SPORT_READY=0
 for i in {1..30}; do
-  if ros2 topic list 2>/dev/null | grep -q "^/api/sport/request$"; then
+  # No `grep -q`: it exits on the first match, and with a long topic list (the VIP
+  # containers add ~130) `ros2` then dies on the closed pipe (exit 120), which under
+  # pipefail reads as "not found" and silently skipped the RL nodes.
+  if ros2 topic list 2>/dev/null | grep "^/api/sport/request$" >/dev/null; then
     echo "[run_all] Unitree Sport API is up."
     SPORT_READY=1
     break
   fi
   sleep 1
 done
+
+if [ "$SPORT_READY" -ne 1 ] && [ "${GO2_REQUIRE_SPORT:-0}" = "1" ]; then
+  echo "[run_all] ❌ Unitree sport topics not found after 30 s and GO2_REQUIRE_SPORT=1 -- exiting so the supervisor retries."
+  exit 1
+fi
 
 kill_conflicting_nodes() {
   echo "[run_all] Killing conflicting motion nodes (if any)..."

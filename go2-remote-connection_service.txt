@@ -1,31 +1,40 @@
 # Lives in /etc/systemd/system/go2-remote-connection.service
+# Install / update with:  sudo bash install_boot_services.sh
 
 [Unit]
-Description=Go2 Remote Connection startup service
-After=network-online.target
+Description=Go2 RL remote connection (web API + RL bridge/policy + RealSense stepfield map)
+After=network-online.target docker.service
 Wants=network-online.target
+# The script exits when a critical child dies or the robot link is not up yet;
+# keep retrying for as long as the robot is on.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 User=unitree
 Group=unitree
 
-# Folder that contains your startup script
-WorkingDirectory=/home/unitree/go2_ws/Go2RemoteConnection
+WorkingDirectory=/home/unitree/Go2_RL_workflow/Go2RemoteConnection
 
-# Run your startup script
-# Change "joystick" to "terminal" or "movement" if you want a different mode
-ExecStart=/bin/bash /home/unitree/go2_ws/Go2RemoteConnection/RL_start_remote_connection.sh joystick
+# Settings are VAR=value arguments (see RL_start_remote_connection.sh --help).
+#   GO2_HEIGHTMAP_MODE=stepfield  stepfield_map_node (terrain snapping) always runs
+#   GO2_SCAN_SNAP / GO2_STEPFIELD_PRESET  boot defaults only: the SNAP / PRESET
+#                                 switches on /rl_sim_to_real change them live
+#   GO2_STOP_VIP_REALSENSE=1      free the camera if the vip-realsense container holds it
+#   GO2_REQUIRE_SPORT=1           exit if the robot body is not up yet -> Restart= retries
+# Policies stay idle until RL is chosen on the web page.
+ExecStart=/bin/bash /home/unitree/Go2_RL_workflow/Go2RemoteConnection/RL_start_remote_connection.sh \
+    GO2_HEIGHTMAP_MODE=stepfield GO2_SCAN_SNAP=auto GO2_STEPFIELD_PRESET=lab_blocks \
+    GO2_MAP=1 GO2_STOP_VIP_REALSENSE=1 GO2_REQUIRE_SPORT=1
 
-# Restart if it crashes
 Restart=always
 RestartSec=5
+# The script's own trap stops its children (ros2 bag included); give it time.
+TimeoutStopSec=30
 
-# Useful environment
 Environment=HOME=/home/unitree
 Environment=PYTHONUNBUFFERED=1
 
-# Send logs to journalctl
 StandardOutput=journal
 StandardError=journal
 

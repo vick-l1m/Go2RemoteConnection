@@ -322,7 +322,8 @@ ok_or_die "FastAPI" "$API_PID" "/tmp/go2_fastapi.log"
 # ----------------------------
 echo "[run_all] Waiting for Unitree sport topics..."
 for i in {1..30}; do
-  if ros2 topic list 2>/dev/null | grep -q "^/api/sport/request$"; then
+  # No `grep -q` (early exit breaks ros2's pipe on a long list; fails under pipefail).
+  if ros2 topic list 2>/dev/null | grep "^/api/sport/request$" >/dev/null; then
     echo "[run_all] Unitree Sport API is up."
     break
   fi
