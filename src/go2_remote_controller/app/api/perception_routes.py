@@ -19,6 +19,12 @@ RealSense + height-map views for the RL web page:
   POST /perception/photo_memory/{s|policy}  rolling-map memory for the picture (photo
                                     mode only; 0.5-60 s, "policy" restores the policy's)
   GET  /perception/photo.jpg        latest colour frame at full resolution
+  POST /perception/scan_snap/{auto|on|off}  height-map snap switch: follow the policy's
+                                    deploy.yaml, or force snapped / raw heights (relayed to
+                                    go2_rl_bridge_node). Refused while RL is engaged
+  POST /perception/stepfield_preset/{name}  stepfield_map_node terrain_preset, live
+                                    (lab_blocks / half_cubic / full_cubic / grid_pallet).
+                                    Refused while RL is engaged
 
 Same auth / stop-latch / keepalive shape as robot_model_routes.py and camera_routes.py.
 
@@ -43,6 +49,9 @@ from app.services.perception_codec import HAVE_CV2, color_image_to_jpeg
 from app.api.rl_policy import REGISTRY_PATH, _current_id, _load_registry
 
 router = APIRouter()
+
+#: stepfield_map_node presets offered on the page (go2_perception/stepfield_presets.py).
+STEPFIELD_PRESETS = ("lab_blocks", "half_cubic", "full_cubic", "grid_pallet")
 
 _REQUIRED_CACHE: dict = {}      # deploy.yaml path -> (mtime, parsed requirement)
 
@@ -85,6 +94,8 @@ def _policy_requirement(entry: dict) -> dict:
 async def perception_status():
     status = get_perception_status()
     status["realsense"] = get_realsense_status()
+    status["scan_snap_mode"] = state.scan_snap_mode
+    status["stepfield_presets"] = list(STEPFIELD_PRESETS)
     try:
         default_id, policies = _load_registry()
         cur = _current_id(policies, default_id)
@@ -156,6 +167,36 @@ async def set_photo_memory(value: str):
     state.photo_memory_s = seconds
     get_bridge().publish_map_memory_override(seconds)
     return {"ok": True, "photo_memory_s": seconds}
+
+
+@router.post("/perception/scan_snap/{mode}", dependencies=[Depends(require_token)])
+async def set_scan_snap(mode: str):
+    mode = mode.strip().lower()
+    if mode not in ("auto", "on", "off"):
+        raise HTTPException(status_code=400, detail="use /perception/scan_snap/auto, /on or /off")
+    if mode == state.scan_snap_mode:
+        return {"ok": True, "scan_snap_mode": mode}
+    if state.control_mode == "rl":
+        # The switch rebuilds the rolling map: never under a walking policy.
+        raise HTTPException(status_code=423, detail="stop RL before changing snapping")
+    state.scan_snap_mode = mode
+    get_bridge().publish_scan_snap_override(mode)
+    return {"ok": True, "scan_snap_mode": mode}
+
+
+@router.post("/perception/stepfield_preset/{name}", dependencies=[Depends(require_token)])
+async def set_stepfield_preset(name: str):
+    name = name.strip().lower()
+    if name not in STEPFIELD_PRESETS:
+        raise HTTPException(status_code=400, detail=f"preset must be one of {', '.join(STEPFIELD_PRESETS)}")
+    if state.control_mode == "rl":
+        raise HTTPException(status_code=423, detail="stop RL before changing the step preset")
+    ok, why = await asyncio.to_thread(get_bridge().set_stepfield_preset, name)
+    if not ok:
+        if why == "unreachable":
+            raise HTTPException(status_code=409, detail="stepfield_map_node not running (GO2_HEIGHTMAP_MODE=stepfield)")
+        raise HTTPException(status_code=502, detail=f"preset not set: {why}")
+    return {"ok": True, "preset": name}
 
 
 @router.get("/perception/photo.jpg", dependencies=[Depends(require_token)])

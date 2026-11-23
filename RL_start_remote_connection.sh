@@ -44,6 +44,8 @@ Perception (RealSense D435i -> /go2/height_scan)
   GO2_SCAN_SNAP=auto|0|1       auto (default): snapped or raw per the policy's deploy.yaml
                                snap. 0: force RAW heights for any policy (final-eval Test 2,
                                keeps the rolling map). 1: force snapped levels. stepfield only.
+                               Startup value only: the SNAP / PRESET switches on
+                               /rl_sim_to_real (Stack check card) change it live.
   GO2_HEIGHT_EMPTY_FILL=-1.0   Unseen-cell value; must match policy unobserved_value.
   GO2_STOP_VIP_REALSENSE=0|1   1 = docker stop vip-realsense if it holds the camera.
   GO2_CALIBRATE=0|1|strict     Calibrate camera mount at start (robot still, flat floor).

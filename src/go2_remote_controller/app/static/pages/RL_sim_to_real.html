@@ -979,6 +979,41 @@ Author: Victor Lim
       pollPerceptionStatus();
     }
 
+    // ---- snap switch + step preset (go2_rl_bridge_node / stepfield_map_node) ----
+    async function setScanSnap(mode) {
+      const r = await Go2Shared.httpPost(`/perception/scan_snap/${mode}`, null, { bypassCommsGate: true });
+      let body = {};
+      try { body = JSON.parse(r.text); } catch (_) {}
+      logEvent(r.ok ? `snap → ${mode}` : `snap ${mode} failed: ${body.detail || r.text}`, r.ok ? "" : "w");
+      pollPerceptionStatus();
+    }
+    async function setStepPreset(name) {
+      const r = await Go2Shared.httpPost(`/perception/stepfield_preset/${name}`, null, { bypassCommsGate: true });
+      let body = {};
+      try { body = JSON.parse(r.text); } catch (_) {}
+      logEvent(r.ok ? `step preset → ${name}` : `step preset ${name} failed: ${body.detail || r.text}`, r.ok ? "" : "w");
+      pollPerceptionStatus();
+    }
+    function renderSnapControls(st) {
+      const rl = controlMode === "rl";
+      const run = st.stack_running;
+      const stepfield = !!run && run.node === "stepfield_map_node";
+      const mode = st.scan_snap_mode || "auto";
+      for (const k of ["auto", "on", "off"]) {
+        const b = $(`snap_${k}`);
+        if (!b) continue;
+        b.classList.toggle("toggleOn", k === mode);
+        b.disabled = rl;
+        b.title = rl ? "Stop RL first" : "";
+      }
+      for (const k of ["lab_blocks", "half_cubic", "full_cubic", "grid_pallet"]) {
+        const b = $(`preset_${k}`);
+        if (!b) continue;
+        b.classList.toggle("toggleOn", stepfield && run.preset === k);
+        b.disabled = rl || !stepfield;
+      }
+    }
+
     async function setPhotoMemory(v) {
       const r = await Go2Shared.httpPost(`/perception/photo_memory/${v}`, null, { bypassCommsGate: true });
       let body = {};
@@ -1162,6 +1197,7 @@ Author: Victor Lim
       }
 
       renderPerceptionStack(st);
+      renderSnapControls(st);
 
       // ---- camera-policy gate ----
       const flowing = !!st.height_scan_flowing;
@@ -1236,7 +1272,9 @@ Author: Victor Lim
         if (req.memory_s > 0 && run && !run.map)
           notes.push("this policy needs the rolling map: restart RL_start with GO2_HEIGHTMAP_MODE=stepfield GO2_MAP=1");
         if (run && run.node === "stepfield_map_node")
-          notes.push("heights and memory switch automatically when you select a policy");
+          notes.push(st.scan_snap_mode && st.scan_snap_mode !== "auto"
+            ? `snap forced ${st.scan_snap_mode} for every policy (SNAP below)`
+            : "heights and memory switch automatically when you select a policy");
       }
       body.innerHTML = rows.join("");
       if (note) note.textContent = notes.join(" · ");
@@ -2245,6 +2283,23 @@ Author: Victor Lim
             <tbody id="rsStackRows"></tbody>
           </table>
           <div id="rsStackNote" class="note"></div>
+          <div class="ch">
+            <span class="route" title="Height-map snapping. auto = follow the selected policy's deploy.yaml; on / off = force snapped levels / raw heights for every policy. Locked while RL runs (it resets the rolling map).">SNAP</span>
+            <div class="tabs">
+              <button id="snap_auto" onclick="setScanSnap('auto')">auto</button>
+              <button id="snap_on" onclick="setScanSnap('on')">on</button>
+              <button id="snap_off" onclick="setScanSnap('off')">off</button>
+            </div>
+          </div>
+          <div class="ch">
+            <span class="route" title="stepfield_map_node step preset: the levels cells are snapped to. Must match the course. Locked while RL runs.">PRESET</span>
+            <div class="tabs">
+              <button id="preset_lab_blocks" onclick="setStepPreset('lab_blocks')" title="lab plywood blocks, 10 cm">10</button>
+              <button id="preset_half_cubic" onclick="setStepPreset('half_cubic')" title="RoboCup half-cubic, 15 / 30 cm">15/30</button>
+              <button id="preset_full_cubic" onclick="setStepPreset('full_cubic')" title="full 30 cm cubes">30</button>
+              <button id="preset_grid_pallet" onclick="setStepPreset('grid_pallet')" title="grid pallet rails, 3.8 / 7.6 cm">pallet</button>
+            </div>
+          </div>
         </div>
 
         <div id="logCard" class="card logCard">

@@ -59,6 +59,14 @@ reports the policy's memory as not set, so the controller refuses a memory polic
 the override is cleared and the policy's value is back. The topic can also be published
 by hand, which skips the page's photo-mode gate, so the override is IGNORED while
 /web_control_mode is "rl": a running policy always gets its own memory.
+
+Web snap override (2026-11-23). ``/web_scan_snap_override`` (String, latched: ``auto`` |
+``on`` | ``off``) is the web page's snap switch and replaces the startup ``GO2_SCAN_SNAP``
+value at runtime: ``on``/``off`` force snapped/raw heights, ``auto`` follows the policy.
+A forced value is asserted even before a policy is loaded or for a blind one, so the
+page's "Running" row shows the switch take effect at once. Changing it while
+/web_control_mode is "rl" is held back until RL stops (the switch resets the rolling map
+under a walking policy); the web API refuses it then too.
 """
 
 import argparse
@@ -154,8 +162,10 @@ class Go2RLBridge(Node):
         self._map_node = map_node
         self._map_client = self.create_client(SetParameters, f"{map_node}/set_parameters")
         self._want_memory = None
-        self._want_snap = None             # True snapped / False raw / None leave alone
+        self._policy_snap = None           # the loaded policy's deploy.yaml snap (None = blind/none)
         self._snap_force = {"0": False, "1": True}.get(str(scan_snap))   # None = per policy
+        self._snap_force_pending = ...     # web override held back while RL runs (... = none)
+        self._snap_warned = ""             # last snap_enabled refusal logged, to log changes only
         if self._snap_force is not None:
             self.get_logger().warn(
                 f"GO2_SCAN_SNAP={scan_snap}: height map forced to "
@@ -168,6 +178,7 @@ class Go2RLBridge(Node):
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(Float32, "/web_map_memory_override", self._on_memory_override, latched)
+        self.create_subscription(String, "/web_scan_snap_override", self._on_snap_override, latched)
         self.create_timer(1.0, self._sync_map_memory)
 
         # 10 Hz keepalive so the controller's bridge-link deadman stays satisfied
@@ -204,6 +215,36 @@ class Go2RLBridge(Node):
                                        "restoring the policy's map memory")
                 self._map_busy = False          # do not wait on an in-flight override set
                 self._sync_map_memory()
+            if was and not self._rl_mode and self._snap_force_pending is not ...:
+                self._set_snap_force(self._snap_force_pending)
+
+    # ---- web snap override ------------------------------------------- #
+    def _on_snap_override(self, msg: String):
+        mode = msg.data.strip().lower()
+        force = {"auto": None, "on": True, "off": False}.get(mode, ...)
+        if force is ...:
+            self.get_logger().warn(f"/web_scan_snap_override '{msg.data}' ignored (auto|on|off)")
+            return
+        if self._rl_mode:
+            self._snap_force_pending = force
+            self.get_logger().warn(f"snap override '{mode}' held until RL stops")
+            return
+        self._set_snap_force(force)
+
+    def _set_snap_force(self, force):
+        self._snap_force_pending = ...
+        if force == self._snap_force:
+            return
+        self._snap_force = force
+        self.get_logger().info(
+            "snap override: " + ("follow the policy (auto)" if force is None
+                                 else "forced " + ("snapped levels" if force else "raw heights")))
+        self._sync_map_memory()
+
+    @property
+    def _want_snap(self):
+        """True snapped / False raw / None leave the map node alone."""
+        return self._snap_force if self._snap_force is not None else self._policy_snap
 
     def _on_policy(self, msg: String):
         pid = msg.data.strip()
@@ -288,9 +329,7 @@ class Go2RLBridge(Node):
                 self._pub_active_policy.publish(String(data=str(msg.get("id") or "")))
                 self._want_memory = float(msg.get("scan_memory_s") or 0.0)
                 snap = msg.get("scan_snap")
-                if snap is not None and self._snap_force is not None:
-                    snap = self._snap_force       # GO2_SCAN_SNAP override (scan policies only)
-                self._want_snap = None if snap is None else bool(snap)
+                self._policy_snap = None if snap is None else bool(snap)
             elif t == "mode_out":
                 self._pub_mode_out.publish(String(data=str(msg.get("mode", "sport"))))
             elif t == "enabled":
@@ -315,7 +354,7 @@ class Go2RLBridge(Node):
         A photo memory override replaces the value and reports the policy's as unset."""
         want = self._want_memory
         override = None if self._rl_mode else self._memory_override
-        if override is None and want is None:
+        if override is None and want is None and self._want_snap is None:
             return
         if override is not None:
             if want is not None:
@@ -343,15 +382,17 @@ class Go2RLBridge(Node):
                                 f"{MAP_SET_TIMEOUT_S:g} s (executor starved?)")
             return
         if not self._map_client.service_is_ready():
-            if want > 0.0:      # a memory-free policy does not need the map at all
+            if want is not None and want > 0.0:   # a memory-free policy does not need the map
                 self._report_memory(want, False,
                                     f"{self._map_node} is not running (start perception with "
                                     "GO2_HEIGHTMAP_MODE=stepfield GO2_MAP=1)")
             return
         snap = self._want_snap
         req = SetParameters.Request()
-        req.parameters = [Parameter(name="map_memory_s", value=ParameterValue(
-            type=ParameterType.PARAMETER_DOUBLE, double_value=want))]
+        req.parameters = []
+        if want is not None:     # None: no policy loaded yet, only a forced snap to assert
+            req.parameters.append(Parameter(name="map_memory_s", value=ParameterValue(
+                type=ParameterType.PARAMETER_DOUBLE, double_value=want)))
         if snap is not None:
             req.parameters.append(Parameter(name="snap_enabled", value=ParameterValue(
                 type=ParameterType.PARAMETER_BOOL, bool_value=snap)))
@@ -378,16 +419,22 @@ class Go2RLBridge(Node):
                                 f"set_parameters failed: {e}")
             return
         snap_ok, snap_why = True, ""
+        i_snap = 0 if want is None else 1
         if snap is not None:
-            if len(results) > 1:
-                snap_ok, snap_why = bool(results[1].successful), results[1].reason
+            if len(results) > i_snap:
+                snap_ok, snap_why = bool(results[i_snap].successful), results[i_snap].reason
             else:
                 snap_ok, snap_why = False, "no answer for snap_enabled"
+            if not snap_ok and snap_why != self._snap_warned:
+                self.get_logger().warn(f"snap_enabled={snap} not set: {snap_why}")
+            self._snap_warned = "" if snap_ok else snap_why
+        if want is None:
+            return
         self._report_memory(want, bool(results[0].successful), results[0].reason,
                             snap, snap_ok, snap_why)
 
     def _report_memory(self, want, ok, why, snap=None, snap_ok=True, snap_why=""):
-        if want <= 0.0:
+        if want is None or want <= 0.0:
             return              # frame-only: best effort, the controller does not gate on it
         self._send({"t": "scan_memory", "memory_s": want, "ok": ok, "why": why,
                     "snap": snap, "snap_ok": snap_ok, "snap_why": snap_why})

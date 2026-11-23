@@ -208,6 +208,7 @@ def get_robot_pose_store() -> RobotPoseStore:
 # launch streams depth only, so the colour topic may simply never publish.
 RS_DEPTH_TOPIC = "/go2/camera/depth/image_rect_raw"
 RS_COLOR_TOPIC = "/go2/camera/color/image_raw"
+STEPFIELD_NODE = "/stepfield_map_node"   # go2_perception, GO2_HEIGHTMAP_MODE=stepfield
 RS_DRIVER_NODE = "/go2/camera"    # realsense2_camera node (real_perception*.launch.py)
 HEIGHT_SCAN_TOPIC = "/go2/height_scan"
 GRID_MAP_TOPIC = "/go2/local_heightmap"
@@ -323,6 +324,15 @@ class WebRosBridge(Node):
             Float32, "/web_map_memory_override",
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                        durability=DurabilityPolicy.TRANSIENT_LOCAL))
+
+        # Snap switch for go2_rl_bridge_node ("auto" | "on" | "off"). Latched, like the
+        # memory override, so a restarted RL bridge picks up the current choice.
+        self.pub_scan_snap_override = self.create_publisher(
+            RosString, "/web_scan_snap_override",
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        # stepfield_map_node parameter service (the page's step preset dropdown).
+        self.cli_map_set = self.create_client(SetParameters, f"{STEPFIELD_NODE}/set_parameters")
 
         # RealSense driver parameter services (photo mode toggles enable_color live).
         self.cli_cam_get = self.create_client(GetParameters, f"{RS_DRIVER_NODE}/get_parameters")
@@ -594,6 +604,30 @@ class WebRosBridge(Node):
                 name=name, value=ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=bool(val))))
         # Toggling a stream restarts the sensor, which takes a few seconds.
         res = self._call_cam(self.cli_cam_set, req, timeout_s)
+        if res is None:
+            return False, "unreachable"
+        bad = [r.reason or "rejected" for r in res.results if not r.successful]
+        return (not bad), "; ".join(bad)
+
+    def publish_scan_snap_override(self, mode: str):
+        """'auto' follows the loaded policy; 'on' / 'off' force snapped / raw heights."""
+        if not self._ok_to_publish():
+            return
+        msg = RosString()
+        msg.data = str(mode)
+        self.pub_scan_snap_override.publish(msg)
+
+    def set_stepfield_preset(self, preset: str, timeout_s: float = 3.0):
+        """Switch stepfield_map_node's terrain_preset live (block_heights cleared so the
+        preset is what applies). Returns (ok, reason); 'unreachable' = node not running."""
+        req = SetParameters.Request()
+        req.parameters = [
+            Parameter(name="terrain_preset", value=ParameterValue(
+                type=ParameterType.PARAMETER_STRING, string_value=str(preset))),
+            Parameter(name="block_heights", value=ParameterValue(
+                type=ParameterType.PARAMETER_STRING, string_value="")),
+        ]
+        res = self._call_cam(self.cli_map_set, req, timeout_s)
         if res is None:
             return False, "unreachable"
         bad = [r.reason or "rejected" for r in res.results if not r.successful]
@@ -1080,6 +1114,7 @@ def start_ros_bridge():
 
     _bridge.publish_enabled(True)
     _bridge.publish_map_memory_override(None)   # a fresh API has no photo mode
+    _bridge.publish_scan_snap_override(state.scan_snap_mode)
     return _bridge
 
 
